@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using Npgsql;
 using PunchedApi.API.Middleware;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.Mappings;
@@ -51,9 +52,37 @@ try
     // DbContext pooling: contexts are stateless here and resolved per-scope,
     // so pooled instances are safely reset and reused across requests. This
     // removes per-request context allocation cost without changing semantics.
+    // Supports Neon/Heroku-style `DATABASE_URL` (full URL) natively; else falls
+    // back to the classic keyword-form `ConnectionStrings__DefaultConnection`.
+static string? ResolveConnectionString(IConfiguration configuration)
+{
+    var url = configuration["DATABASE_URL"];
+    if (string.IsNullOrWhiteSpace(url))
+    {
+        return configuration.GetConnectionString("DefaultConnection");
+    }
+
+    if (!Uri.TryCreate(url, UriKind.Absolute, out var uriUrl))
+    {
+        return configuration.GetConnectionString("DefaultConnection");
+    }
+
+    var creds = uriUrl.UserInfo.Split(':', 2);
+    var cs = new NpgsqlConnectionStringBuilder
+    {
+        Host = uriUrl.Host,
+        Port = uriUrl.Port > 0 ? uriUrl.Port : 5432,
+        Database = uriUrl.AbsolutePath.TrimStart('/').Split('?')[0],
+        Username = creds.Length > 0 ? creds[0] : string.Empty,
+        Password = creds.Length > 1 ? creds[1] : string.Empty,
+        SslMode = SslMode.Require,
+    };
+    return cs.ToString();
+}
+
     builder.Services.AddDbContextPool<ApplicationDbContext>(options =>
         options.UseNpgsql(
-            builder.Configuration.GetConnectionString("DefaultConnection"),
+            ResolveConnectionString(builder.Configuration),
             o => o.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery)));
 
     // ── Caching / tenant scope resolution ───────────────────
