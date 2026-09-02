@@ -1,0 +1,77 @@
+# Build outputs
+bin/
+obj/
+
+# .NET
+*.dll
+*.exe
+*.pdb
+*.deps.json
+*.runtimeconfig.json
+*.runtimeconfig.dev.json
+*.assets.cache
+*.AssemblyInfo.cs
+*.AssemblyInfoInputs.cache
+*.GeneratedMSBuildEditorConfig.editorconfig
+*.genruntimeconfig.cache
+*.GlobalUsings.g.cs
+*.MvcApplicationPartsAssemblyInfo.cs
+*.FileListAbsolute.txt
+*.Up2Date
+*.swa.cache.json
+staticwebassets.build.json
+staticwebassets.build.json.cache
+staticwebassets.build.endpoints.json
+rpswa.dswa.cache.json
+rjsmcshtml.dswa.cache.json
+rjsmrazor.dswa.cache.json
+swae.build.ex.cache
+project.assets.json
+
+# NuGet / packages
+packages/
+
+# Test results & coverage
+TestResults/
+coverage/
+
+# IDE / Editor
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# --- Environment & Secrets ---
+# Local env files may hold live credentials -> keep local. Templates stay.
+.env
+.env.*
+!.env.example
+!.env.development.example
+.env.local
+.env.*.local
+
+# .NET environment overrides may hold real DB/JWT secrets -> keep local.
+# (appsettings.json stays tracked as the safe base template)
+appsettings.Development.json
+appsettings.Production.json
+appsettings.Staging.json
+appsettings.*.json.user
+
+# Certificates / keys
+*.pfx
+*.key
+*.pem
+*.p12
+*.crt
+*.cer

@@ -1,0 +1,187 @@
+using MailKit.Net.Smtp;
+using MailKit.Security;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using MimeKit;
+using PunchedApi.Application.Settings;
+using PunchedApi.Domain.Entities;
+using PunchedApi.Domain.Interfaces;
+using PunchedApi.Infrastructure.Data;
+
+namespace PunchedApi.Infrastructure.Services;
+
+public class SmtpEmailService : IEmailService
+{
+    private readonly EmailSettings _settings;
+    private readonly ILogger<SmtpEmailService> _logger;
+  private readonly IServiceScopeFactory _scopeFactory;
+
+  public SmtpEmailService(IOptions<EmailSettings> settings, ILogger<SmtpEmailService> logger, IServiceScopeFactory scopeFactory)
+    {
+        _settings = settings.Value;
+        _logger = logger;
+    _scopeFactory = scopeFactory;
+    }
+
+    public Task<bool> SendVerificationCodeAsync(string email, string code)
+      => SendAsync(email, "Your Punched verification code", "verification_code", null, $"""
+            <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px">
+              <h2 style="color:#1a1a1a">Verify your email</h2>
+              <p style="color:#444;font-size:15px">Use the code below to verify your Punched account. It expires in 10 minutes.</p>
+              <div style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#1a1a1a;padding:24px 0;text-align:center">{code}</div>
+              <p style="color:#888;font-size:13px">If you didn't request this, you can safely ignore this email.</p>
+            </div>
+            """);
+
+    public Task<bool> SendPasswordResetCodeAsync(string email, string code)
+      => SendAsync(email, "Reset your Punched password", "password_reset_code", null, $"""
+            <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px">
+              <h2 style="color:#1a1a1a">Reset your password</h2>
+              <p style="color:#444;font-size:15px">You requested a password reset for your Punched account. Use the code below — it expires in 10 minutes.</p>
+              <div style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#1a1a1a;padding:24px 0;text-align:center">{code}</div>
+              <p style="color:#888;font-size:13px">If you didn't request this, someone may have entered your email by mistake. You can safely ignore this email.</p>
+            </div>
+            """);
+
+    public Task<bool> SendWelcomeAsync(string email, string name)
+      => SendAsync(email, "Welcome to Punched! 🎉", "welcome", null, $"""
+            <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px">
+              <h2 style="color:#1a1a1a">Welcome aboard, {name}!</h2>
+              <p style="color:#444;font-size:15px">Your Punched account is verified and ready to go.</p>
+              <p style="color:#444;font-size:15px">Start collecting stamps at your favourite local businesses and earn rewards — it's that simple.</p>
+              <div style="padding:20px 0">
+                <a href="https://punched.app" style="background:#10b981;color:white;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:15px">Open Punched</a>
+              </div>
+              <p style="color:#888;font-size:13px">See you around! — The Punched Team</p>
+            </div>
+            """);
+
+    public Task<bool> SendStampNotificationAsync(string email, string businessName, int stampNumber, int stampsRequired)
+    {
+        var remaining = stampsRequired - stampNumber;
+        return SendAsync(email, $"You got a stamp at {businessName}! ✅", "stamp_notification", businessName, $"""
+            <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px">
+              <h2 style="color:#1a1a1a">Stamp #{stampNumber} collected!</h2>
+              <p style="color:#444;font-size:15px">You just earned a stamp at <strong>{businessName}</strong>.</p>
+              <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px;margin:16px 0;text-align:center">
+                <span style="font-size:28px;font-weight:bold;color:#16a34a">{stampNumber} / {stampsRequired}</span>
+                <p style="color:#15803d;font-size:13px;margin:4px 0 0">{(remaining > 0 ? $"{remaining} more to go!" : "Reward unlocked!")}</p>
+              </div>
+              <p style="color:#888;font-size:13px">Keep collecting — you're getting closer to your next reward!</p>
+            </div>
+            """);
+    }
+
+    public Task<bool> SendRewardReadyAsync(string email, string businessName, string rewardDescription)
+      => SendAsync(email, $"🎉 Reward ready at {businessName}!", "reward_ready", businessName, $"""
+            <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px">
+              <h2 style="color:#1a1a1a">You've earned a reward! 🎉</h2>
+              <p style="color:#444;font-size:15px">Congratulations! You've collected enough stamps at <strong>{businessName}</strong>.</p>
+              <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:16px;margin:16px 0;text-align:center">
+                <span style="font-size:20px;font-weight:bold;color:#d97706">{rewardDescription}</span>
+              </div>
+              <p style="color:#444;font-size:15px">Open Punched to claim your reward before it expires.</p>
+              <div style="padding:16px 0">
+                <a href="https://punched.app" style="background:#d97706;color:white;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:15px">Claim Reward</a>
+              </div>
+              <p style="color:#888;font-size:13px">Thanks for being a loyal customer!</p>
+            </div>
+            """);
+
+    public Task<bool> SendStaffInvitationAsync(string email, string businessName, string invitationUrl, DateTime expiresAt)
+    {
+        var expiresLocal = expiresAt.ToLocalTime().ToString("g");
+        return SendAsync(email, $"You've been invited to join {businessName} 🎉", "staff_invitation", businessName, $"""
+            <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px">
+              <h2 style="color:#1a1a1a">You're invited to join {businessName} on Punched</h2>
+              <p style="color:#444;font-size:15px">{businessName} has added you as a team member on <strong>Punched</strong> — the digital loyalty platform. Once you join you'll be able to issue stamps and help reward your customers.</p>
+              <div style="padding:20px 0">
+                <a href="{invitationUrl}" style="background:#10b981;color:white;padding:14px 30px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:15px;display:inline-block">Accept Invitation</a>
+              </div>
+              <p style="color:#666;font-size:13px">This invitation link expires on <strong>{expiresLocal}</strong>. If the link has expired, ask your business owner to resend it.</p>
+              <p style="color:#666;font-size:13px">If the button above does not work, copy and paste this address into your browser:</p>
+              <p style="color:#444;font-size:12px;word-break:break-all;background:#f4f4f5;padding:12px;border-radius:8px">{invitationUrl}</p>
+              <p style="color:#888;font-size:13px">If you weren't expecting this email, you can safely ignore it.</p>
+            </div>
+            """);
+    }
+
+    private async Task<bool> SendAsync(string email, string subject, string templateType, string? businessName, string htmlBody)
+    {
+        try
+        {
+            var message = new MimeMessage();
+            message.From.Add(new MailboxAddress(_settings.FromName, _settings.FromAddress));
+            message.To.Add(MailboxAddress.Parse(email));
+            message.Subject = subject;
+            message.Body = new TextPart("html") { Text = htmlBody };
+
+            using var client = new SmtpClient();
+
+            // Auto-detect TLS strategy based on port
+            var secureOption = _settings.Port == 465
+                ? SecureSocketOptions.SslOnConnect
+                : SecureSocketOptions.StartTls;
+
+            await client.ConnectAsync(_settings.Host, _settings.Port, secureOption);
+            await client.AuthenticateAsync(_settings.Username, _settings.Password);
+            await client.SendAsync(message);
+            await client.DisconnectAsync(quit: true);
+
+            _logger.LogInformation("Email sent to {Email}: {Subject}", email, subject);
+            await PersistAsync(email, businessName, "email", templateType, "sent", null);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send email to {Email}: {Subject}", email, subject);
+            await PersistAsync(email, businessName, "email", templateType, "failed", ex.Message);
+            return false;
+        }
+    }
+
+        private async Task PersistAsync(string email, string? businessName, string channel, string templateType, string status, string? error)
+        {
+          try
+          {
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            var user = await db.Users
+              .IgnoreQueryFilters()
+              .FirstOrDefaultAsync(u => u.Email == email);
+
+            if (user == null)
+              return;
+
+            Guid? businessId = null;
+            if (!string.IsNullOrWhiteSpace(businessName))
+            {
+              businessId = await db.Businesses
+                .IgnoreQueryFilters()
+                .Where(b => b.Name == businessName)
+                .Select(b => (Guid?)b.Id)
+                .FirstOrDefaultAsync();
+            }
+
+            db.NotificationLogs.Add(new NotificationLog
+            {
+              Id = Guid.NewGuid(),
+              UserId = user.Id,
+              BusinessId = businessId,
+              Channel = channel,
+              TemplateType = templateType,
+              Status = status,
+              SentAt = DateTime.UtcNow,
+              CreatedAt = DateTime.UtcNow,
+              Error = error
+            });
+
+            await db.SaveChangesAsync();
+          }
+          catch (Exception ex)
+          {
+            _logger.LogWarning(ex, "Failed to persist notification log for {Email}", email);
+          }
+        }
+}
