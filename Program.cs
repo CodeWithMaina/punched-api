@@ -51,9 +51,11 @@ try
     // DbContext pooling: contexts are stateless here and resolved per-scope,
     // so pooled instances are safely reset and reused across requests. This
     // removes per-request context allocation cost without changing semantics.
+    var connectionString = ResolveConnectionString(builder.Configuration);
+
     builder.Services.AddDbContextPool<ApplicationDbContext>(options =>
         options.UseNpgsql(
-            builder.Configuration.GetConnectionString("DefaultConnection"),
+            connectionString,
             o => o.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery)));
 
     // ── Caching / tenant scope resolution ───────────────────
@@ -475,4 +477,45 @@ catch (Exception ex)
 finally
 {
     Log.CloseAndFlush();
+}
+
+static string ResolveConnectionString(IConfiguration configuration)
+{
+    var databaseUrl = configuration["DATABASE_URL"];
+    if (!string.IsNullOrWhiteSpace(databaseUrl))
+    {
+        if (!Uri.TryCreate(databaseUrl, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != "postgres" && uri.Scheme != "postgresql"))
+        {
+            throw new InvalidOperationException("DATABASE_URL must be a valid postgresql:// connection URL.");
+        }
+
+        var builder = new Npgsql.NpgsqlConnectionStringBuilder
+        {
+            Host = uri.Host,
+            Port = uri.IsDefaultPort ? 5432 : uri.Port,
+            Database = uri.AbsolutePath.Trim('/'),
+            Username = Uri.UnescapeDataString(uri.UserInfo.Split(':', 2)[0]),
+            Password = uri.UserInfo.Contains(':')
+                ? Uri.UnescapeDataString(uri.UserInfo.Split(':', 2)[1])
+                : string.Empty
+        };
+
+        var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+        if (string.Equals(query["sslmode"], "require", StringComparison.OrdinalIgnoreCase))
+        {
+            builder.SslMode = Npgsql.SslMode.Require;
+        }
+
+        if (!string.IsNullOrWhiteSpace(query["channel_binding"]))
+        {
+            builder["Channel Binding"] = query["channel_binding"];
+        }
+
+        return builder.ConnectionString;
+    }
+
+    return configuration.GetConnectionString("DefaultConnection")
+        ?? throw new InvalidOperationException(
+            "Configure DATABASE_URL or ConnectionStrings__DefaultConnection.");
 }
