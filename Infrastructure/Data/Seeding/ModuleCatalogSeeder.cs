@@ -76,15 +76,29 @@ public sealed class ModuleCatalogSeeder : IModuleCatalogSeeder
         {
             if (existingPlans.TryGetValue(definition.Key, out var existing))
             {
+                // Refresh display metadata only. CRITICAL: never overwrite the
+                // lifecycle fields (LifecycleState, DisplayOrder, IsDefault,
+                // PublishedAt, DeactivatedAt, ArchivedAt) on EXISTING plans —
+                // an admin-authored Draft/IsDefault/DisplayOrder change must
+                // survive every application restart / seeder run.
                 existing.Name = definition.Name;
                 existing.Description = definition.Description;
                 existing.Price = definition.Price;
                 existing.BillingInterval = definition.BillingInterval;
-                existing.IsActive = definition.IsActive;
+
+                // Never clobber lifecycle on existing rows. Only the legacy
+                // IsActive is intentionally left untouched too (it mirrors
+                // LifecycleState and is owned by the lifecycle service).
             }
             else
             {
                 definition.CreatedAt = now;
+                // New inserts inherit lifecycle from the seed definition
+                // (seeded tiers start Active; admin-created tiers start Draft).
+                definition.LifecycleState = definition.IsActive
+                    ? SubscriptionPlanLifecycleState.Active
+                    : SubscriptionPlanLifecycleState.Inactive;
+                definition.PublishedAt ??= definition.IsActive ? now : null;
                 _dbContext.SubscriptionPlans.Add(definition);
                 changed = true;
                 _logger.LogInformation("Seeding subscription plan: {PlanKey}", definition.Key);

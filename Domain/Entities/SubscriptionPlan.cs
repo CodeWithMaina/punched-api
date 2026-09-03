@@ -43,8 +43,47 @@ public class SubscriptionPlan : BaseEntity
 
     /// <summary>
     /// Soft availability flag. Inactive plans cannot be subscribed to.
+    /// Backward-compatible convenience column mirrored to
+    /// <see cref="LifecycleState"/> (Active ⇔ true). Must never diverge.
     /// </summary>
     public bool IsActive { get; set; } = true;
+
+    // ── Admin tier lifecycle ─────────────────────────────────
+
+    /// <summary>
+    /// Display order used to sort tiers in admin/upgrade UIs. Null = un-ordered.
+    /// </summary>
+    public int? DisplayOrder { get; set; }
+
+    /// <summary>
+    /// Whether this tier is the platform default (auto-assigned to new businesses).
+    /// At most one tier may be the default (enforced by a unique partial index).
+    /// </summary>
+    public bool IsDefault { get; set; }
+
+    /// <summary>
+    /// Current lifecycle state of this tier. Active tiers course assignable and
+    /// have read-only module sets; Draft/Inactive are editable; Archived is terminal.
+    /// </summary>
+    public SubscriptionPlanLifecycleState LifecycleState { get; set; } = SubscriptionPlanLifecycleState.Draft;
+
+    /// <summary>UTC timestamp when the tier was last published (null if never published).</summary>
+    public DateTime? PublishedAt { get; set; }
+
+    /// <summary>UTC timestamp when the tier was last deactivated (null if never deactivated).</summary>
+    public DateTime? DeactivatedAt { get; set; }
+
+    /// <summary>UTC timestamp when the tier was archived (null if never archived).</summary>
+    public DateTime? ArchivedAt { get; set; }
+
+    /// <summary>FK to the admin user who last published this tier (null if never published).</summary>
+    public Guid? LastPublishedByUserId { get; set; }
+
+    /// <summary>
+    /// Convenience helper: whether this tier may be newly assigned to businesses.
+    /// Only <see cref="SubscriptionPlanLifecycleState.Active"/> tiers are assignable.
+    /// </summary>
+    public bool IsAssignable => LifecycleState == SubscriptionPlanLifecycleState.Active;
 
     // ── Navigation ──────────────────────────────────────────
     /// <summary>

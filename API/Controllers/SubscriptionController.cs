@@ -6,6 +6,7 @@ using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Services;
 using PunchedApi.Infrastructure.Data;
 using Microsoft.AspNetCore.RateLimiting;
+using System.Text.Json;
 
 namespace PunchedApi.API.Controllers;
 
@@ -29,6 +30,7 @@ public class SubscriptionController : ControllerBase
     private readonly ISubscriptionLifecycleService _lifecycle;
     private readonly IBillingGateway _billingGateway;
     private readonly IBusinessContext _businessContext;
+    private readonly ISubscriptionAuditService _audit;
     private readonly ILogger<SubscriptionController> _logger;
 
     public SubscriptionController(
@@ -36,12 +38,14 @@ public class SubscriptionController : ControllerBase
         ISubscriptionLifecycleService lifecycle,
         IBillingGateway billingGateway,
         IBusinessContext businessContext,
+        ISubscriptionAuditService audit,
         ILogger<SubscriptionController> logger)
     {
         _context = context;
         _lifecycle = lifecycle;
         _billingGateway = billingGateway;
         _businessContext = businessContext;
+        _audit = audit;
         _logger = logger;
     }
 
@@ -103,7 +107,21 @@ public class SubscriptionController : ControllerBase
                 "PLAN_INACTIVE", $"Plan '{request.PlanKey}' is inactive and cannot be assigned."));
 
         var adminUserId = CurrentUserId();
+        var beforePlan = await _context.SubscriptionPlans.AsNoTracking()
+            .Where(p => p.BusinessSubscriptions.Any(s => s.BusinessId == businessId && s.Status == "active"))
+            .Select(p => new { p.Key, p.Name })
+            .FirstOrDefaultAsync();
         var subscription = await _lifecycle.ChangePlanAsync(businessId, plan.Id, adminUserId, request.Reason);
+
+        await _audit.RecordAsync(
+            "BUSINESS_SUBSCRIPTION_CHANGED", adminUserId, targetBusinessId: businessId, targetPlanId: plan.Id,
+            payloadJson: JsonSerializer.Serialize(new
+            {
+                before = beforePlan,
+                after = new { plan.Key, plan.Name },
+                subscription.Status
+            }),
+            reason: request.Reason ?? "Admin assigned plan.");
 
         return Ok(ApiResponse<UpgradePlanResponse>.Ok(new UpgradePlanResponse
         {

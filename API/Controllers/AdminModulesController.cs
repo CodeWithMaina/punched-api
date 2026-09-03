@@ -24,15 +24,18 @@ public class AdminModulesController : ControllerBase
 {
     private readonly IModuleEntitlementService _entitlementService;
     private readonly ApplicationDbContext _context;
+    private readonly ISubscriptionAuditService _audit;
     private readonly ILogger<AdminModulesController> _logger;
 
     public AdminModulesController(
         IModuleEntitlementService entitlementService,
         ApplicationDbContext context,
+        ISubscriptionAuditService audit,
         ILogger<AdminModulesController> logger)
     {
         _entitlementService = entitlementService;
         _context = context;
+        _audit = audit;
         _logger = logger;
     }
 
@@ -152,6 +155,11 @@ public class AdminModulesController : ControllerBase
         await _context.SaveChangesAsync();
 
         _entitlementService.Invalidate(businessId);
+        await _audit.RecordAsync(
+            request.Enabled ? "BUSINESS_MODULE_FORCE_ENABLED" : "BUSINESS_MODULE_FORCE_DISABLED",
+            adminUserId, targetBusinessId: businessId, targetPlanId: null,
+            payloadJson: System.Text.Json.JsonSerializer.Serialize(new { moduleKey }),
+            reason: request.Reason ?? "Admin module override.");
         _logger.LogWarning(
             "ADMIN module override: business {BusinessId} module {ModuleKey} {Action} by admin {AdminUserId}. Reason: {Reason}",
             businessId, moduleKey, request.Enabled ? "FORCE-ENABLED" : "FORCE-DISABLED",
@@ -187,6 +195,10 @@ public class AdminModulesController : ControllerBase
         await _context.SaveChangesAsync();
 
         _entitlementService.Invalidate(businessId);
+        await _audit.RecordAsync(
+            "BUSINESS_MODULE_OVERRIDE_REMOVED", CurrentUserId(), targetBusinessId: businessId, targetPlanId: null,
+            payloadJson: System.Text.Json.JsonSerializer.Serialize(new { moduleKey }),
+            reason: "Override removed; reverted to plan entitlement.");
         _logger.LogInformation(
             "ADMIN override removal: business {BusinessId} module {ModuleKey} reverted to plan entitlement by {AdminUserId}.",
             businessId, moduleKey, CurrentUserId());

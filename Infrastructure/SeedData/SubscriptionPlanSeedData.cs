@@ -11,9 +11,36 @@ public static class SubscriptionPlanSeedData
 {
     public static List<SubscriptionPlan> GetPlans() => new()
     {
-        new SubscriptionPlan { Id = Guid.Parse("20000000-0000-0000-0000-000000000001"), Key = "starter", Name = "Starter", Description = "Essential features", Price = 0, BillingInterval = "monthly", IsActive = true },
-        new SubscriptionPlan { Id = Guid.Parse("20000000-0000-0000-0000-000000000002"), Key = "growth", Name = "Growth", Description = "Advanced features", Price = 29.99m, BillingInterval = "monthly", IsActive = true },
-        new SubscriptionPlan { Id = Guid.Parse("20000000-0000-0000-0000-000000000003"), Key = "pro", Name = "Pro", Description = "Full feature set", Price = 79.99m, BillingInterval = "monthly", IsActive = true },
-        new SubscriptionPlan { Id = Guid.Parse("20000000-0000-0000-0000-000000000004"), Key = "enterprise", Name = "Enterprise", Description = "Custom configuration", Price = 199.99m, BillingInterval = "monthly", IsActive = true }
+        new SubscriptionPlan
+        {
+            Id = Guid.Parse("20000000-0000-0000-0000-000000000001"), Key = "starter", Name = "Starter",
+            Description = "Essential features", Price = 0, BillingInterval = "monthly",
+            IsActive = true, LifecycleState = SubscriptionPlanLifecycleState.Active,
+            IsDefault = true, DisplayOrder = 1, PublishedAt = DefaultPublishedAt
+        },
+        new SubscriptionPlan
+        {
+            Id = Guid.Parse("20000000-0000-0000-0000-000000000002"), Key = "growth", Name = "Growth",
+            Description = "Advanced features", Price = 29.99m, BillingInterval = "monthly",
+            IsActive = true, LifecycleState = SubscriptionPlanLifecycleState.Active,
+            IsDefault = false, DisplayOrder = 2, PublishedAt = DefaultPublishedAt
+        },
+        new SubscriptionPlan
+        {
+            Id = Guid.Parse("20000000-0000-0000-0000-000000000003"), Key = "pro", Name = "Pro",
+            Description = "Full feature set", Price = 79.99m, BillingInterval = "monthly",
+            IsActive = true, LifecycleState = SubscriptionPlanLifecycleState.Active,
+            IsDefault = false, DisplayOrder = 3, PublishedAt = DefaultPublishedAt
+        },
+        new SubscriptionPlan
+        {
+            Id = Guid.Parse("20000000-0000-0000-0000-000000000004"), Key = "enterprise", Name = "Enterprise",
+            Description = "Custom configuration", Price = 199.99m, BillingInterval = "monthly",
+            IsActive = true, LifecycleState = SubscriptionPlanLifecycleState.Active,
+            IsDefault = false, DisplayOrder = 4, PublishedAt = DefaultPublishedAt
+        }
     };
+
+    /// <summary>PublishedAt used for seeded tiers (stable, in the past).</summary>
+    private static readonly DateTime DefaultPublishedAt = new(2026, 8, 27, 0, 0, 0, DateTimeKind.Utc);
 }

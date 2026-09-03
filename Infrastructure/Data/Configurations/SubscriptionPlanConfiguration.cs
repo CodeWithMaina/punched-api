@@ -22,10 +22,32 @@ public class SubscriptionPlanConfiguration : IEntityTypeConfiguration<Subscripti
         builder.Property(x => x.Price).HasColumnName("price").HasPrecision(12, 2);
         builder.Property(x => x.BillingInterval).HasColumnName("billing_interval").HasMaxLength(20).HasDefaultValue("monthly");
         builder.Property(x => x.IsActive).HasColumnName("is_active").HasDefaultValue(true);
+        builder.Property(x => x.DisplayOrder).HasColumnName("display_order");
+        builder.Property(x => x.IsDefault).HasColumnName("is_default").HasDefaultValue(false);
+        builder.Property(x => x.LifecycleState)
+            .HasColumnName("lifecycle_state")
+            .HasDefaultValue(SubscriptionPlanLifecycleState.Draft)
+            .HasConversion<string>()
+            .HasMaxLength(20);
+        builder.Property(x => x.PublishedAt).HasColumnName("published_at");
+        builder.Property(x => x.DeactivatedAt).HasColumnName("deactivated_at");
+        builder.Property(x => x.ArchivedAt).HasColumnName("archived_at");
+        builder.Property(x => x.LastPublishedByUserId).HasColumnName("last_published_by_user_id");
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
 
         builder.HasIndex(x => x.Key)
             .IsUnique()
             .HasDatabaseName("ix_subscription_plans_key");
+
+        // At most one default tier.
+        builder.HasIndex(x => x.IsDefault)
+            .IsUnique()
+            .HasDatabaseName("ix_subscription_plans_one_default")
+            .HasFilter("\"is_default\" = true");
+
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(x => x.LastPublishedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

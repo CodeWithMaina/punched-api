@@ -370,7 +370,9 @@ public class ModuleEnforcementIntegrationTests : IDisposable
     private AdminModulesController CreateAdminController()
     {
         var controller = new AdminModulesController(
-            _entitlements, _db, TestHelpers.CreateLogger<AdminModulesController>());
+            _entitlements, _db,
+            new PunchedApi.Application.Services.SubscriptionAuditService(_db, TestHelpers.CreateLogger<SubscriptionAuditService>()),
+            TestHelpers.CreateLogger<AdminModulesController>());
 
         var identity = new ClaimsIdentity(new[]
         {

@@ -49,6 +49,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<BusinessModule> BusinessModules => Set<BusinessModule>();
     public DbSet<StampAdjustment> StampAdjustments => Set<StampAdjustment>();
     public DbSet<IdempotencyKey> IdempotencyKeys => Set<IdempotencyKey>();
+    public DbSet<SubscriptionAuditLog> SubscriptionAuditLogs => Set<SubscriptionAuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

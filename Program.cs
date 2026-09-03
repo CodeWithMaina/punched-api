@@ -169,6 +169,11 @@ try
 builder.Services.Configure<BillingOptions>(builder.Configuration.GetSection(BillingOptions.SectionName));
 builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisioningService>();
 
+    // ── Subscription admin module (tier lifecycle + audit) ──
+    builder.Services.AddScoped<ISubscriptionAuditService, SubscriptionAuditService>();
+    builder.Services.AddScoped<IAdminTierService, AdminTierService>();
+    builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>();
+
     // ── Module enforcement (plugin architecture Phases 4-6) ──
     // Fail-closed by default — enforcement is unconditional (Step 8).
     builder.Services.AddHttpContextAccessor();
