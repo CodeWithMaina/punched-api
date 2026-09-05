@@ -77,6 +77,12 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Repository for StaffServiceAssignment entities.</summary>
     IRepository<StaffServiceAssignment> StaffServiceAssignments { get; }
 
+    /// <summary>Repository for StampCard entities.</summary>
+    IRepository<StampCard> StampCards { get; }
+
+    /// <summary>Repository for CardDesign entities.</summary>
+    IRepository<CardDesign> CardDesigns { get; }
+
     /// <summary>
     /// Commits all pending changes to the database.
     /// </summary>

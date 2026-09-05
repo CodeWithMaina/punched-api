@@ -37,6 +37,8 @@ public class UnitOfWork : IUnitOfWork
     private IRepository<ServiceCatalogItem>? _serviceCatalogItems;
     private IRepository<StaffShift>? _staffShifts;
     private IRepository<StaffServiceAssignment>? _staffServiceAssignments;
+    private IRepository<StampCard>? _stampCards;
+    private IRepository<CardDesign>? _cardDesigns;
 
     public UnitOfWork(ApplicationDbContext context)
     {
@@ -129,6 +131,14 @@ public class UnitOfWork : IUnitOfWork
     /// <inheritdoc />
     public IRepository<StaffServiceAssignment> StaffServiceAssignments =>
         _staffServiceAssignments ??= new Repository<StaffServiceAssignment>(_context);
+
+    /// <inheritdoc />
+    public IRepository<StampCard> StampCards =>
+        _stampCards ??= new Repository<StampCard>(_context);
+
+    /// <inheritdoc />
+    public IRepository<CardDesign> CardDesigns =>
+        _cardDesigns ??= new Repository<CardDesign>(_context);
 
     /// <inheritdoc />
     public async Task<int> SaveChangesAsync()

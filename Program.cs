@@ -141,6 +141,7 @@ try
     builder.Services.AddScoped<IBusinessService, BusinessService>();
     builder.Services.AddScoped<ILoyaltyService, LoyaltyService>();
             builder.Services.AddScoped<IStampService, StampService>();
+    builder.Services.AddScoped<IStampCardService, StampCardService>();
     builder.Services.AddScoped<PunchedApi.Application.Programs.IProgramRuleEngine, PunchedApi.Application.Programs.ProgramRuleEngine>();
     builder.Services.AddScoped<IIdempotencyService, IdempotencyService>();
     builder.Services.AddScoped<INotificationsService, NotificationsService>();

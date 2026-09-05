@@ -50,6 +50,8 @@ public class ApplicationDbContext : DbContext
     public DbSet<StampAdjustment> StampAdjustments => Set<StampAdjustment>();
     public DbSet<IdempotencyKey> IdempotencyKeys => Set<IdempotencyKey>();
     public DbSet<SubscriptionAuditLog> SubscriptionAuditLogs => Set<SubscriptionAuditLog>();
+    public DbSet<StampCard> StampCards => Set<StampCard>();
+    public DbSet<CardDesign> CardDesigns => Set<CardDesign>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
