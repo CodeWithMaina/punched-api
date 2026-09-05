@@ -91,6 +91,15 @@ public class ReferralLinkResponse
     [JsonPropertyName("successfulReferrals")]
     public int SuccessfulReferrals { get; set; }
 
+    [JsonPropertyName("openCount")]
+    public int OpenCount { get; set; }
+
+    [JsonPropertyName("firstOpenedAt")]
+    public DateTime? FirstOpenedAt { get; set; }
+
+    [JsonPropertyName("lastOpenedAt")]
+    public DateTime? LastOpenedAt { get; set; }
+
     [JsonPropertyName("isActive")]
     public bool IsActive { get; set; }
 

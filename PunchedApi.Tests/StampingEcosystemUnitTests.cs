@@ -239,9 +239,72 @@ public class StampingEcosystemTests : IDisposable
         var card = await _db.LoyaltyCards.SingleAsync(c => c.Id == t.Card.Id);
         Assert.Equal(1, card.LifetimeStamps);
     }
-    [Fact]
-    public async Task Award_WithIdempotencyKey_ReplaysStoredResponse()
+
+    // ── Locked welcome (default) stamps ──────────────────────────
+
+    private async Task SeedLockedWelcomeStampsAsync(Tenant t, int count)
     {
+        var now = DateTime.UtcNow;
+        for (var i = 1; i <= count; i++)
+        {
+            _db.Stamps.Add(new Stamp
+            {
+                Id = Guid.NewGuid(),
+                CardId = t.Card.Id,
+                StampNumber = (short)i,
+                StampedAt = now.AddMinutes(-10),
+                QrTokenId = null,
+                AwardedByUserId = null,
+                Source = StampSource.Enrollment,
+                UnlockedAt = null, // pending until first verified visit
+                CreatedAt = now.AddMinutes(-10)
+            });
+        }
+        await _db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task CreateEnrollmentStamp_IsLocked_ScanStamp_IsUnlocked()
+    {
+        var t = await SeedTenantAsync();
+        var svc = CreateStampService(t);
+
+        var welcome = await svc.CreateEnrollmentStampAsync(t.Card.Id, 1);
+        Assert.True(welcome.Success);
+        Assert.Null(welcome.Data!.UnlockedAt);
+
+        var scan = await svc.CreateScanStampAsync(t.Card.Id, 2, t.Staff.Id);
+        Assert.True(scan.Success);
+        Assert.NotNull(scan.Data!.UnlockedAt);
+    }
+
+    [Fact]
+    public async Task Award_UnlocksPendingWelcomeStamps()
+    {
+        var t = await SeedTenantAsync();
+        await SeedLockedWelcomeStampsAsync(t, count: 2);
+
+        var svc = CreateStampService(t);
+        const string token = "tok-unlock-1";
+        await SeedTokenAsync(t, token);
+
+        var res = await svc.AwardStampAsync(t.Staff.Id, AwardRequest(t, token));
+        Assert.True(res.Success);
+
+        var stamps = await _db.Stamps.Where(s => s.CardId == t.Card.Id).ToListAsync();
+
+        // The new scan stamp is verified immediately...
+        var scanStamp = stamps.Single(s => s.Source == StampSource.Scan);
+        Assert.NotNull(scanStamp.UnlockedAt);
+
+        // ...and the verified business action unlocked the pending welcome stamps.
+        var welcomeStamps = stamps.Where(s => s.Source == StampSource.Enrollment).ToList();
+        Assert.Equal(2, welcomeStamps.Count);
+        Assert.All(welcomeStamps, s => Assert.NotNull(s.UnlockedAt));
+    }
+
+    [Fact]
+    public async Task Award_WithIdempotencyKey_ReplaysStoredResponse()    {
         var t = await SeedTenantAsync();
         var svc = CreateStampService(t);
         const string token = "tok-idem-1";

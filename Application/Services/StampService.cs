@@ -187,12 +187,30 @@ public class StampService : IStampService
                         QrTokenId = qrToken.Id,
                         AwardedByUserId = staffOrBusinessUserId,
                         Source = StampSource.Scan,
+                        UnlockedAt = now, // verified immediately via QR scan
                         CreatedAt = now
                     };
                     await _unitOfWork.Stamps.AddAsync(stamp);
                 }
 
                 _unitOfWork.LoyaltyCards.Update(card);
+
+                // Unlock pending welcome/default stamps — the customer has now
+                // performed the required business action (verified scan), so any
+                // locked enrollment stamps on this card become active.
+                var lockedStamps = await _context.Stamps
+                    .Where(s => s.CardId == card.Id
+                        && s.Source == StampSource.Enrollment
+                        && s.UnlockedAt == null)
+                    .ToListAsync();
+                if (lockedStamps.Count > 0)
+                {
+                    foreach (var locked in lockedStamps)
+                        locked.UnlockedAt = now;
+                    _logger.LogInformation(
+                        "Unlocked {Count} pending welcome stamp(s) for card {CardId} after verified scan",
+                        lockedStamps.Count, card.Id);
+                }
 
                 await _unitOfWork.SaveChangesAsync();
                 await transaction.CommitAsync();
@@ -311,6 +329,7 @@ public class StampService : IStampService
             QrTokenId = null,
             AwardedByUserId = null,
             Source = StampSource.Enrollment,
+            UnlockedAt = null, // Locked until the customer's first verified business stamp
             CreatedAt = now
         };
         await _unitOfWork.Stamps.AddAsync(stamp);
@@ -340,6 +359,7 @@ public class StampService : IStampService
             QrTokenId = null,
             AwardedByUserId = staffUserId,
             Source = StampSource.Scan,
+            UnlockedAt = now, // Scan stamps are verified immediately
             CreatedAt = now
         };
         await _unitOfWork.Stamps.AddAsync(stamp);

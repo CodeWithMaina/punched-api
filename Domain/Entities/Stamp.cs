@@ -50,6 +50,15 @@ public class Stamp : BaseEntity
     [MaxLength(20)]
     public string? Source { get; set; }
 
+    /// <summary>
+    /// UTC timestamp when this stamp became active/verified. Null means the stamp
+    /// is still LOCKED (pending) — e.g. a welcome/default stamp that was granted on
+    /// enrollment but has not yet been validated by a real business stamping action.
+    /// Scan stamps are unlocked immediately; the first verified scan unlocks any
+    /// pending enrollment stamps on the same card.
+    /// </summary>
+    public DateTime? UnlockedAt { get; set; }
+
     // ── Navigation ──────────────────────────────────────────
     /// <summary>
     /// The loyalty card this stamp is recorded on.

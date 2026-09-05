@@ -327,8 +327,127 @@ public class LoyaltyCardResponse
     [JsonPropertyName("rewardExpiresAt")]
     public DateTime? RewardExpiresAt { get; set; }
 
+    /// <summary>
+    /// Number of stamps on this card that are still LOCKED (pending verification) —
+    /// welcome/default stamps granted on enrollment that have not yet been validated
+    /// by a real business stamping action.
+    /// </summary>
+    [JsonPropertyName("lockedStamps")]
+    public int LockedStamps { get; set; }
+
     [JsonPropertyName("program")]
     public LoyaltyProgramResponse Program { get; set; } = null!;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PUBLIC BUSINESS PROFILE DTOs (customer-facing discovery page)
+// ═══════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Public, customer-safe business profile served through the business share
+/// link / QR discovery flow. Deliberately excludes internal data such as the
+/// M-Pesa number, owner identity, and subscription details.
+/// </summary>
+public class PublicBusinessProfileResponse
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("category")]
+    public string Category { get; set; } = string.Empty;
+
+    [JsonPropertyName("location")]
+    public string Location { get; set; } = string.Empty;
+
+    [JsonPropertyName("description")]
+    public string? Description { get; set; }
+
+    [JsonPropertyName("logoUrl")]
+    public string? LogoUrl { get; set; }
+
+    [JsonPropertyName("phoneNumber")]
+    public string? PhoneNumber { get; set; }
+
+    [JsonPropertyName("email")]
+    public string? Email { get; set; }
+
+    /// <summary>Whether the business has the appointments module enabled.</summary>
+    [JsonPropertyName("hasAppointments")]
+    public bool HasAppointments { get; set; }
+
+    /// <summary>Whether the business has loyalty/stamps enabled with an active program.</summary>
+    [JsonPropertyName("hasLoyalty")]
+    public bool HasLoyalty { get; set; }
+
+    /// <summary>Whether the business runs an active referral program.</summary>
+    [JsonPropertyName("hasReferralProgram")]
+    public bool HasReferralProgram { get; set; }
+
+    /// <summary>Active loyalty program summary (null when loyalty is disabled/no active program).</summary>
+    [JsonPropertyName("loyaltyProgram")]
+    public PublicLoyaltyProgramSummary? LoyaltyProgram { get; set; }
+}
+
+public class PublicLoyaltyProgramSummary
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("stampsRequired")]
+    public int StampsRequired { get; set; }
+
+    [JsonPropertyName("rewardDescription")]
+    public string RewardDescription { get; set; } = string.Empty;
+
+    [JsonPropertyName("defaultEnrollmentStamps")]
+    public int DefaultEnrollmentStamps { get; set; }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  BUSINESS REFERRAL TRACKING DTOs
+// ═══════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Referral activity overview for a business owner: how many people opened/
+/// joined through referrals and where each referral sits in its lifecycle.
+/// </summary>
+public class BusinessReferralOverviewResponse
+{
+    [JsonPropertyName("totalReferrals")]
+    public int TotalReferrals { get; set; }
+
+    [JsonPropertyName("pendingReferrals")]
+    public int PendingReferrals { get; set; }
+
+    [JsonPropertyName("activatedReferrals")]
+    public int ActivatedReferrals { get; set; }
+
+    [JsonPropertyName("qualifiedReferrals")]
+    public int QualifiedReferrals { get; set; }
+
+    [JsonPropertyName("rewardedReferrals")]
+    public int RewardedReferrals { get; set; }
+
+    [JsonPropertyName("expiredReferrals")]
+    public int ExpiredReferrals { get; set; }
+
+    /// <summary>Percentage of non-expired referrals that reached Qualified/Rewarded.</summary>
+    [JsonPropertyName("conversionRate")]
+    public double ConversionRate { get; set; }
+
+    /// <summary>Total referral links created for this business.</summary>
+    [JsonPropertyName("totalReferralLinks")]
+    public int TotalReferralLinks { get; set; }
+
+    /// <summary>Total anonymous and authenticated opens across the business's referral links.</summary>
+    [JsonPropertyName("totalLinkOpens")]
+    public int TotalLinkOpens { get; set; }
+
+    [JsonPropertyName("recentReferrals")]
+    public List<ReferralResponse> RecentReferrals { get; set; } = new();
 }
 
 // ═══════════════════════════════════════════════════════════════

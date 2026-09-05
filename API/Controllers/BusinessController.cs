@@ -71,6 +71,22 @@ public partial class BusinessController : ControllerBase
     }
 
     /// <summary>
+    /// Get a business's public, customer-safe profile — used by the business
+    /// share link and QR discovery flow. Excludes internal data (M-Pesa number,
+    /// owner, subscription) and only advertises enabled features.
+    /// </summary>
+    [HttpGet("public/{businessId:guid}")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<PublicBusinessProfileResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetPublicProfile(Guid businessId)
+    {
+        var result = await _businessService.GetPublicProfileAsync(businessId);
+        if (!result.Success) return NotFound(result);
+        return Ok(result);
+    }
+
+    /// <summary>
     /// Create a new business for the authenticated Business-role user.
     /// </summary>
     [HttpPost]

@@ -16,6 +16,7 @@ public partial class BusinessService : IBusinessService
     private readonly IInsightService _insightService;
     private readonly IBusinessScopeResolver _businessScopeResolver;
     private readonly ISubscriptionProvisioningService _subscriptionProvisioning;
+    private readonly IModuleEntitlementService _moduleEntitlementService;
     private readonly ILogger<BusinessService> _logger;
 
     public BusinessService(
@@ -24,6 +25,7 @@ public partial class BusinessService : IBusinessService
         IInsightService insightService,
         IBusinessScopeResolver businessScopeResolver,
         ISubscriptionProvisioningService subscriptionProvisioning,
+        IModuleEntitlementService moduleEntitlementService,
         ILogger<BusinessService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -31,7 +33,63 @@ public partial class BusinessService : IBusinessService
         _insightService = insightService;
         _businessScopeResolver = businessScopeResolver;
         _subscriptionProvisioning = subscriptionProvisioning;
+        _moduleEntitlementService = moduleEntitlementService;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Public, customer-safe business profile used by the business share link
+    /// and QR discovery flow. Only exposes data intended for customers and only
+    /// advertises features the business actually has enabled (appointments,
+    /// loyalty, referral program).
+    /// </summary>
+    public async Task<ApiResponse<PublicBusinessProfileResponse>> GetPublicProfileAsync(Guid businessId)
+    {
+        try
+        {
+            var business = await _context.Businesses
+                .AsNoTracking()
+                .Include(b => b.LoyaltyPrograms)
+                .Include(b => b.ReferralProgram)
+                .FirstOrDefaultAsync(b => b.Id == businessId && !b.IsDeleted);
+
+            if (business == null)
+                return ApiResponse<PublicBusinessProfileResponse>.Fail("NOT_FOUND", "Business not found.");
+
+            var moduleKeys = await _moduleEntitlementService.GetEffectiveModuleKeysAsync(businessId);
+
+            var activeProgram = business.LoyaltyPrograms
+                .Where(p => p.IsActive && p.Status == ProgramStatus.Active)
+                .OrderByDescending(p => p.CreatedAt)
+                .FirstOrDefault();
+
+            return ApiResponse<PublicBusinessProfileResponse>.Ok(new PublicBusinessProfileResponse
+            {
+                Id = business.Id,
+                Name = business.Name,
+                Category = business.Category,
+                Location = business.Location,
+                Description = business.Description,
+                LogoUrl = business.LogoUrl,
+                PhoneNumber = business.PhoneNumber,
+                Email = business.Email,
+                HasAppointments = moduleKeys.Contains("appointments"),
+                HasLoyalty = moduleKeys.Contains("loyalty") && activeProgram != null,
+                HasReferralProgram = business.ReferralProgram is { IsActive: true },
+                LoyaltyProgram = activeProgram == null ? null : new PublicLoyaltyProgramSummary
+                {
+                    Name = activeProgram.Name,
+                    StampsRequired = activeProgram.StampsRequired,
+                    RewardDescription = activeProgram.RewardDescription,
+                    DefaultEnrollmentStamps = activeProgram.DefaultEnrollmentStamps
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error loading public profile for business {BusinessId}", businessId);
+            return ApiResponse<PublicBusinessProfileResponse>.Fail("LOAD_FAILED", "Failed to load business profile.");
+        }
     }
 
     public async Task<ApiResponse<BusinessResponse>> CreateBusinessAsync(Guid ownerId, CreateBusinessRequest request)

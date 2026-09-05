@@ -8,6 +8,7 @@ public interface IBusinessService
     Task<ApiResponse<BusinessResponse>> GetMyBusinessAsync(Guid ownerId);
     Task<ApiResponse<BusinessResponse>> UpdateMyBusinessAsync(Guid ownerId, UpdateBusinessRequest request);
     Task<ApiResponse<BusinessResponse>> GetBusinessByIdAsync(Guid businessId);
+    Task<ApiResponse<PublicBusinessProfileResponse>> GetPublicProfileAsync(Guid businessId);
     Task<ApiResponse<List<BusinessResponse>>> ListBusinessesAsync(string? category, string? search, int page, int pageSize);
     Task<ApiResponse<PaginatedResponse<BusinessCustomerResponse>>> GetBusinessCustomersAsync(
         Guid ownerId,

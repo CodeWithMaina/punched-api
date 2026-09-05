@@ -82,6 +82,15 @@ public class ReferralController : ControllerBase
         return result.Success ? Ok(result) : NotFound(result);
     }
 
+    /// <summary>Records an anonymous referral-link visit before sign-in.</summary>
+    [HttpPost("links/{code}/open")]
+    [AllowAnonymous]
+    public async Task<IActionResult> TrackLinkOpen(string code)
+    {
+        var result = await _referralService.TrackLinkOpenAsync(code);
+        return result.Success ? Ok(result) : NotFound(result);
+    }
+
     // ── Referral Resolution ─────────────────────────────────
 
     /// <summary>Resolve a referral code — creates referral record and auto-enrolls referee.</summary>
@@ -132,6 +141,21 @@ public class ReferralController : ControllerBase
 
         var result = await _referralService.GetMyStatsAsync(userId.Value);
         return Ok(result);
+    }
+
+    /// <summary>
+    /// Referral activity overview for the authenticated business owner:
+    /// referral counts by lifecycle stage, conversion rate and recent activity.
+    /// </summary>
+    [HttpGet("business")]
+    [Authorize(Roles = "Business")]
+    public async Task<IActionResult> GetBusinessReferrals()
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _referralService.GetBusinessReferralsAsync(userId.Value);
+        return result.Success ? Ok(result) : BadRequest(result);
     }
 
     private Guid? GetUserId()

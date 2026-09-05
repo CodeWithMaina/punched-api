@@ -127,6 +127,7 @@ public sealed class BusinessAnalyticsCadenceTests : IAsyncLifetime
         Mock.Of<IInsightService>(),
         Mock.Of<IBusinessScopeResolver>(),
         new SubscriptionProvisioningService(context, NullLogger<SubscriptionProvisioningService>.Instance),
+        Mock.Of<IModuleEntitlementService>(),
         NullLogger<BusinessService>.Instance);
 
     private async Task ResetAsync()

@@ -168,6 +168,25 @@ public class ReferralService : IReferralService
         return ApiResponse<ReferralLinkResponse>.Ok(MapLink(link));
     }
 
+    public async Task<ApiResponse<bool>> TrackLinkOpenAsync(string code)
+    {
+        var normalizedCode = code.Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(normalizedCode))
+            return ApiResponse<bool>.Fail("INVALID_CODE", "Referral code is required.");
+
+        var openedAt = DateTime.UtcNow;
+        var updated = await _context.ReferralLinks
+            .Where(link => link.Code == normalizedCode && link.IsActive)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(link => link.OpenCount, link => link.OpenCount + 1)
+                .SetProperty(link => link.FirstOpenedAt, link => link.FirstOpenedAt ?? openedAt)
+                .SetProperty(link => link.LastOpenedAt, openedAt));
+
+        return updated == 1
+            ? ApiResponse<bool>.Ok(true)
+            : ApiResponse<bool>.Fail("INVALID_CODE", "Referral code is invalid or expired.");
+    }
+
     // ═══════════════════════════════════════════════════════════
     //  REFERRAL RESOLUTION (Referee clicks link)
     // ═══════════════════════════════════════════════════════════
@@ -423,6 +442,63 @@ public class ReferralService : IReferralService
     }
 
     // ═══════════════════════════════════════════════════════════
+    //  BUSINESS REFERRAL TRACKING (Business Owner)
+    // ═══════════════════════════════════════════════════════════
+
+    public async Task<ApiResponse<BusinessReferralOverviewResponse>> GetBusinessReferralsAsync(Guid ownerId)
+    {
+        try
+        {
+            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            if (business == null)
+                return ApiResponse<BusinessReferralOverviewResponse>.Fail("NO_BUSINESS", "You don't have a registered business.");
+
+            var now = DateTime.UtcNow;
+            var referrals = await _context.Referrals
+                .Include(r => r.Referrer)
+                .Include(r => r.Referee)
+                .Include(r => r.Business)
+                .Where(r => r.BusinessId == business.Id)
+                .OrderByDescending(r => r.CreatedAt)
+                .ToListAsync();
+
+            var totalLinks = await _unitOfWork.ReferralLinks
+                .CountAsync(rl => rl.BusinessId == business.Id);
+            var totalLinkOpens = await _context.ReferralLinks
+                .Where(rl => rl.BusinessId == business.Id)
+                .SumAsync(rl => (int?)rl.OpenCount) ?? 0;
+
+            int Count(ReferralStatus status) => referrals.Count(r => r.Status == status);
+
+            // A referral that has passed its expiry but not yet been marked counts as expired.
+            var implicitlyExpired = referrals.Count(r =>
+                r.Status != ReferralStatus.Rewarded && r.ExpiresAt < now);
+
+            var converted = Count(ReferralStatus.Qualified) + Count(ReferralStatus.Rewarded);
+            var decided = referrals.Count - implicitlyExpired;
+
+            return ApiResponse<BusinessReferralOverviewResponse>.Ok(new BusinessReferralOverviewResponse
+            {
+                TotalReferrals = referrals.Count,
+                PendingReferrals = Count(ReferralStatus.Pending),
+                ActivatedReferrals = Count(ReferralStatus.Activated),
+                QualifiedReferrals = Count(ReferralStatus.Qualified),
+                RewardedReferrals = Count(ReferralStatus.Rewarded),
+                ExpiredReferrals = Count(ReferralStatus.Expired) + implicitlyExpired,
+                ConversionRate = decided > 0 ? Math.Round(converted * 100.0 / decided, 1) : 0,
+                TotalReferralLinks = totalLinks,
+                TotalLinkOpens = totalLinkOpens,
+                RecentReferrals = referrals.Take(20).Select(MapReferral).ToList()
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error loading business referral overview for owner {OwnerId}", ownerId);
+            return ApiResponse<BusinessReferralOverviewResponse>.Fail("LOAD_FAILED", "Failed to load referral activity.");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
     //  PRIVATE HELPERS
     // ═══════════════════════════════════════════════════════════
 
@@ -519,6 +595,9 @@ public class ReferralService : IReferralService
         Code = link.Code,
         ReferralUrl = $"https://punched.app/refer/{link.Code}",
         SuccessfulReferrals = link.SuccessfulReferrals,
+        OpenCount = link.OpenCount,
+        FirstOpenedAt = link.FirstOpenedAt,
+        LastOpenedAt = link.LastOpenedAt,
         IsActive = link.IsActive,
         CreatedAt = link.CreatedAt
     };

@@ -40,6 +40,10 @@ public class StampConfiguration : IEntityTypeConfiguration<Stamp>
             .HasMaxLength(20)
             .HasColumnName("source");
 
+        builder.Property(e => e.UnlockedAt)
+            .IsRequired(false)
+            .HasColumnName("unlocked_at");
+
         builder.Property(e => e.CreatedAt)
             .HasColumnName("created_at");
 

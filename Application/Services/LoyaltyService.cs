@@ -518,7 +518,9 @@ public class LoyaltyService : ILoyaltyService
 
             await _unitOfWork.SaveChangesAsync();
 
-            return ApiResponse<LoyaltyCardResponse>.Ok(MapCard(card, business, activeProgram));
+            // All welcome stamps start locked — they unlock after the customer's
+            // first verified business stamping action.
+            return ApiResponse<LoyaltyCardResponse>.Ok(MapCard(card, business, activeProgram, welcomeStamps));
         }
         catch (Exception ex)
         {
@@ -536,7 +538,10 @@ public class LoyaltyService : ILoyaltyService
             .OrderByDescending(c => c.LastStampAt ?? c.EnrolledAt)
             .ToListAsync();
 
-        var result = cards.Select(c => MapCard(c, c.Business, c.Program)).ToList();
+        var lockedCounts = await GetLockedStampCountsAsync(cards.Select(c => c.Id).ToList());
+
+        var result = cards.Select(c => MapCard(c, c.Business, c.Program,
+            lockedCounts.GetValueOrDefault(c.Id))).ToList();
         return ApiResponse<List<LoyaltyCardResponse>>.Ok(result);
     }
 
@@ -550,7 +555,26 @@ public class LoyaltyService : ILoyaltyService
         if (card == null)
             return ApiResponse<LoyaltyCardResponse>.Fail("NOT_FOUND", "Loyalty card not found.");
 
-        return ApiResponse<LoyaltyCardResponse>.Ok(MapCard(card, card.Business, card.Program));
+        var lockedCounts = await GetLockedStampCountsAsync(new List<Guid> { card.Id });
+        return ApiResponse<LoyaltyCardResponse>.Ok(MapCard(card, card.Business, card.Program,
+            lockedCounts.GetValueOrDefault(card.Id)));
+    }
+
+    /// <summary>
+    /// Counts locked (pending verification) welcome stamps per card. A welcome
+    /// stamp is locked while <c>Source == "enrollment" && UnlockedAt == null</c>.
+    /// </summary>
+    private async Task<Dictionary<Guid, int>> GetLockedStampCountsAsync(List<Guid> cardIds)
+    {
+        if (cardIds.Count == 0) return new Dictionary<Guid, int>();
+
+        return await _context.Stamps
+            .Where(s => cardIds.Contains(s.CardId)
+                && s.Source == StampSource.Enrollment
+                && s.UnlockedAt == null)
+            .GroupBy(s => s.CardId)
+            .Select(g => new { CardId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.CardId, x => x.Count);
     }
 
     private static LoyaltyProgramResponse MapProgram(LoyaltyProgram p) => new()
@@ -579,7 +603,7 @@ public class LoyaltyService : ILoyaltyService
         CreatedAt = p.CreatedAt
     };
 
-    private static LoyaltyCardResponse MapCard(LoyaltyCard c, Business b, LoyaltyProgram p) => new()
+    private static LoyaltyCardResponse MapCard(LoyaltyCard c, Business b, LoyaltyProgram p, int lockedStamps = 0) => new()
     {
         Id = c.Id,
         CustomerId = c.CustomerId,
@@ -593,6 +617,7 @@ public class LoyaltyService : ILoyaltyService
         LastStampAt = c.LastStampAt,
         EnrolledAt = c.EnrolledAt,
         RewardExpiresAt = c.RewardExpiresAt,
+        LockedStamps = lockedStamps,
         Program = MapProgram(p)
     };
 }

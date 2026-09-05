@@ -8,6 +8,9 @@ public class ReferralLink : BaseEntity
     [Required] public Guid BusinessId { get; set; }
     [Required][MaxLength(12)] public string Code { get; set; } = string.Empty;
     [Required][Range(0, 10000)] public int SuccessfulReferrals { get; set; } = 0;
+    [Required][Range(0, int.MaxValue)] public int OpenCount { get; set; } = 0;
+    public DateTime? FirstOpenedAt { get; set; }
+    public DateTime? LastOpenedAt { get; set; }
     public bool IsActive { get; set; } = true;
 
     // Navigation

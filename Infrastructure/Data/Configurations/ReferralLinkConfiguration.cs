@@ -30,6 +30,16 @@ public class ReferralLinkConfiguration : IEntityTypeConfiguration<ReferralLink>
             .HasDefaultValue(0)
             .HasColumnName("successful_referrals");
 
+        builder.Property(e => e.OpenCount)
+            .HasDefaultValue(0)
+            .HasColumnName("open_count");
+
+        builder.Property(e => e.FirstOpenedAt)
+            .HasColumnName("first_opened_at");
+
+        builder.Property(e => e.LastOpenedAt)
+            .HasColumnName("last_opened_at");
+
         builder.Property(e => e.IsActive)
             .HasDefaultValue(true)
             .HasColumnName("is_active");
@@ -41,6 +51,7 @@ public class ReferralLinkConfiguration : IEntityTypeConfiguration<ReferralLink>
         builder.ToTable(t =>
         {
             t.HasCheckConstraint("chk_successful_referrals_gte_zero", "\"successful_referrals\" >= 0");
+            t.HasCheckConstraint("chk_referral_link_open_count_gte_zero", "\"open_count\" >= 0");
         });
 
         // Unique code globally

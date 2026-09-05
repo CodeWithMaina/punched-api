@@ -33,7 +33,7 @@ Configure seeding in `appsettings.Development.json` or environment-specific sett
 }
 ```
 
-`Enabled` must be true for seeding to run.
+`Enabled` must be true for seeding to run. It is disabled by default so API startup only applies pending migrations; enable it temporarily only when intentionally generating demo data.
 
 ## Execution Modes
 
@@ -167,3 +167,7 @@ To add a new module:
 ## Notes
 
 The current schema supports loyalty and referral domains but does not yet include appointments, invoices/payments ledger, notifications, reviews, inventory, or audit-log tables. See `docs/seed-schema-capability-report.md` and `docs/seed-scaffold-proposals.md`.
+
+
+dotnet run --project "PunchedApi\PunchedApi.csproj" --launch-profile http
+dotnet run --project "PunchedApi\PunchedApi.csproj" -- seed
