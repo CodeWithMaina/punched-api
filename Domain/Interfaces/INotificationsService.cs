@@ -14,4 +14,10 @@ public interface INotificationsService
 
     /// <summary>Generic notification creation — used for customer-facing events (e.g. card adjustments).</summary>
     Task CreateAsync(Guid userId, Guid? businessId, string type, int stampsCount = 0);
+
+    /// <summary>
+    /// Generic notification creation with an appointment context so clients can
+    /// deep-link to the affected appointment (reschedule requests/decisions).
+    /// </summary>
+    Task CreateAsync(Guid userId, Guid? businessId, string type, Guid appointmentId, int stampsCount = 0);
 }

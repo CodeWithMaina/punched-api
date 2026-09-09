@@ -21,6 +21,7 @@ public class AppointmentService : IAppointmentService
     private readonly AppointmentAvailabilityService _availability;
     private readonly IMapper _mapper;
     private readonly IPermissionService _permissionService;
+    private readonly INotificationsService _notifications;
     private readonly ILogger<AppointmentService> _logger;
 
     public AppointmentService(
@@ -29,6 +30,7 @@ public class AppointmentService : IAppointmentService
         AppointmentAvailabilityService availability,
         IMapper mapper,
         IPermissionService permissionService,
+        INotificationsService notifications,
         ILogger<AppointmentService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -36,6 +38,7 @@ public class AppointmentService : IAppointmentService
         _availability = availability;
         _mapper = mapper;
         _permissionService = permissionService;
+        _notifications = notifications;
         _logger = logger;
     }
 
@@ -189,6 +192,11 @@ public class AppointmentService : IAppointmentService
         var manageGuard = StaffManagePermissionGuard(role);
         if (manageGuard != null) return manageGuard;
 
+        // Customers never modify the appointment directly — they submit a
+        // reschedule REQUEST that the business must confirm (approve/reject).
+        if (IsRole(role, "Customer"))
+            return await CreateRescheduleRequestAsync(callerUserId, appointment, request);
+
         // Determine effective services (replace when provided, else keep current).
         Guid[] serviceIds;
         if (request.ServiceIds != null && request.ServiceIds.Length > 0)
@@ -278,6 +286,206 @@ public class AppointmentService : IAppointmentService
     }
 
     // ═══════════════════════════════════════════════════════════
+    //  RESCHEDULE REQUESTS (customer → business confirmation)
+    // ═══════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Customer-initiated reschedule: validates the proposal (real availability),
+    /// stores it as a PENDING RescheduleRequest, and notifies the business owner.
+    /// The appointment itself is left untouched until the business confirms.
+    /// </summary>
+    private async Task<ApiResponse<AppointmentResponse>> CreateRescheduleRequestAsync(
+        Guid customerId, Appointment appointment, RescheduleAppointmentRequest request)
+    {
+        if (request.ScheduledAt <= DateTime.UtcNow)
+            return ApiResponse<AppointmentResponse>.Fail("VALIDATION_ERROR", "The new time must be in the future.");
+
+        // Only one open proposal per appointment.
+        var open = await _context.RescheduleRequests
+            .Where(r => r.AppointmentId == appointment.Id && r.Status == "pending")
+            .OrderByDescending(r => r.CreatedAt)
+            .FirstOrDefaultAsync();
+        if (open != null)
+        {
+            var sameTime = Math.Abs((open.ProposedScheduledAt - request.ScheduledAt).TotalMinutes) < 1;
+            if (!sameTime)
+                return ApiResponse<AppointmentResponse>.Fail(
+                    "RESCHEDULE_PENDING",
+                    "A reschedule request is already awaiting confirmation. Wait for the business decision.");
+            return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
+        }
+
+        // Determine effective services (replace when provided, else keep current).
+        Guid[] serviceIds;
+        if (request.ServiceIds != null && request.ServiceIds.Length > 0)
+            serviceIds = request.ServiceIds;
+        else
+            serviceIds = appointment.Resources.Select(r => r.ServiceCatalogItemId).ToArray();
+
+        var (services, svcError, svcMsg) = await ValidateServicesAsync(appointment.BusinessId, serviceIds);
+        if (svcError != null)
+            return ApiResponse<AppointmentResponse>.Fail(svcError, svcMsg!);
+
+        var effectiveStaffId = request.StaffUserId ?? appointment.StaffUserId;
+        var (staff, staffError, staffMsg) = await ResolveStaffAsync(appointment.BusinessId, effectiveStaffId, serviceIds);
+        if (staffError != null)
+            return ApiResponse<AppointmentResponse>.Fail(staffError, staffMsg!);
+
+        var scheduledAt = request.ScheduledAt;
+        var endAt = scheduledAt.AddMinutes(services.Sum(s => s.DurationMinutes));
+
+        // Real availability: the proposed slot must not collide with other bookings.
+        if (effectiveStaffId.HasValue)
+        {
+            var overlaps = await _context.Appointments
+                .Where(a => a.BusinessId == appointment.BusinessId && a.StaffUserId == effectiveStaffId.Value
+                    && a.ScheduledAt < endAt && a.EndAt > scheduledAt && a.Id != appointment.Id)
+                .AnyAsync();
+            if (overlaps)
+                return ApiResponse<AppointmentResponse>.Fail("OVERBOOKING", "The requested slot is already booked.");
+        }
+
+        var snapshot = services
+            .Select((s, i) => new AppointmentServiceSnapshot
+            {
+                ServiceCatalogItemId = s.Id,
+                Name = s.Name,
+                DurationMinutes = s.DurationMinutes,
+                Price = s.Price ?? 0,
+                SortOrder = i
+            })
+            .ToList();
+
+        var rescheduleRequest = new RescheduleRequest
+        {
+            Id = Guid.NewGuid(),
+            AppointmentId = appointment.Id,
+            RequestedByUserId = customerId,
+            ProposedScheduledAt = scheduledAt,
+            ProposedEndAt = endAt,
+            ProposedStaffUserId = effectiveStaffId,
+            ProposedServicesJson = System.Text.Json.JsonSerializer.Serialize(snapshot),
+            Status = "pending",
+            CreatedAt = DateTime.UtcNow
+        };
+        await _context.RescheduleRequests.AddAsync(rescheduleRequest);
+        await _unitOfWork.SaveChangesAsync();
+
+        // Notify the business owner for confirmation.
+        var ownerId = await _context.Businesses
+            .Where(b => b.Id == appointment.BusinessId)
+            .Select(b => b.OwnerId)
+            .FirstOrDefaultAsync();
+        if (ownerId != Guid.Empty && ownerId != null)
+        {
+            await _notifications.CreateAsync(
+                ownerId.Value, appointment.BusinessId, "RescheduleRequested", appointment.Id);
+        }
+
+        return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
+    }
+
+    /// <summary>Business owner approves the pending reschedule request and the changes are applied.</summary>
+    public async Task<ApiResponse<AppointmentResponse>> ApproveRescheduleRequestAsync(
+        Guid callerUserId, string role, Guid appointmentId)
+    {
+        if (!IsRole(role, "Business"))
+            return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "Only the business can confirm a reschedule request.");
+
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == callerUserId);
+        if (business == null)
+            return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "No business found for this account.");
+
+        var appointment = await LoadAsync(appointmentId);
+        if (appointment == null || appointment.BusinessId != business.Id)
+            return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "Appointment not found.");
+
+        var rescheduleRequest = await LatestPendingRequestAsync(appointmentId);
+        if (rescheduleRequest == null)
+            return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "No pending reschedule request for this appointment.");
+
+        var snapshot = System.Text.Json.JsonSerializer.Deserialize<List<AppointmentServiceSnapshot>>(
+            rescheduleRequest.ProposedServicesJson) ?? new List<AppointmentServiceSnapshot>();
+
+        appointment.ScheduledAt = rescheduleRequest.ProposedScheduledAt;
+        appointment.EndAt = rescheduleRequest.ProposedEndAt;
+        appointment.StaffUserId = rescheduleRequest.ProposedStaffUserId;
+
+        if (snapshot.Count > 0)
+        {
+            _context.AppointmentResources.RemoveRange(appointment.Resources);
+            var newResources = snapshot.Select((s, i) => new AppointmentResource
+            {
+                Id = Guid.NewGuid(),
+                AppointmentId = appointment.Id,
+                ServiceCatalogItemId = s.ServiceCatalogItemId,
+                Name = s.Name,
+                DurationMinutes = s.DurationMinutes,
+                Price = s.Price,
+                SortOrder = i,
+                CreatedAt = DateTime.UtcNow
+            }).ToList();
+            appointment.Resources = newResources;
+            _context.AppointmentResources.AddRange(newResources);
+        }
+
+        _unitOfWork.Appointments.Update(appointment);
+
+        rescheduleRequest.Status = "approved";
+        rescheduleRequest.ResolvedAt = DateTime.UtcNow;
+        rescheduleRequest.ResolvedByUserId = callerUserId;
+
+        await _unitOfWork.AppointmentStatusHistory.AddAsync(new AppointmentStatusHistory
+        {
+            Id = Guid.NewGuid(),
+            AppointmentId = appointment.Id,
+            Status = appointment.Status,
+            ChangedAt = DateTime.UtcNow,
+            ChangedByUserId = callerUserId,
+            Note = "Reschedule request approved",
+            CreatedAt = DateTime.UtcNow
+        });
+
+        await _unitOfWork.SaveChangesAsync();
+
+        await _notifications.CreateAsync(
+            appointment.CustomerId, appointment.BusinessId, "RescheduleApproved", appointment.Id);
+
+        var updated = await LoadAsync(appointmentId);
+        return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(updated!));
+    }
+
+    /// <summary>Business owner rejects the pending reschedule request; the appointment is unchanged.</summary>
+    public async Task<ApiResponse<AppointmentResponse>> RejectRescheduleRequestAsync(
+        Guid callerUserId, string role, Guid appointmentId)
+    {
+        if (!IsRole(role, "Business"))
+            return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "Only the business can reject a reschedule request.");
+
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == callerUserId);
+        if (business == null)
+            return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "No business found for this account.");
+
+        var appointment = await LoadAsync(appointmentId);
+        if (appointment == null || appointment.BusinessId != business.Id)
+            return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "Appointment not found.");
+
+        var rescheduleRequest = await LatestPendingRequestAsync(appointmentId);
+        if (rescheduleRequest == null)
+            return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "No pending reschedule request for this appointment.");
+
+        rescheduleRequest.Status = "rejected";
+        rescheduleRequest.ResolvedAt = DateTime.UtcNow;
+        rescheduleRequest.ResolvedByUserId = callerUserId;
+        await _unitOfWork.SaveChangesAsync();
+
+        await _notifications.CreateAsync(
+            appointment.CustomerId, appointment.BusinessId, "RescheduleRejected", appointment.Id);
+
+        return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
+    }
+
+    // ═══════════════════════════════════════════════════════════
     //  STATUS TRANSITIONS
     // ═══════════════════════════════════════════════════════════
 
@@ -353,9 +561,15 @@ public class AppointmentService : IAppointmentService
             .ToListAsync();
 
         var latestChanges = await GetLatestStatusChangesAsync(appointments.Select(a => a.Id));
+        var pendingRequests = await GetPendingRescheduleRequestsAsync(appointments.Select(a => a.Id));
 
         var result = appointments
-            .Select(a => MapResponse(a, latestChanges))
+            .Select(a =>
+            {
+                var r = MapResponse(a, latestChanges);
+                r.PendingReschedule = MapPendingReschedule(pendingRequests.GetValueOrDefault(a.Id));
+                return r;
+            })
             .ToList();
 
         return ApiResponse<List<AppointmentResponse>>.Ok(result);
@@ -410,7 +624,15 @@ public class AppointmentService : IAppointmentService
             .ToListAsync();
 
         var latestChanges = await GetLatestStatusChangesAsync(items.Select(a => a.Id));
-        var responses = items.Select(a => MapResponse(a, latestChanges)).ToList();
+        var pendingRequests = await GetPendingRescheduleRequestsAsync(items.Select(a => a.Id));
+        var responses = items
+            .Select(a =>
+            {
+                var r = MapResponse(a, latestChanges);
+                r.PendingReschedule = MapPendingReschedule(pendingRequests.GetValueOrDefault(a.Id));
+                return r;
+            })
+            .ToList();
 
         return ApiResponse<PaginatedResponse<AppointmentResponse>>.Ok(new PaginatedResponse<AppointmentResponse>
         {
@@ -438,7 +660,15 @@ public class AppointmentService : IAppointmentService
         var items = await query.OrderByDescending(a => a.ScheduledAt).ToListAsync();
 
         var latestChanges = await GetLatestStatusChangesAsync(items.Select(a => a.Id));
-        var responses = items.Select(a => MapResponse(a, latestChanges)).ToList();
+        var pendingRequests = await GetPendingRescheduleRequestsAsync(items.Select(a => a.Id));
+        var responses = items
+            .Select(a =>
+            {
+                var r = MapResponse(a, latestChanges);
+                r.PendingReschedule = MapPendingReschedule(pendingRequests.GetValueOrDefault(a.Id));
+                return r;
+            })
+            .ToList();
 
         return ApiResponse<List<AppointmentResponse>>.Ok(responses);
     }
@@ -611,6 +841,54 @@ public class AppointmentService : IAppointmentService
         return (staff, null, null);
     }
 
+    private Task<RescheduleRequest?> LatestPendingRequestAsync(Guid appointmentId) =>
+        _context.RescheduleRequests
+            .Where(r => r.AppointmentId == appointmentId && r.Status == "pending")
+            .OrderByDescending(r => r.CreatedAt)
+            .FirstOrDefaultAsync();
+
+    private static AppointmentRescheduleRequestResponse? MapPendingReschedule(RescheduleRequest? request)
+    {
+        if (request == null) return null;
+        List<AppointmentServiceSnapshot> services;
+        try
+        {
+            services = System.Text.Json.JsonSerializer.Deserialize<List<AppointmentServiceSnapshot>>(
+                request.ProposedServicesJson) ?? new List<AppointmentServiceSnapshot>();
+        }
+        catch
+        {
+            services = new List<AppointmentServiceSnapshot>();
+        }
+
+        return new AppointmentRescheduleRequestResponse
+        {
+            Id = request.Id,
+            ProposedScheduledAt = request.ProposedScheduledAt,
+            ProposedEndAt = request.ProposedEndAt,
+            ProposedStaffUserId = request.ProposedStaffUserId,
+            ProposedServices = services,
+            RequestedAt = request.CreatedAt
+        };
+    }
+
+    /// <summary>Batch-loads pending reschedule requests for a set of appointments.</summary>
+    private async Task<Dictionary<Guid, RescheduleRequest>> GetPendingRescheduleRequestsAsync(
+        IEnumerable<Guid> appointmentIds)
+    {
+        var ids = appointmentIds.ToList();
+        if (ids.Count == 0) return new Dictionary<Guid, RescheduleRequest>();
+
+        var requests = await _context.RescheduleRequests
+            .Where(r => ids.Contains(r.AppointmentId) && r.Status == "pending")
+            .OrderByDescending(r => r.CreatedAt)
+            .ToListAsync();
+
+        return requests
+            .GroupBy(r => r.AppointmentId)
+            .ToDictionary(g => g.Key, g => g.First());
+    }
+
     private async Task<ApiResponse<AppointmentResponse>?> AssertOwnershipAsync(
         Guid callerUserId, string role, Appointment appointment)
     {
@@ -654,6 +932,9 @@ public class AppointmentService : IAppointmentService
             .FirstOrDefaultAsync();
 
         response.UpdatedAt = latest != default ? latest : appointment.CreatedAt;
+
+        var pending = await LatestPendingRequestAsync(appointment.Id);
+        response.PendingReschedule = MapPendingReschedule(pending);
         return response;
     }
 

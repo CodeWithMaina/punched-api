@@ -218,6 +218,24 @@ public partial class BusinessController : ControllerBase
         };
 
 
+    /// <summary>
+    /// Database-first: every business the authenticated customer is associated with.
+    /// Single query UNIONs loyalty_cards + appointments + referral_links for the
+    /// caller and joins the business. Replaces client-side multi-fetch merging.
+    /// </summary>
+    [HttpGet("me/associated")]
+    [Authorize(Roles = "Customer")]
+    [ProducesResponseType(typeof(ApiResponse<List<CustomerAssociatedBusinessResponse>>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetMyAssociatedBusinesses()
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _businessService.GetAssociatedBusinessesAsync(userId.Value);
+        if (!result.Success) return BadRequest(result);
+        return Ok(result);
+    }
+
     private Guid? GetUserId()
     {
         var claim = User.FindFirst("userId")?.Value;

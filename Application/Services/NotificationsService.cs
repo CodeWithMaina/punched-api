@@ -68,6 +68,22 @@ public class NotificationsService : INotificationsService
         await _unitOfWork.SaveChangesAsync();
     }
 
+    public async Task CreateAsync(Guid userId, Guid? businessId, string type, Guid appointmentId, int stampsCount = 0)
+    {
+        await _unitOfWork.Notifications.AddAsync(new Notification
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            BusinessId = businessId,
+            Type = type,
+            AppointmentId = appointmentId,
+            StampsCount = stampsCount,
+            IsRead = false,
+            CreatedAt = DateTime.UtcNow
+        });
+        await _unitOfWork.SaveChangesAsync();
+    }
+
     public async Task MarkReadAsync(Guid userId, Guid? notificationId = null)
     {
         var query = _context.Notifications.Where(n => n.UserId == userId);
@@ -101,6 +117,7 @@ public class NotificationsService : INotificationsService
                 Id = n.Id,
                 Type = n.Type,
                 BusinessId = n.BusinessId,
+                AppointmentId = n.AppointmentId,
                 StampsCount = n.StampsCount,
                 IsRead = n.IsRead,
                 CreatedAt = n.CreatedAt

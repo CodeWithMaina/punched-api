@@ -41,6 +41,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<ServiceCatalogItem> ServiceCatalogItems => Set<ServiceCatalogItem>();
     public DbSet<StaffServiceAssignment> StaffServiceAssignments => Set<StaffServiceAssignment>();
     public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<RescheduleRequest> RescheduleRequests => Set<RescheduleRequest>();
     public DbSet<StaffInvitation> StaffInvitations => Set<StaffInvitation>();
     public DbSet<Module> Modules => Set<Module>();
     public DbSet<SubscriptionPlan> SubscriptionPlans => Set<SubscriptionPlan>();

@@ -181,7 +181,7 @@ public partial class BusinessService : IBusinessService
         return ApiResponse<BusinessResponse>.Ok(MapToResponse(business));
     }
 
-    public async Task<ApiResponse<List<BusinessResponse>>> ListBusinessesAsync(string? category, string? search, int page, int pageSize)
+    public async Task<ApiResponse<PaginatedResponse<BusinessResponse>>> ListBusinessesAsync(string? category, string? search, int page, int pageSize)
     {
         var query = _context.Businesses
             .AsNoTracking()
@@ -196,6 +196,7 @@ public partial class BusinessService : IBusinessService
             query = query.Where(b => EF.Functions.ILike(b.Name, pattern) || EF.Functions.ILike(b.Category, pattern) || (b.Location != null && EF.Functions.ILike(b.Location, pattern)));
         }
 
+        var total = await query.CountAsync();
         var businesses = await query
             .OrderBy(b => b.Name)
             .Skip((page - 1) * pageSize)
@@ -203,7 +204,13 @@ public partial class BusinessService : IBusinessService
             .ToListAsync();
 
         var result = businesses.Select(b => MapToResponse(b)).ToList();
-        return ApiResponse<List<BusinessResponse>>.Ok(result);
+        return ApiResponse<PaginatedResponse<BusinessResponse>>.Ok(new PaginatedResponse<BusinessResponse>
+        {
+            Items = result,
+            TotalCount = total,
+            Page = page,
+            PageSize = pageSize
+        });
     }
 
     public async Task<ApiResponse<PaginatedResponse<BusinessCustomerResponse>>> GetBusinessCustomersAsync(
@@ -1923,6 +1930,70 @@ public partial class BusinessService : IBusinessService
         {
             _logger.LogError(ex, "Error comparing analytics for owner {OwnerId}", ownerId);
             return ApiResponse<BusinessAnalyticsComparisonResponse>.Fail("ANALYTICS_FAILED", "Failed to compare analytics.");
+        }
+    }
+
+    /// <summary>
+    /// Database-first association query. Builds three per-customer ID sets
+    /// (loyalty cards, appointments, referral links) and folds them into a single
+    /// grouped join against Business — one round-trip, no client-side merging.
+    /// </summary>
+    public async Task<ApiResponse<List<CustomerAssociatedBusinessResponse>>> GetAssociatedBusinessesAsync(Guid customerId)
+    {
+        try
+        {
+            // Per-source business-id sets for this customer.
+            var cardIds = _context.LoyaltyCards
+                .Where(c => c.CustomerId == customerId)
+                .Select(c => c.BusinessId);
+
+            var appointmentIds = _context.Appointments
+                .Where(a => a.CustomerId == customerId)
+                .Select(a => a.BusinessId);
+
+            var referralIds = _context.ReferralLinks
+                .Where(r => r.ReferrerId == customerId)
+                .Select(r => r.BusinessId);
+
+            // Union the three sources, then join the business in one query.
+            var union = cardIds
+                .Union(appointmentIds)
+                .Union(referralIds);
+
+            var businesses = await _context.Businesses
+                .AsNoTracking()
+                .Where(b => union.Contains(b.Id) && !b.IsDeleted)
+                .OrderBy(b => b.Name)
+                .ToListAsync();
+
+            var result = businesses.Select(b => new CustomerAssociatedBusinessResponse
+            {
+                Id = b.Id,
+                Name = b.Name,
+                LogoUrl = b.LogoUrl,
+                Category = b.Category,
+                Location = b.Location,
+            }).ToList();
+
+            // Flag association sources. The three ToListAsync calls run as single
+            // IN-clauses against small, indexed sets — cheap and still server-side.
+            var cardSet = new HashSet<Guid>(await cardIds.ToListAsync());
+            var appointmentSet = new HashSet<Guid>(await appointmentIds.ToListAsync());
+            var referralSet = new HashSet<Guid>(await referralIds.ToListAsync());
+
+            foreach (var item in result)
+            {
+                item.ViaCard = cardSet.Contains(item.Id);
+                item.ViaAppointment = appointmentSet.Contains(item.Id);
+                item.ViaReferral = referralSet.Contains(item.Id);
+            }
+
+            return ApiResponse<List<CustomerAssociatedBusinessResponse>>.Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error loading associated businesses for customer {CustomerId}", customerId);
+            return ApiResponse<List<CustomerAssociatedBusinessResponse>>.Fail("ASSOCIATION_FAILED", "Could not load associated businesses.");
         }
     }
 }

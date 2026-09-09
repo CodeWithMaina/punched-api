@@ -22,6 +22,12 @@ public class Notification : BaseEntity
     /// <summary>Stamp count associated with the notification (e.g. stamps to reach goal).</summary>
     public int StampsCount { get; set; }
 
+    /// <summary>
+    /// Optional appointment context. Set for appointment lifecycle notifications
+    /// (reschedule requested/approved/rejected) so clients can deep-link.
+    /// </summary>
+    public Guid? AppointmentId { get; set; }
+
     /// <summary>Whether the user has dismissed/read this notification.</summary>
     public bool IsRead { get; set; } = false;
 }

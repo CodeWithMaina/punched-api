@@ -164,6 +164,36 @@ public class AppointmentResponse
 
     [JsonPropertyName("updatedAt")]
     public DateTime UpdatedAt { get; set; }
+
+    /// <summary>
+    /// Populated while a customer reschedule request awaits business confirmation.
+    /// </summary>
+    [JsonPropertyName("pendingReschedule")]
+    public AppointmentRescheduleRequestResponse? PendingReschedule { get; set; }
+}
+
+/// <summary>
+/// A pending customer reschedule proposal attached to an appointment response.
+/// </summary>
+public class AppointmentRescheduleRequestResponse
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    [JsonPropertyName("proposedScheduledAt")]
+    public DateTime ProposedScheduledAt { get; set; }
+
+    [JsonPropertyName("proposedEndAt")]
+    public DateTime ProposedEndAt { get; set; }
+
+    [JsonPropertyName("proposedStaffUserId")]
+    public Guid? ProposedStaffUserId { get; set; }
+
+    [JsonPropertyName("proposedServices")]
+    public List<AppointmentServiceSnapshot> ProposedServices { get; set; } = new();
+
+    [JsonPropertyName("requestedAt")]
+    public DateTime RequestedAt { get; set; }
 }
 
 /// <summary>

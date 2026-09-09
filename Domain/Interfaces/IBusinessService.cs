@@ -9,7 +9,7 @@ public interface IBusinessService
     Task<ApiResponse<BusinessResponse>> UpdateMyBusinessAsync(Guid ownerId, UpdateBusinessRequest request);
     Task<ApiResponse<BusinessResponse>> GetBusinessByIdAsync(Guid businessId);
     Task<ApiResponse<PublicBusinessProfileResponse>> GetPublicProfileAsync(Guid businessId);
-    Task<ApiResponse<List<BusinessResponse>>> ListBusinessesAsync(string? category, string? search, int page, int pageSize);
+    Task<ApiResponse<PaginatedResponse<BusinessResponse>>> ListBusinessesAsync(string? category, string? search, int page, int pageSize);
     Task<ApiResponse<PaginatedResponse<BusinessCustomerResponse>>> GetBusinessCustomersAsync(
         Guid ownerId,
         string? search,
@@ -55,4 +55,11 @@ Task<ApiResponse<StaffOverviewResponse>> GetStaffOverviewAsync(Guid ownerId);
     Task<ApiResponse<List<StaffShiftResponse>>> GetStaffShiftsAsync(Guid ownerId, Guid staffUserId, DateOnly? from = null, DateOnly? to = null);
     Task<ApiResponse<MessageResponse>> UpsertStaffShiftAsync(Guid ownerId, Guid staffUserId, UpsertStaffShiftRequest request);
     Task<bool> CanAccessBusinessAsync(Guid userId, Guid businessId);
+
+    /// <summary>
+    /// Database-first: every business the customer is associated with, in a single
+    /// query. UNIONs loyalty_cards + appointments + referral_links for the caller,
+    /// then joins the business. No client-side merging of multiple collections.
+    /// </summary>
+    Task<ApiResponse<List<CustomerAssociatedBusinessResponse>>> GetAssociatedBusinessesAsync(Guid customerId);
 }

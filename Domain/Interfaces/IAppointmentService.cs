@@ -18,8 +18,14 @@ public interface IAppointmentService
     /// <summary>Business/Staff booking on behalf of a customer.</summary>
     Task<ApiResponse<AppointmentResponse>> CreateAppointmentOnBehalfAsync(Guid callerUserId, string role, CreateAppointmentOnBehalfRequest request);
 
-    /// <summary>Reschedules an existing appointment inside a transactional overlap guard.</summary>
+    /// <summary>Reschedules an existing appointment inside a transactional overlap guard. Customer calls create a pending request instead.</summary>
     Task<ApiResponse<AppointmentResponse>> RescheduleAsync(Guid callerUserId, string role, Guid appointmentId, RescheduleAppointmentRequest request);
+
+    /// <summary>Business confirms a customer's pending reschedule request; the proposed changes are applied.</summary>
+    Task<ApiResponse<AppointmentResponse>> ApproveRescheduleRequestAsync(Guid callerUserId, string role, Guid appointmentId);
+
+    /// <summary>Business rejects a customer's pending reschedule request; the appointment is unchanged.</summary>
+    Task<ApiResponse<AppointmentResponse>> RejectRescheduleRequestAsync(Guid callerUserId, string role, Guid appointmentId);
 
     /// <summary>Cancels an existing appointment.</summary>
     Task<ApiResponse<AppointmentResponse>> CancelAsync(Guid callerUserId, string role, Guid appointmentId, CancelAppointmentRequest request);

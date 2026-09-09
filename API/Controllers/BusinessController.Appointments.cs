@@ -91,6 +91,34 @@ public partial class BusinessController
         return result.Success ? Ok(result) : MapFailure(result);
     }
 
+    /// <summary>Owner: confirm a customer's pending reschedule request (applies the proposed changes).</summary>
+    [RequireModule("appointments")]
+    [HttpPost("me/appointments/{id:guid}/reschedule-request/approve")]
+    [Authorize(Roles = "Business")]
+    [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> ApproveRescheduleRequest(Guid id)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.ApproveRescheduleRequestAsync(userId.Value, "Business", id);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>Owner: reject a customer's pending reschedule request (appointment unchanged).</summary>
+    [RequireModule("appointments")]
+    [HttpPost("me/appointments/{id:guid}/reschedule-request/reject")]
+    [Authorize(Roles = "Business")]
+    [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> RejectRescheduleRequest(Guid id)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.RejectRescheduleRequestAsync(userId.Value, "Business", id);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
     /// <summary>Owner: cancel an appointment in this business.</summary>
     [RequireModule("appointments")]
     [HttpPost("me/appointments/{id:guid}/cancel")]

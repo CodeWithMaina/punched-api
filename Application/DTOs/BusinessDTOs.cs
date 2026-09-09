@@ -855,6 +855,9 @@ public class NotificationDto
     [JsonPropertyName("stampsCount")]
     public int StampsCount { get; set; }
 
+    [JsonPropertyName("appointmentId")]
+    public Guid? AppointmentId { get; set; }
+
     [JsonPropertyName("isRead")]
     public bool IsRead { get; set; }
 
@@ -1711,4 +1714,44 @@ public class BusinessComparisonSummary
 
     [JsonPropertyName("payoutKes")]
     public MetricComparisonResult PayoutKes { get; set; } = new();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CUSTOMER ↔ BUSINESS ASSOCIATION (database-first)
+// ═══════════════════════════════════════════════════════════════
+
+/// <summary>
+/// A single business the authenticated customer is associated with,
+/// plus which relationships attach them. Produced by a single DB query
+/// (UNION over loyalty_cards, appointments, referral_links) — never by
+/// fetching and merging multiple collections client-side.
+/// </summary>
+public class CustomerAssociatedBusinessResponse
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("logoUrl")]
+    public string? LogoUrl { get; set; }
+
+    [JsonPropertyName("category")]
+    public string? Category { get; set; }
+
+    [JsonPropertyName("location")]
+    public string? Location { get; set; }
+
+    /// <summary>Whether the customer holds a loyalty card for this business.</summary>
+    [JsonPropertyName("viaCard")]
+    public bool ViaCard { get; set; }
+
+    /// <summary>Whether the customer has (or had) an appointment at this business.</summary>
+    [JsonPropertyName("viaAppointment")]
+    public bool ViaAppointment { get; set; }
+
+    /// <summary>Whether the customer generated a referral link for this business.</summary>
+    [JsonPropertyName("viaReferral")]
+    public bool ViaReferral { get; set; }
 }
