@@ -469,6 +469,72 @@ public class LoyaltyService : ILoyaltyService
         return ApiResponse<LoyaltyProgramResponse>.Ok(MapProgram(program));
     }
 
+    /// <summary>
+    /// Public, DB-first, paginated campaigns list for a business. Only active,
+    /// in-window programs are returned; enrolled campaigns are ordered first by
+    /// the database and the enrolled flag is computed in SQL (no Includes, no
+    /// load-then-filter, only the requested page is materialised).
+    /// </summary>
+    public async Task<ApiResponse<PaginatedResponse<CustomerCampaignResponse>>> GetBusinessCampaignsAsync(Guid businessId, Guid? customerId, int page, int pageSize)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 50);
+        var now = DateTime.UtcNow;
+
+        var query = _context.LoyaltyPrograms
+            .AsNoTracking()
+            .Where(p => p.BusinessId == businessId
+                && p.Status == ProgramStatus.Active
+                && (p.StartsAt == null || p.StartsAt <= now)
+                && (p.EndsAt == null || p.EndsAt > now));
+
+        var totalCount = await query.CountAsync();
+
+        var rows = await query
+            .Select(p => new
+            {
+                p.Id,
+                p.Name,
+                p.Description,
+                p.StampsRequired,
+                p.RewardValue,
+                p.RewardDescription,
+                p.RewardExpirationHours,
+                p.ProgramType,
+                p.EndsAt,
+                p.CreatedAt,
+                IsEnrolled = customerId != null && _context.LoyaltyCards
+                    .Any(c => c.ProgramId == p.Id && c.CustomerId == customerId)
+            })
+            .OrderByDescending(x => x.IsEnrolled)
+            .ThenByDescending(x => x.CreatedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+
+        var items = rows.Select(x => new CustomerCampaignResponse
+        {
+            Id = x.Id,
+            Name = x.Name,
+            Description = x.Description,
+            StampsRequired = x.StampsRequired,
+            RewardValue = x.RewardValue,
+            RewardDescription = x.RewardDescription,
+            RewardExpirationHours = x.RewardExpirationHours,
+            ProgramType = string.IsNullOrWhiteSpace(x.ProgramType) ? "stamp" : x.ProgramType,
+            EndsAt = x.EndsAt,
+            IsEnrolled = x.IsEnrolled
+        }).ToList();
+
+        return ApiResponse<PaginatedResponse<CustomerCampaignResponse>>.Ok(new PaginatedResponse<CustomerCampaignResponse>
+        {
+            Items = items,
+            TotalCount = totalCount,
+            Page = page,
+            PageSize = pageSize
+        });
+    }
+
     public async Task<ApiResponse<LoyaltyCardResponse>> EnrollAsync(Guid customerId, EnrollCardRequest request)
     {
         try

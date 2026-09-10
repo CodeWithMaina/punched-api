@@ -552,18 +552,49 @@ public class AppointmentService : IAppointmentService
     //  QUERIES
     // ═══════════════════════════════════════════════════════════
 
-    public async Task<ApiResponse<List<AppointmentResponse>>> GetCustomerAppointmentsAsync(Guid customerId)
+    public async Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetCustomerAppointmentsAsync(
+        Guid customerId, CustomerAppointmentsQueryRequest request)
     {
-        var appointments = await _context.Appointments
+        var page = request.Page < 1 ? 1 : request.Page;
+        var pageSize = request.PageSize < 1 ? 20 : (request.PageSize > 100 ? 100 : request.PageSize);
+
+        var query = _context.Appointments
+            .AsNoTracking()
             .Include(a => a.Resources)
-            .Where(a => a.CustomerId == customerId)
-            .OrderByDescending(a => a.ScheduledAt)
+            .Where(a => a.CustomerId == customerId);
+
+        if (request.BusinessId.HasValue)
+            query = query.Where(a => a.BusinessId == request.BusinessId.Value);
+        if (request.StaffUserId.HasValue)
+            query = query.Where(a => a.StaffUserId == request.StaffUserId.Value);
+        if (request.ServiceId.HasValue)
+            query = query.Where(a => a.Resources.Any(r => r.ServiceCatalogItemId == request.ServiceId.Value));
+        if (!string.IsNullOrWhiteSpace(request.Status))
+            query = query.Where(a => a.Status == request.Status);
+        if (request.From.HasValue)
+            query = query.Where(a => a.ScheduledAt >= request.From.Value);
+        if (request.To.HasValue)
+            query = query.Where(a => a.ScheduledAt <= request.To.Value);
+
+        query = request.SortBy switch
+        {
+            "oldest" => query.OrderBy(a => a.ScheduledAt),
+            "upcoming" => query
+                .OrderByDescending(a => a.ScheduledAt >= DateTime.UtcNow)
+                .ThenBy(a => a.ScheduledAt),
+            _ => query.OrderByDescending(a => a.ScheduledAt), // "newest" (default)
+        };
+
+        var total = await query.CountAsync();
+        var items = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .ToListAsync();
 
-        var latestChanges = await GetLatestStatusChangesAsync(appointments.Select(a => a.Id));
-        var pendingRequests = await GetPendingRescheduleRequestsAsync(appointments.Select(a => a.Id));
+        var latestChanges = await GetLatestStatusChangesAsync(items.Select(a => a.Id));
+        var pendingRequests = await GetPendingRescheduleRequestsAsync(items.Select(a => a.Id));
 
-        var result = appointments
+        var responses = items
             .Select(a =>
             {
                 var r = MapResponse(a, latestChanges);
@@ -572,7 +603,65 @@ public class AppointmentService : IAppointmentService
             })
             .ToList();
 
-        return ApiResponse<List<AppointmentResponse>>.Ok(result);
+        return ApiResponse<PaginatedResponse<AppointmentResponse>>.Ok(
+            new PaginatedResponse<AppointmentResponse>
+            {
+                Items = responses,
+                TotalCount = total,
+                Page = page,
+                PageSize = pageSize
+            });
+    }
+
+    /// <summary>
+    /// Distinct filter facets for the customer appointment filter UI — cheap DB projections
+    /// (businessId/name, staffUserId/name, service id/name) drawn only from the customer's
+    /// own appointments. No full-list load in the browser.
+    /// </summary>
+    public async Task<ApiResponse<CustomerAppointmentFiltersResponse>> GetCustomerAppointmentFiltersAsync(Guid customerId)
+    {
+        var appointments = await _context.Appointments
+            .AsNoTracking()
+            .Where(a => a.CustomerId == customerId)
+            .Select(a => new { a.BusinessId, a.StaffUserId, a.Id })
+            .ToListAsync();
+
+        var businessIds = appointments.Select(a => a.BusinessId).Distinct().ToList();
+        var staffIds = appointments.Where(a => a.StaffUserId.HasValue)
+                                   .Select(a => a.StaffUserId!.Value).Distinct().ToList();
+
+        var businessNames = (await _context.Businesses.AsNoTracking()
+            .Where(b => businessIds.Contains(b.Id))
+            .Select(b => new { b.Id, b.Name })
+            .ToListAsync())
+            .Select(r => new AppointmentFilterOption { Id = r.Id, Name = r.Name })
+            .ToList();
+
+        var staffNames = (await _context.Users.AsNoTracking()
+            .Where(u => staffIds.Contains(u.Id))
+            .Select(u => new { u.Id, u.FullName })
+            .ToListAsync())
+            .Select(r => new AppointmentFilterOption { Id = r.Id, Name = r.FullName })
+            .ToList();
+
+        var resources = await _context.AppointmentResources.AsNoTracking()
+            .Where(r => appointments.Select(a => a.Id).Contains(r.AppointmentId))
+            .Select(r => new { r.ServiceCatalogItemId, r.Name })
+            .ToListAsync();
+
+        var services = resources
+            .GroupBy(r => r.ServiceCatalogItemId)
+            .Select(g => new AppointmentFilterOption { Id = g.Key, Name = g.First().Name })
+            .OrderBy(s => s.Name)
+            .ToList();
+
+        return ApiResponse<CustomerAppointmentFiltersResponse>.Ok(
+            new CustomerAppointmentFiltersResponse
+            {
+                Businesses = businessNames.OrderBy(b => b.Name).ToList(),
+                Staff = staffNames.OrderBy(s => s.Name).ToList(),
+                Services = services
+            });
     }
 
     public async Task<ApiResponse<AppointmentResponse>> GetAppointmentAsync(

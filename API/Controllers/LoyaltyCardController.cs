@@ -92,6 +92,24 @@ public class LoyaltyCardController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// Get the paginated, active campaigns (loyalty programs) for a business.
+    /// Public. When called by an authenticated customer, their enrolled
+    /// campaigns are ordered first and flagged; filtering, sorting and
+    /// pagination all happen in the database.
+    /// </summary>
+    [HttpGet("programs/{businessId:guid}")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<CustomerCampaignResponse>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetBusinessCampaigns(Guid businessId, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
+    {
+        var customerId = GetUserId();
+        var result = await _loyaltyService.GetBusinessCampaignsAsync(businessId, customerId, page, pageSize);
+        if (!result.Success) return NotFound(result);
+        return Ok(result);
+    }
+
     private Guid? GetUserId()
     {
         var claim = User.FindFirst("userId")?.Value;

@@ -39,8 +39,18 @@ public interface IAppointmentService
     /// <summary>Transitions a confirmed appointment to no_show.</summary>
     Task<ApiResponse<AppointmentResponse>> MarkNoShowAsync(Guid callerUserId, string role, Guid appointmentId);
 
-    /// <summary>Lists a customer's own appointments.</summary>
-    Task<ApiResponse<List<AppointmentResponse>>> GetCustomerAppointmentsAsync(Guid customerId);
+    /// <summary>
+    /// Lists the caller's own appointments, DB-first: filters + sorting + pagination
+    /// all happen in the database. Only the requested page is returned.
+    /// </summary>
+    Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetCustomerAppointmentsAsync(
+        Guid customerId, CustomerAppointmentsQueryRequest request);
+
+    /// <summary>
+    /// Distinct filter facets (businesses, staff, services) for the customer's own
+    /// appointment filter UI — cheap DB projections, never a full-list load.
+    /// </summary>
+    Task<ApiResponse<CustomerAppointmentFiltersResponse>> GetCustomerAppointmentFiltersAsync(Guid customerId);
 
     /// <summary>Gets a single appointment, asserting caller tenant ownership.</summary>
     Task<ApiResponse<AppointmentResponse>> GetAppointmentAsync(Guid callerUserId, string role, Guid appointmentId);

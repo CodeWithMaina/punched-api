@@ -29,23 +29,55 @@ public class AppointmentController : ControllerBase
     }
 
     /// <summary>
-    /// List the authenticated customer's own appointments.
-    /// upcoming/status/from/to are bound for forward compatibility but the current
-    /// service signature returns the full customer list.
+    /// List the authenticated customer's own appointments with DB-first filtering,
+    /// sorting and pagination. businessId/staffUserId/serviceId/status/from/to/sortBy
+    /// are all applied in the database; only the requested page is returned.
     /// </summary>
     [HttpGet]
     [Authorize(Roles = "Customer")]
-    [ProducesResponseType(typeof(ApiResponse<List<AppointmentResponse>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<AppointmentResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetMyAppointments(
-        [FromQuery] bool? upcoming,
+        [FromQuery] Guid? businessId,
+        [FromQuery] Guid? staffUserId,
+        [FromQuery] Guid? serviceId,
         [FromQuery] string? status,
         [FromQuery] DateTime? from,
-        [FromQuery] DateTime? to)
+        [FromQuery] DateTime? to,
+        [FromQuery] string? sortBy,
+        [FromQuery] int page,
+        [FromQuery] int pageSize)
     {
         var userId = GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _appointmentService.GetCustomerAppointmentsAsync(userId.Value);
+        var result = await _appointmentService.GetCustomerAppointmentsAsync(userId.Value, new CustomerAppointmentsQueryRequest
+        {
+            BusinessId = businessId,
+            StaffUserId = staffUserId,
+            ServiceId = serviceId,
+            Status = status,
+            From = from,
+            To = to,
+            SortBy = sortBy,
+            Page = page,
+            PageSize = pageSize
+        });
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// Distinct filter facets (businesses, staff, services) for the customer appointment
+    /// filter UI — cheap DB projections limited to the customer's own appointments.
+    /// </summary>
+    [HttpGet("filters")]
+    [Authorize(Roles = "Customer")]
+    [ProducesResponseType(typeof(ApiResponse<CustomerAppointmentFiltersResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetMyAppointmentFilters()
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.GetCustomerAppointmentFiltersAsync(userId.Value);
         return result.Success ? Ok(result) : MapFailure(result);
     }
 

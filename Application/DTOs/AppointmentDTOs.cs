@@ -133,6 +133,69 @@ public class AvailabilitySlotResponse
 /// Full appointment view. updatedAt is derived from the most recent
 /// AppointmentStatusHistory.ChangedAt (fallback: CreatedAt).
 /// </summary>
+/// <summary>
+/// DB-first filter + pagination query for the customer's own appointment list.
+/// Every dimension is applied at the database layer; only the requested page is
+/// returned (never load-then-filter in JS).
+/// </summary>
+public class CustomerAppointmentsQueryRequest
+{
+    [JsonPropertyName("businessId")]
+    public Guid? BusinessId { get; set; }
+
+    [JsonPropertyName("staffUserId")]
+    public Guid? StaffUserId { get; set; }
+
+    [JsonPropertyName("serviceId")]
+    public Guid? ServiceId { get; set; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    /// <summary>Inclusive date/time range start (database-side filter).</summary>
+    [JsonPropertyName("from")]
+    public DateTime? From { get; set; }
+
+    /// <summary>Inclusive date/time range end (database-side filter).</summary>
+    [JsonPropertyName("to")]
+    public DateTime? To { get; set; }
+
+    /// <summary>Sort strategy: "newest" (default), "oldest" or "upcoming".</summary>
+    [JsonPropertyName("sortBy")]
+    public string? SortBy { get; set; }
+
+    [JsonPropertyName("page")]
+    public int Page { get; set; } = 1;
+
+    [JsonPropertyName("pageSize")]
+    public int PageSize { get; set; } = 20;
+}
+
+/// <summary>A single distinct value surfaced for the appointment filter UI (DB projection).</summary>
+public class AppointmentFilterOption
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Distinct facets (businesses, staff, services) drawn from the customer's own
+/// appointments — a cheap, DB-driven source of filter options (never a full list load).
+/// </summary>
+public class CustomerAppointmentFiltersResponse
+{
+    [JsonPropertyName("businesses")]
+    public List<AppointmentFilterOption> Businesses { get; set; } = [];
+
+    [JsonPropertyName("staff")]
+    public List<AppointmentFilterOption> Staff { get; set; } = [];
+
+    [JsonPropertyName("services")]
+    public List<AppointmentFilterOption> Services { get; set; } = [];
+}
 public class AppointmentResponse
 {
     [JsonPropertyName("id")]
