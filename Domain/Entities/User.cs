@@ -80,6 +80,14 @@ public class User : BaseEntity
     public int? DailyGoalOverride { get; set; }
 
     /// <summary>
+    /// Optional personal daily appointment goal that overrides the business
+    /// appointment default. Only meaningful for Staff users; null means fall
+    /// back to the business appointment default.
+    /// </summary>
+    [Range(1, 1000)]
+    public int? AppointmentDailyGoalOverride { get; set; }
+
+    /// <summary>
     /// Soft-delete marker. Deleted users are excluded from normal queries.
     /// </summary>
     public bool IsDeleted { get; set; }

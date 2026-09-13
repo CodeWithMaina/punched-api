@@ -216,6 +216,36 @@ public partial class BusinessController
         return result.Success ? Ok(result) : MapFailure(result);
     }
 
+    /// <summary>Staff: reschedule an appointment assigned to the authenticated staff member.</summary>
+    [RequireModule("appointments")]
+    [HttpPost("staff/appointments/{id:guid}/reschedule")]
+    [Authorize(Roles = "Staff")]
+    [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> RescheduleStaffAppointment(Guid id, [FromBody] RescheduleAppointmentRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.RescheduleAsync(userId.Value, "Staff", id, request);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>Staff: cancel an appointment assigned to the authenticated staff member.</summary>
+    [RequireModule("appointments")]
+    [HttpPost("staff/appointments/{id:guid}/cancel")]
+    [Authorize(Roles = "Staff")]
+    [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> CancelStaffAppointment(Guid id, [FromBody] CancelAppointmentRequest? request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.CancelAsync(userId.Value, "Staff", id, request ?? new CancelAppointmentRequest());
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
     /// <summary>Staff: confirm a booked appointment assigned to this staff member.</summary>
     [RequireModule("appointments")]
     [HttpPost("staff/appointments/{id:guid}/confirm")]
@@ -257,7 +287,26 @@ public partial class BusinessController
         var userId = GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _appointmentService.MarkNoShowAsync(userId.Value, "Staff", id);
+                var result = await _appointmentService.MarkNoShowAsync(userId.Value, "Staff", id);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>Staff: list a specific customer's appointments at the staff member's linked business.</summary>
+    [RequireModule("appointments")]
+    [HttpGet("staff/customers/{customerId:guid}/appointments")]
+    [Authorize(Roles = "Staff")]
+    [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<AppointmentResponse>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetStaffCustomerAppointments(
+        Guid customerId,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.GetStaffCustomerAppointmentsAsync(
+            userId.Value, customerId, page, pageSize);
         return result.Success ? Ok(result) : MapFailure(result);
     }
 

@@ -26,7 +26,7 @@ public class AppointmentServiceTests
         public ServiceCatalogItem S2 = null!;
     }
 
-    private static readonly DateTime Ten = new(2026, 8, 20, 10, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime Ten = DateTime.UtcNow.Date.AddDays(7).AddHours(10);
 
     private static async Task<Env> CreateEnvAsync(SqliteConnection connection)
     {
@@ -214,32 +214,33 @@ public class AppointmentServiceTests
         a.Resources.Add(BookingTestBase.CreateResource(a.Id, env.S1.Id, env.S1.Name, 60, 500m, 0));
         var b = BookingTestBase.CreateAppointment(
             env.Business.Id, env.Customer.Id, env.Staff.Id,
-            new DateTime(2026, 8, 20, 14, 0, 0, DateTimeKind.Utc),
-            new DateTime(2026, 8, 20, 15, 0, 0, DateTimeKind.Utc));
+            Ten.AddHours(4),
+            Ten.AddHours(5));
         await BookingTestBase.SeedAsync(context, a, b);
 
-        // Basic reschedule keeps S1 → EndAt = newStart + 60.
-        var basic = new RescheduleAppointmentRequest { ScheduledAt = new DateTime(2026, 8, 20, 13, 0, 0, DateTimeKind.Utc) };
-        var basicResult = await env.Service.RescheduleAsync(env.Customer.Id, "Customer", a.Id, basic);
+        // NOTE: customers now submit reschedule REQUESTS (pending business
+        // confirmation), so direct time/resource updates are exercised through
+        // the Business (owner) path here.
+        var basic = new RescheduleAppointmentRequest { ScheduledAt = Ten.AddHours(3) };
+        var basicResult = await env.Service.RescheduleAsync(env.Owner.Id, "Business", a.Id, basic);
         Assert.True(basicResult.Success, basicResult.Error?.Message);
-        Assert.Equal(new DateTime(2026, 8, 20, 13, 0, 0, DateTimeKind.Utc), basicResult.Data!.ScheduledAt);
-        Assert.Equal(new DateTime(2026, 8, 20, 14, 0, 0, DateTimeKind.Utc), basicResult.Data!.EndAt);
+        Assert.Equal(Ten.AddHours(3), basicResult.Data!.ScheduledAt);
+        Assert.Equal(Ten.AddHours(4), basicResult.Data!.EndAt);
 
-        // Replacing serviceIds with S2 (30 min) → EndAt recomputed, resources replaced.
         var replace = new RescheduleAppointmentRequest
         {
-            ScheduledAt = new DateTime(2026, 8, 20, 16, 0, 0, DateTimeKind.Utc),
+            ScheduledAt = Ten.AddHours(6),
             ServiceIds = new[] { env.S2.Id }
         };
-        var replaceResult = await env.Service.RescheduleAsync(env.Customer.Id, "Customer", a.Id, replace);
+        var replaceResult = await env.Service.RescheduleAsync(env.Owner.Id, "Business", a.Id, replace);
         Assert.True(replaceResult.Success, replaceResult.Error?.Message);
-        Assert.Equal(new DateTime(2026, 8, 20, 16, 30, 0, DateTimeKind.Utc), replaceResult.Data!.EndAt);
+        Assert.Equal(Ten.AddHours(6).AddMinutes(30), replaceResult.Data!.EndAt);
         Assert.Single(replaceResult.Data!.Services);
         Assert.Equal(env.S2.Name, replaceResult.Data!.Services[0].Name);
 
-        // Overlap with a different appointment B [14:00,15:00) → OVERBOOKING (self excluded).
-        var overlap = new RescheduleAppointmentRequest { ScheduledAt = new DateTime(2026, 8, 20, 14, 30, 0, DateTimeKind.Utc) };
-        var overlapResult = await env.Service.RescheduleAsync(env.Customer.Id, "Customer", a.Id, overlap);
+        // Overlap with a different appointment B [Ten+4h, Ten+5h) → OVERBOOKING (self excluded).
+        var overlap = new RescheduleAppointmentRequest { ScheduledAt = Ten.AddHours(4).AddMinutes(30) };
+        var overlapResult = await env.Service.RescheduleAsync(env.Owner.Id, "Business", a.Id, overlap);
         Assert.False(overlapResult.Success);
         Assert.Equal("OVERBOOKING", overlapResult.Error?.Code);
     }

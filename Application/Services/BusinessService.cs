@@ -509,6 +509,8 @@ public partial class BusinessService : IBusinessService
         LogoUrl = b.LogoUrl,
         OwnerId = b.OwnerId,
         DefaultDailyGoal = b.DefaultDailyGoal,
+        DailyGoalType = string.IsNullOrWhiteSpace(b.DailyGoalType) ? "stamps" : b.DailyGoalType.Trim().ToLowerInvariant(),
+        DefaultAppointmentDailyGoal = b.DefaultAppointmentDailyGoal,
         CreatedAt = b.CreatedAt,
         LoyaltyPrograms = b.LoyaltyPrograms.Select(p => new LoyaltyProgramResponse
         {
@@ -712,6 +714,16 @@ public partial class BusinessService : IBusinessService
                           (_, __) => 1)
                     .CountAsync();
 
+            // Appointment counts for the goal progress UI (same staff, same business).
+            var appointmentsToday = await _context.Appointments.CountAsync(
+                a => a.StaffUserId == staffUserId && a.BusinessId == businessId && a.ScheduledAt >= todayUtc);
+            var goalType = string.IsNullOrWhiteSpace(business.DailyGoalType)
+                ? "stamps"
+                : business.DailyGoalType.Trim().ToLowerInvariant();
+            var effectiveDailyGoal = goalType == "appointments"
+                ? user.AppointmentDailyGoalOverride ?? business.DefaultAppointmentDailyGoal
+                : user.DailyGoalOverride ?? business.DefaultDailyGoal;
+
             var recentStamps = await _context.Stamps
                 .Include(s => s.Card)
                     .ThenInclude(c => c.Customer)
@@ -742,7 +754,10 @@ public partial class BusinessService : IBusinessService
                 TotalStamps = totalStamps,
                 TotalCustomers = totalCustomers,
                 RewardReadyCount = rewardReadyCount,
-                DailyGoal = user.DailyGoalOverride ?? business.DefaultDailyGoal,
+                DailyGoal = effectiveDailyGoal,
+                DailyGoalType = goalType,
+                AppointmentDailyGoal = user.AppointmentDailyGoalOverride ?? business.DefaultAppointmentDailyGoal,
+                AppointmentsToday = appointmentsToday,
                 RecentActivity = recentStamps
             });
         }
@@ -750,6 +765,164 @@ public partial class BusinessService : IBusinessService
         {
             _logger.LogError(ex, "Error getting staff analytics for user {UserId}", staffUserId);
             return ApiResponse<StaffAnalyticsResponse>.Fail("ANALYTICS_FAILED", "Failed to load analytics.");
+        }
+    }
+
+    /// <summary>Shared loyalty-card → BusinessCustomerResponse projection.</summary>
+    private static BusinessCustomerResponse MapCustomerCard(LoyaltyCard card, int? stampsRequired) => new()
+    {
+        UserId = card.CustomerId,
+        FullName = card.Customer.FullName,
+        Email = card.Customer.Email,
+        PhoneNumber = card.Customer.PhoneNumber,
+        DateOfBirth = card.Customer.DateOfBirth,
+        Gender = card.Customer.Gender,
+        AvatarUrl = card.Customer.AvatarUrl,
+        CardId = card.Id,
+        TotalStamps = card.TotalStamps,
+        LifetimeStamps = card.LifetimeStamps,
+        TotalRedemptions = card.TotalRedemptions,
+        EnrolledAt = card.EnrolledAt,
+        LastStampAt = card.LastStampAt,
+        StampsRequired = stampsRequired
+    };
+
+    /// <summary>
+    /// Distinct customers the staff member has served in their linked business
+    /// (awarded stamps / redemptions / assigned appointments), DB-first with paging.
+    /// </summary>
+    public async Task<ApiResponse<PaginatedResponse<BusinessCustomerResponse>>> GetStaffCustomersAsync(
+        Guid staffUserId, string? search = null, string? status = null, int page = 1, int pageSize = 25)
+    {
+        try
+        {
+            var staff = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId);
+            if (staff == null || staff.StaffBusinessId == null)
+                return ApiResponse<PaginatedResponse<BusinessCustomerResponse>>.Fail("NOT_LINKED", "You are not linked to any business.");
+
+            var businessId = staff.StaffBusinessId.Value;
+            var stampsRequired = await _context.LoyaltyPrograms
+                .Where(p => p.BusinessId == businessId && p.IsActive)
+                .Select(p => (int?)p.StampsRequired)
+                .FirstOrDefaultAsync();
+
+            var servedCardIds = await _context.Stamps
+                .Where(s => s.AwardedByUserId == staffUserId && s.Card.BusinessId == businessId)
+                .Select(s => s.CardId)
+                .Distinct()
+                .ToListAsync();
+
+            var redeemedCardIds = await _context.Redemptions
+                .Where(r => r.PerformedByUserId == staffUserId && r.BusinessId == businessId)
+                .Select(r => r.CardId)
+                .Distinct()
+                .ToListAsync();
+
+            var appointmentCustomerIds = await _context.Appointments
+                .Where(a => a.StaffUserId == staffUserId && a.BusinessId == businessId)
+                .Select(a => a.CustomerId)
+                .Distinct()
+                .ToListAsync();
+
+            var cardIds = new HashSet<Guid>(servedCardIds);
+            cardIds.UnionWith(redeemedCardIds);
+            var cardIdList = cardIds.ToList();
+
+            var query = _context.LoyaltyCards
+                .Include(c => c.Customer)
+                .Where(c => c.BusinessId == businessId && c.CustomerId != Guid.Empty)
+                .Where(c => cardIdList.Contains(c.Id) || appointmentCustomerIds.Contains(c.CustomerId))
+                .AsNoTracking()
+                .AsQueryable();
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var pattern = $"%{search.Trim()}%";
+                query = query.Where(c =>
+                    EF.Functions.ILike(c.Customer.FullName, pattern) ||
+                    EF.Functions.ILike(c.Customer.Email, pattern));
+            }
+
+            if (status == "ready")
+                query = query.Where(c => stampsRequired != null && c.TotalStamps >= stampsRequired);
+            else if (status == "active")
+                query = query.Where(c => c.TotalStamps > 0);
+
+            var total = await query.CountAsync();
+            var cards = await query
+                .OrderByDescending(c => c.LastStampAt)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync();
+
+            var items = cards.Select(c => MapCustomerCard(c, stampsRequired)).ToList();
+            return ApiResponse<PaginatedResponse<BusinessCustomerResponse>>.Ok(new PaginatedResponse<BusinessCustomerResponse>
+            {
+                Items = items,
+                TotalCount = total,
+                Page = page,
+                PageSize = pageSize
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting staff customers for {StaffUserId}", staffUserId);
+            return ApiResponse<PaginatedResponse<BusinessCustomerResponse>>.Fail("FETCH_FAILED", "Failed to load your customers.");
+        }
+    }
+
+    /// <summary>Single customer served by this staff member in their linked business.</summary>
+    public async Task<ApiResponse<BusinessCustomerResponse>> GetStaffCustomerAsync(Guid staffUserId, Guid customerId)
+    {
+        try
+        {
+            var staff = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId);
+            if (staff == null || staff.StaffBusinessId == null)
+                return ApiResponse<BusinessCustomerResponse>.Fail("NOT_LINKED", "You are not linked to any business.");
+
+            var businessId = staff.StaffBusinessId.Value;
+            var stampsRequired = await _context.LoyaltyPrograms
+                .Where(p => p.BusinessId == businessId && p.IsActive)
+                .Select(p => (int?)p.StampsRequired)
+                .FirstOrDefaultAsync();
+
+            var card = await _context.LoyaltyCards
+                .Include(c => c.Customer)
+                .AsNoTracking()
+                .FirstOrDefaultAsync(c => c.BusinessId == businessId && c.CustomerId == customerId);
+
+            if (card == null)
+            {
+                var exists = await _context.Appointments.AnyAsync(
+                    a => a.StaffUserId == staffUserId && a.BusinessId == businessId && a.CustomerId == customerId);
+                if (!exists)
+                    return ApiResponse<BusinessCustomerResponse>.Fail("NOT_FOUND", "Customer not found.");
+                var customer = await _unitOfWork.Users.GetByIdAsync(customerId);
+                if (customer == null)
+                    return ApiResponse<BusinessCustomerResponse>.Fail("NOT_FOUND", "Customer not found.");
+                return ApiResponse<BusinessCustomerResponse>.Ok(new BusinessCustomerResponse
+                {
+                    UserId = customer.Id,
+                    FullName = customer.FullName,
+                    Email = customer.Email,
+                    PhoneNumber = customer.PhoneNumber,
+                    DateOfBirth = customer.DateOfBirth,
+                    Gender = customer.Gender,
+                    AvatarUrl = customer.AvatarUrl,
+                    CardId = Guid.Empty,
+                    TotalStamps = 0,
+                    LifetimeStamps = 0,
+                    EnrolledAt = DateTime.UtcNow,
+                    StampsRequired = stampsRequired
+                });
+            }
+
+            return ApiResponse<BusinessCustomerResponse>.Ok(MapCustomerCard(card, stampsRequired));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting staff customer {CustomerId} for {StaffUserId}", customerId, staffUserId);
+            return ApiResponse<BusinessCustomerResponse>.Fail("FETCH_FAILED", "Failed to load customer.");
         }
     }
 
@@ -788,6 +961,9 @@ public partial class BusinessService : IBusinessService
         // statement together with filtering, sorting and paging below.
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var weekStart = today.AddDays(-6);
+        var todayUtc = DateTime.UtcNow.Date;
+        var tomorrowUtc = todayUtc.AddDays(1);
+        var weekStartUtc = todayUtc.AddDays(-6);
         var projected = query.Select(u => new StaffMemberResponse
         {
             UserId = u.Id,
@@ -795,7 +971,12 @@ public partial class BusinessService : IBusinessService
             Email = u.Email,
             AvatarUrl = u.AvatarUrl,
             DailyGoalOverride = u.DailyGoalOverride,
-            DailyGoal = u.DailyGoalOverride ?? business.DefaultDailyGoal,
+            DailyGoal = business.DailyGoalType == "appointments"
+                ? u.AppointmentDailyGoalOverride ?? business.DefaultAppointmentDailyGoal
+                : u.DailyGoalOverride ?? business.DefaultDailyGoal,
+            DailyGoalType = business.DailyGoalType,
+            AppointmentDailyGoalOverride = u.AppointmentDailyGoalOverride,
+            AppointmentDailyGoal = u.AppointmentDailyGoalOverride ?? business.DefaultAppointmentDailyGoal,
             StampsIssued = _context.Stamps.Count(s => s.AwardedByUserId == u.Id && s.Card.BusinessId == business.Id),
             StampsToday = _context.StaffDailyAnalytics
                 .Where(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.Date == today)
@@ -803,6 +984,8 @@ public partial class BusinessService : IBusinessService
             StampsLast7d = _context.StaffDailyAnalytics
                 .Where(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.Date >= weekStart)
                 .Sum(a => (int?)a.Stamps) ?? 0,
+            AppointmentsToday = _context.Appointments.Count(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.ScheduledAt >= todayUtc && a.ScheduledAt < tomorrowUtc),
+            AppointmentsLast7d = _context.Appointments.Count(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.ScheduledAt >= weekStartUtc),
             LastActivityAt = _context.Stamps
                 .Where(s => s.AwardedByUserId == u.Id && s.Card.BusinessId == business.Id)
                 .Max(s => (DateTime?)s.StampedAt),
@@ -880,8 +1063,9 @@ public partial class BusinessService : IBusinessService
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var weekStart = today.AddDays(-6);
+        var todayUtc = DateTime.UtcNow.Date;
+        var weekStartUtc = todayUtc.AddDays(-6);
 
-        // Single aggregate query over the business's staff — no N+1.
         var staff = await _context.Users
             .Where(u => u.StaffBusinessId == business.Id && !u.IsDeleted)
             .AsNoTracking()
@@ -893,6 +1077,9 @@ public partial class BusinessService : IBusinessService
                 AvatarUrl = u.AvatarUrl,
                 DailyGoalOverride = u.DailyGoalOverride,
                 DailyGoal = u.DailyGoalOverride ?? business.DefaultDailyGoal,
+                DailyGoalType = business.DailyGoalType,
+                AppointmentDailyGoalOverride = u.AppointmentDailyGoalOverride,
+                AppointmentDailyGoal = u.AppointmentDailyGoalOverride ?? business.DefaultAppointmentDailyGoal,
                 StampsIssued = _context.Stamps.Count(s => s.AwardedByUserId == u.Id && s.Card.BusinessId == business.Id),
                 StampsToday = _context.StaffDailyAnalytics
                     .Where(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.Date == today)
@@ -900,6 +1087,8 @@ public partial class BusinessService : IBusinessService
                 StampsLast7d = _context.StaffDailyAnalytics
                     .Where(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.Date >= weekStart)
                     .Sum(a => (int?)a.Stamps) ?? 0,
+                AppointmentsToday = _context.Appointments.Count(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.ScheduledAt >= todayUtc),
+                AppointmentsLast7d = _context.Appointments.Count(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.ScheduledAt >= weekStartUtc),
                 LastActivityAt = _context.Stamps
                     .Where(s => s.AwardedByUserId == u.Id && s.Card.BusinessId == business.Id)
                     .Max(s => (DateTime?)s.StampedAt),
@@ -917,19 +1106,29 @@ public partial class BusinessService : IBusinessService
             PendingInvitations = pendingInvitations,
             StampsToday = staff.Sum(s => s.StampsToday),
             StampsThisWeek = staff.Sum(s => s.StampsLast7d),
-            GoalsMetToday = staff.Count(s => s.DailyGoal.HasValue && s.StampsToday >= s.DailyGoal.Value),
-            StaffWithGoals = staff.Count(s => s.DailyGoal.HasValue),
+            GoalsMetToday = business.DailyGoalType == "appointments"
+                ? staff.Count(s => s.AppointmentDailyGoal.HasValue && s.AppointmentsToday >= s.AppointmentDailyGoal.Value)
+                : staff.Count(s => s.DailyGoal.HasValue && s.StampsToday >= s.DailyGoal.Value),
+            StaffWithGoals = business.DailyGoalType == "appointments"
+                ? staff.Count(s => s.AppointmentDailyGoal.HasValue)
+                : staff.Count(s => s.DailyGoal.HasValue),
             TopPerformers = staff
                 .Where(s => s.StampsLast7d > 0)
                 .OrderByDescending(s => s.StampsLast7d)
                 .ThenByDescending(s => s.StampsToday)
                 .Take(5)
                 .ToList(),
-            NeedsAttention = staff
-                .Where(s => s.DailyGoal.HasValue && s.LastActivityAt != null && s.StampsToday < s.DailyGoal.Value)
-                .OrderBy(s => s.StampsToday)
-                .Take(5)
-                .ToList(),
+            NeedsAttention = business.DailyGoalType == "appointments"
+                ? staff
+                    .Where(s => s.AppointmentDailyGoal.HasValue && s.AppointmentsToday < s.AppointmentDailyGoal.Value)
+                    .OrderBy(s => s.AppointmentsToday)
+                    .Take(5)
+                    .ToList()
+                : staff
+                    .Where(s => s.DailyGoal.HasValue && s.LastActivityAt != null && s.StampsToday < s.DailyGoal.Value)
+                    .OrderBy(s => s.StampsToday)
+                    .Take(5)
+                    .ToList(),
             RecentlyActive = staff
                 .Where(s => s.LastActivityAt != null)
                 .OrderByDescending(s => s.LastActivityAt)
@@ -938,19 +1137,46 @@ public partial class BusinessService : IBusinessService
         });
     }
 
-    public async Task<ApiResponse<BusinessResponse>> SetBusinessDailyGoalAsync(Guid ownerId, int? dailyGoal)
+    public async Task<ApiResponse<BusinessResponse>> SetBusinessDailyGoalAsync(Guid ownerId, int? dailyGoal, string? dailyGoalType = null, int? appointmentDailyGoal = null)
     {
         var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
         if (business == null)
             return ApiResponse<BusinessResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
         business.DefaultDailyGoal = dailyGoal.HasValue ? Math.Clamp(dailyGoal.Value, 1, 1000) : null;
+        if (dailyGoalType != null)
+        {
+            var normalized = dailyGoalType.Trim().ToLowerInvariant();
+            business.DailyGoalType = normalized == "appointments" ? "appointments" : "stamps";
+        }
+        // Explicit null clears the appointment default; omitted (HasValue false via sentinel)
+        // leaves it untouched — callers pass appointmentDailyGoal only when provided.
+        business.DefaultAppointmentDailyGoal = appointmentDailyGoal.HasValue
+            ? Math.Clamp(appointmentDailyGoal.Value, 1, 1000)
+            : business.DefaultAppointmentDailyGoal;
         _unitOfWork.Businesses.Update(business);
         await _unitOfWork.SaveChangesAsync();
         return ApiResponse<BusinessResponse>.Ok(MapToResponse(business));
     }
 
-    public async Task<ApiResponse<StaffMemberResponse>> SetStaffDailyGoalAsync(Guid ownerId, Guid staffUserId, int? dailyGoal)
+    /// <summary>
+    /// Clears the business-level appointment default (explicit null from the request).
+    /// Separated from <see cref="SetBusinessDailyGoalAsync"/> so "omitted" vs "clear"
+    /// stays unambiguous for the appointment goal field.
+    /// </summary>
+    public async Task<ApiResponse<BusinessResponse>> ClearBusinessAppointmentDailyGoalAsync(Guid ownerId)
+    {
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        if (business == null)
+            return ApiResponse<BusinessResponse>.Fail("NOT_FOUND", "No business found for this account.");
+
+        business.DefaultAppointmentDailyGoal = null;
+        _unitOfWork.Businesses.Update(business);
+        await _unitOfWork.SaveChangesAsync();
+        return ApiResponse<BusinessResponse>.Ok(MapToResponse(business));
+    }
+
+    public async Task<ApiResponse<StaffMemberResponse>> SetStaffDailyGoalAsync(Guid ownerId, Guid staffUserId, int? dailyGoal, int? appointmentDailyGoal = null)
     {
         var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
         if (business == null)
@@ -962,10 +1188,15 @@ public partial class BusinessService : IBusinessService
             return ApiResponse<StaffMemberResponse>.Fail("NOT_FOUND", "Staff member not found in your business.");
 
         staffUser.DailyGoalOverride = dailyGoal.HasValue ? Math.Clamp(dailyGoal.Value, 1, 1000) : null;
+        staffUser.AppointmentDailyGoalOverride = appointmentDailyGoal.HasValue
+            ? Math.Clamp(appointmentDailyGoal.Value, 1, 1000)
+            : null;
         _unitOfWork.Users.Update(staffUser);
         await _unitOfWork.SaveChangesAsync();
 
         var stampsIssued = await _context.Stamps.CountAsync(s => s.AwardedByUserId == staffUser.Id && s.Card.BusinessId == business.Id);
+        var todayUtc = DateTime.UtcNow.Date;
+        var appointmentsToday = await _context.Appointments.CountAsync(a => a.StaffUserId == staffUser.Id && a.BusinessId == business.Id && a.ScheduledAt >= todayUtc);
         return ApiResponse<StaffMemberResponse>.Ok(new StaffMemberResponse
         {
             UserId = staffUser.Id,
@@ -974,7 +1205,13 @@ public partial class BusinessService : IBusinessService
             AvatarUrl = staffUser.AvatarUrl,
             StampsIssued = stampsIssued,
             DailyGoalOverride = staffUser.DailyGoalOverride,
-            DailyGoal = staffUser.DailyGoalOverride ?? business.DefaultDailyGoal
+            DailyGoal = business.DailyGoalType == "appointments"
+                ? staffUser.AppointmentDailyGoalOverride ?? business.DefaultAppointmentDailyGoal
+                : staffUser.DailyGoalOverride ?? business.DefaultDailyGoal,
+            DailyGoalType = business.DailyGoalType,
+            AppointmentDailyGoalOverride = staffUser.AppointmentDailyGoalOverride,
+            AppointmentDailyGoal = staffUser.AppointmentDailyGoalOverride ?? business.DefaultAppointmentDailyGoal,
+            AppointmentsToday = appointmentsToday,
         });
     }
 
@@ -1044,6 +1281,14 @@ public partial class BusinessService : IBusinessService
             var totalStampsAllTime     = await baseQuery.CountAsync();
             var totalCustomersAllTime  = await baseQuery.Select(s => s.Card.CustomerId).Distinct().CountAsync();
 
+            var apptBase = _context.Appointments.Where(a => a.StaffUserId == staffUserId && a.BusinessId == business.Id);
+            var appointmentsToday = await apptBase.CountAsync(a => a.ScheduledAt >= now.Date);
+            var appointmentsLast7d = await apptBase.CountAsync(a => a.ScheduledAt >= now.AddDays(-7));
+            var appointmentsIssued = await apptBase.CountAsync();
+            var apptGoalType = string.IsNullOrWhiteSpace(business.DailyGoalType)
+                ? "stamps"
+                : business.DailyGoalType.Trim().ToLowerInvariant();
+
             var recentActivity = await _context.Stamps
                 .Include(s => s.Card).ThenInclude(c => c.Customer)
                 .Where(s => s.AwardedByUserId == staffUserId && s.Card.BusinessId == business.Id)
@@ -1072,8 +1317,16 @@ public partial class BusinessService : IBusinessService
                 CustomersServed      = customersServed,
                 TotalStampsAllTime   = totalStampsAllTime,
                 TotalCustomersAllTime = totalCustomersAllTime,
-                DailyGoal            = staffUser.DailyGoalOverride ?? business.DefaultDailyGoal,
+                DailyGoal            = apptGoalType == "appointments"
+                    ? staffUser.AppointmentDailyGoalOverride ?? business.DefaultAppointmentDailyGoal
+                    : staffUser.DailyGoalOverride ?? business.DefaultDailyGoal,
                 DailyGoalOverride    = staffUser.DailyGoalOverride,
+                DailyGoalType          = apptGoalType,
+                AppointmentDailyGoalOverride = staffUser.AppointmentDailyGoalOverride,
+                AppointmentDailyGoal = staffUser.AppointmentDailyGoalOverride ?? business.DefaultAppointmentDailyGoal,
+                AppointmentsToday = appointmentsToday,
+                AppointmentsLast7d = appointmentsLast7d,
+                AppointmentsIssued = appointmentsIssued,
                 RecentActivity       = recentActivity,
             });
         }

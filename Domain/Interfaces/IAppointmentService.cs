@@ -58,6 +58,13 @@ public interface IAppointmentService
     /// <summary>Paged business appointment list with filters.</summary>
     Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetBusinessAppointmentsAsync(Guid ownerUserId, string? status, DateTime? from, DateTime? to, Guid? staffUserId, Guid? customerId, Guid? serviceId, int page, int pageSize);
 
-    /// <summary>Lists a staff member's own appointments.</summary>
+        /// <summary>Lists a staff member's own appointments.</summary>
     Task<ApiResponse<List<AppointmentResponse>>> GetStaffAppointmentsAsync(Guid staffUserId, string? status, DateTime? from, DateTime? to);
+
+    /// <summary>
+    /// Staff: a specific customer's appointments at the staff member's
+    /// linked business (read-only history for the staff customer detail).
+    /// </summary>
+    Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetStaffCustomerAppointmentsAsync(
+        Guid staffUserId, Guid customerId, int page, int pageSize);
 }

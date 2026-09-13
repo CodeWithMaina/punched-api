@@ -243,9 +243,20 @@ namespace PunchedApi.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("default_daily_goal");
 
+                    b.Property<int?>("DefaultAppointmentDailyGoal")
+                        .HasColumnType("integer")
+                        .HasColumnName("default_appointment_daily_goal");
+
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at");
+
+                    b.Property<string>("DailyGoalType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("daily_goal_type")
+                        .HasDefaultValue("stamps");
 
                     b.Property<string>("Description")
                         .HasMaxLength(500)
@@ -2263,6 +2274,10 @@ namespace PunchedApi.Migrations
                     b.Property<int?>("DailyGoalOverride")
                         .HasColumnType("integer")
                         .HasColumnName("daily_goal_override");
+
+                    b.Property<int?>("AppointmentDailyGoalOverride")
+                        .HasColumnType("integer")
+                        .HasColumnName("appointment_daily_goal_override");
 
                     b.Property<DateOnly?>("DateOfBirth")
                         .HasColumnType("date");

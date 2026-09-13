@@ -46,6 +46,9 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(e => e.DailyGoalOverride)
             .HasColumnName("daily_goal_override");
 
+        builder.Property(e => e.AppointmentDailyGoalOverride)
+            .HasColumnName("appointment_daily_goal_override");
+
         builder.Property(e => e.IsDeleted)
             .HasColumnName("is_deleted")
             .HasDefaultValue(false);

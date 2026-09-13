@@ -83,6 +83,22 @@ public class Business : BaseEntity
     [Range(1, 1000)]
     public int? DefaultDailyGoal { get; set; }
 
+    /// <summary>
+    /// Which metric the daily goal tracks: "stamps" (default) or "appointments".
+    /// The owner flips this in settings; staff progress UI follows the active type.
+    /// </summary>
+    [MaxLength(20)]
+    public string DailyGoalType { get; set; } = "stamps";
+
+    /// <summary>
+    /// Default daily appointment goal (per staff member) used when a staff member
+    /// has no personal appointment override. Null means no appointment default
+    /// has been configured. Only meaningful when <see cref="DailyGoalType"/> is
+    /// "appointments" (but stored independently so switching types is lossless).
+    /// </summary>
+    [Range(1, 1000)]
+    public int? DefaultAppointmentDailyGoal { get; set; }
+
     // ── Navigation ──────────────────────────────────────────
     /// <summary>
     /// The business's current subscription (one per business).

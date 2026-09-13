@@ -128,8 +128,11 @@ public partial class BusinessController
         return Ok(result);
     }
 
+    // ── Unified daily goal (stamps ↔ appointments type switch) ──────────
     /// <summary>
-    /// Set the business-level default daily stamp goal for staff members.
+    /// Set the business-level default daily goal for staff members.
+    /// dailyGoalType flips which metric the goal tracks ("stamps" | "appointments").
+    /// appointmentDailyGoal sets the appointment default (null clears it).
     /// </summary>
     [RequireModule("staff")]
     [HttpPut("me/daily-goal")]
@@ -143,14 +146,23 @@ public partial class BusinessController
 
         if (request.DailyGoal.HasValue && (request.DailyGoal.Value < 1 || request.DailyGoal.Value > 1000))
             return BadRequest(ApiResponse<BusinessResponse>.Fail("INVALID_GOAL", "Daily goal must be between 1 and 1000."));
+        if (request.AppointmentDailyGoal.HasValue && (request.AppointmentDailyGoal.Value < 1 || request.AppointmentDailyGoal.Value > 1000))
+            return BadRequest(ApiResponse<BusinessResponse>.Fail("INVALID_GOAL", "Appointment daily goal must be between 1 and 1000."));
+        if (request.DailyGoalType != null)
+        {
+            var t = request.DailyGoalType.Trim().ToLowerInvariant();
+            if (t != "stamps" && t != "appointments")
+                return BadRequest(ApiResponse<BusinessResponse>.Fail("INVALID_GOAL_TYPE", "Daily goal type must be 'stamps' or 'appointments'."));
+        }
 
-        var result = await _businessService.SetBusinessDailyGoalAsync(userId.Value, request.DailyGoal);
+        var result = await _businessService.SetBusinessDailyGoalAsync(userId.Value, request.DailyGoal, request.DailyGoalType, request.AppointmentDailyGoal);
         if (!result.Success) return NotFound(result);
         return Ok(result);
     }
 
     /// <summary>
-    /// Set (or clear, when dailyGoal is null) a staff member's personal daily stamp goal override.
+    /// Set (or clear, when null) a staff member's personal daily goal override.
+    /// Supports both the stamp override (dailyGoal) and the appointment override (appointmentDailyGoal).
     /// </summary>
     [RequireModule("staff")]
     [HttpPut("me/staff/{staffUserId:guid}/daily-goal")]
@@ -165,8 +177,10 @@ public partial class BusinessController
 
         if (request.DailyGoal.HasValue && (request.DailyGoal.Value < 1 || request.DailyGoal.Value > 1000))
             return BadRequest(ApiResponse<StaffMemberResponse>.Fail("INVALID_GOAL", "Daily goal must be between 1 and 1000."));
+        if (request.AppointmentDailyGoal.HasValue && (request.AppointmentDailyGoal.Value < 1 || request.AppointmentDailyGoal.Value > 1000))
+            return BadRequest(ApiResponse<StaffMemberResponse>.Fail("INVALID_GOAL", "Appointment daily goal must be between 1 and 1000."));
 
-        var result = await _businessService.SetStaffDailyGoalAsync(userId.Value, staffUserId, request.DailyGoal);
+        var result = await _businessService.SetStaffDailyGoalAsync(userId.Value, staffUserId, request.DailyGoal, request.AppointmentDailyGoal);
         if (!result.Success) return NotFound(result);
         return Ok(result);
     }
@@ -261,6 +275,49 @@ public partial class BusinessController
         if (userId == null) return Unauthorized();
 
         var result = await _businessService.GetStaffAnalyticsAsync(userId.Value);
+        if (!result.Success) return NotFound(result);
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// Staff: list the distinct customers this staff member has served in their
+    /// linked business (awarded stamps / redemptions / assigned appointments).
+    /// Scoped to the authenticated staff member's own business — no cross-tenant.
+    /// </summary>
+    [RequireModule("customers")]
+    [HttpGet("staff/customers")]
+    [Authorize(Roles = "Staff")]
+    [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<BusinessCustomerResponse>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetMyStaffCustomers(
+        [FromQuery] string? search,
+        [FromQuery] string? status,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 25)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        page = Math.Max(page, 1);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        var result = await _businessService.GetStaffCustomersAsync(userId.Value, search, status, page, pageSize);
+        if (!result.Success) return NotFound(result);
+        return Ok(result);
+    }
+
+    /// <summary>Staff: get a single customer served by this staff member (business-scoped).</summary>
+    [RequireModule("customers")]
+    [HttpGet("staff/customers/{customerId:guid}")]
+    [Authorize(Roles = "Staff")]
+    [ProducesResponseType(typeof(ApiResponse<BusinessCustomerResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetMyStaffCustomer(Guid customerId)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _businessService.GetStaffCustomerAsync(userId.Value, customerId);
         if (!result.Success) return NotFound(result);
         return Ok(result);
     }

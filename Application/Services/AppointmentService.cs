@@ -44,18 +44,18 @@ public class AppointmentService : IAppointmentService
 
     /// <summary>
     /// Fine-grained permission gate (G6): staff members do NOT hold
-    /// <c>appointments.manage</c> (PermissionMatrix), so staff creating,
-    /// rescheduling or cancelling business appointments is forbidden.
-    /// Distinct from MODULE_DISABLED — this is a permission failure, not an
-    /// entitlement one. Confirm/complete/no-show transitions of a staff
-    /// member's OWN appointments remain allowed (staff workflow, not
+    /// <c>appointments.manage</c> (PermissionMatrix), so staff creating business
+    /// appointments on behalf of customers is forbidden. Distinct from
+    /// MODULE_DISABLED — this is a permission failure, not an entitlement one.
+    /// Confirm/complete/no-show transitions, plus reschedule/cancel of a staff
+    /// member's OWN appointments, remain allowed (staff workflow, not
     /// business-appointment management).
     /// </summary>
-    private ApiResponse<AppointmentResponse>? StaffManagePermissionGuard(string role) =>
-        IsRole(role, "Staff") && !_permissionService.HasPermission("Staff", "appointments.manage")
+    private ApiResponse<AppointmentResponse>? StaffCreatePermissionGuard(string role) =>
+        IsRole(role, "Staff") && !_permissionService.HasPermission("Staff", "appointments.create")
             ? ApiResponse<AppointmentResponse>.Fail(
                 "FORBIDDEN",
-                "Staff members do not have permission to manage business appointments (appointments.manage required).")
+                "Staff members do not have permission to create business appointments (appointments.create required).")
             : null;
 
     // ═══════════════════════════════════════════════════════════
@@ -89,8 +89,8 @@ public class AppointmentService : IAppointmentService
         }
         else if (IsRole(role, "Staff"))
         {
-            var manageGuard = StaffManagePermissionGuard(role);
-            if (manageGuard != null) return manageGuard;
+            var createGuard = StaffCreatePermissionGuard(role);
+            if (createGuard != null) return createGuard;
 
             var staffMember = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == callerUserId && u.StaffBusinessId == request.BusinessId);
             if (staffMember == null)
@@ -139,8 +139,8 @@ public class AppointmentService : IAppointmentService
         }
         else if (IsRole(role, "Staff"))
         {
-            var manageGuard = StaffManagePermissionGuard(role);
-            if (manageGuard != null) return manageGuard;
+            var createGuard = StaffCreatePermissionGuard(role);
+            if (createGuard != null) return createGuard;
 
             var staffMember = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == callerUserId && u.StaffBusinessId == request.BusinessId);
             if (staffMember == null)
@@ -189,8 +189,8 @@ public class AppointmentService : IAppointmentService
         if (ownershipError != null)
             return ownershipError;
 
-        var manageGuard = StaffManagePermissionGuard(role);
-        if (manageGuard != null) return manageGuard;
+        // Staff may reschedule their OWN assigned appointments (ownership is
+        // already scoped to StaffUserId == caller). Only creation stays gated.
 
         // Customers never modify the appointment directly — they submit a
         // reschedule REQUEST that the business must confirm (approve/reject).
@@ -500,8 +500,8 @@ public class AppointmentService : IAppointmentService
         if (ownershipError != null)
             return ownershipError;
 
-        var manageGuard = StaffManagePermissionGuard(role);
-        if (manageGuard != null) return manageGuard;
+        // Staff may cancel their OWN assigned appointments (ownership is already
+        // scoped to StaffUserId == caller). Only creation stays gated.
 
         return await TransitionAsync(appointment, "cancelled", callerUserId, request.Note, role, staffOrOwnerOnly: false);
     }
@@ -754,12 +754,36 @@ public class AppointmentService : IAppointmentService
             .Select(a =>
             {
                 var r = MapResponse(a, latestChanges);
-                r.PendingReschedule = MapPendingReschedule(pendingRequests.GetValueOrDefault(a.Id));
+                                r.PendingReschedule = MapPendingReschedule(pendingRequests.GetValueOrDefault(a.Id));
                 return r;
             })
             .ToList();
 
         return ApiResponse<List<AppointmentResponse>>.Ok(responses);
+    }
+
+    /// <summary>
+    /// Staff: the appointments a specific customer has at the staff member's
+    /// own linked business (read-only history used by the staff customer
+    /// detail page). Reuses the customer appointment query, scoped to the
+    /// caller's business — no cross-tenant leakage.
+    /// </summary>
+    public async Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetStaffCustomerAppointmentsAsync(
+        Guid staffUserId, Guid customerId, int page, int pageSize)
+    {
+                var staff = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId);
+
+        if (staff == null || staff.StaffBusinessId == null)
+            return ApiResponse<PaginatedResponse<AppointmentResponse>>.Fail(
+                "NOT_LINKED", "You are not linked to any business.");
+
+        return await GetCustomerAppointmentsAsync(customerId, new CustomerAppointmentsQueryRequest
+        {
+            BusinessId = staff.StaffBusinessId.Value,
+            Page = page,
+            PageSize = pageSize,
+            SortBy = "upcoming"
+        });
     }
 
     // ═══════════════════════════════════════════════════════════

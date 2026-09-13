@@ -65,6 +65,15 @@ public class BusinessConfiguration : IEntityTypeConfiguration<Business>
         builder.Property(e => e.DefaultDailyGoal)
             .HasColumnName("default_daily_goal");
 
+        builder.Property(e => e.DailyGoalType)
+            .IsRequired()
+            .HasMaxLength(20)
+            .HasColumnName("daily_goal_type")
+            .HasDefaultValue("stamps");
+
+        builder.Property(e => e.DefaultAppointmentDailyGoal)
+            .HasColumnName("default_appointment_daily_goal");
+
         builder.Property(e => e.CreatedAt)
             .HasColumnName("created_at");
 

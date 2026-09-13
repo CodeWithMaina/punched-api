@@ -62,18 +62,30 @@ public class UpdateBusinessRequest
     public string? MpesaNumber { get; set; }
 }
 
-/// <summary>Sets the business-level default daily-stamp goal for staff.</summary>
+/// <summary>Sets the business-level default daily goal for staff.</summary>
 public class UpdateBusinessDailyGoalRequest
 {
     [JsonPropertyName("dailyGoal")]
     public int? DailyGoal { get; set; }
+
+    /// <summary>Which metric the goal tracks: "stamps" (default) or "appointments".</summary>
+    [JsonPropertyName("dailyGoalType")]
+    public string? DailyGoalType { get; set; }
+
+    /// <summary>Default daily appointment goal (used when type is "appointments").</summary>
+    [JsonPropertyName("appointmentDailyGoal")]
+    public int? AppointmentDailyGoal { get; set; }
 }
 
-/// <summary>Sets (or clears, when null) a staff member's personal daily-stamp goal override.</summary>
+/// <summary>Sets (or clears, when null) a staff member's personal daily goal override.</summary>
 public class SetStaffDailyGoalRequest
 {
     [JsonPropertyName("dailyGoal")]
     public int? DailyGoal { get; set; }
+
+    /// <summary>Personal daily appointment goal override (cleared when null).</summary>
+    [JsonPropertyName("appointmentDailyGoal")]
+    public int? AppointmentDailyGoal { get; set; }
 }
 
 public class BusinessResponse
@@ -107,6 +119,14 @@ public class BusinessResponse
 
     [JsonPropertyName("defaultDailyGoal")]
     public int? DefaultDailyGoal { get; set; }
+
+    /// <summary>Which metric the daily goal tracks: "stamps" or "appointments".</summary>
+    [JsonPropertyName("dailyGoalType")]
+    public string DailyGoalType { get; set; } = "stamps";
+
+    /// <summary>Business-level default daily appointment goal.</summary>
+    [JsonPropertyName("defaultAppointmentDailyGoal")]
+    public int? DefaultAppointmentDailyGoal { get; set; }
 
     [JsonPropertyName("loyaltyProgram")]
     public LoyaltyProgramResponse? LoyaltyProgram { get; set; }
@@ -948,9 +968,29 @@ public class StaffMemberResponse
     [JsonPropertyName("dailyGoalOverride")]
     public int? DailyGoalOverride { get; set; }
 
-    /// <summary>Effective daily-stamp goal (override, else business default, else null).</summary>
+    /// <summary>Effective daily goal (override, else business default, else null) for the active goal type.</summary>
     [JsonPropertyName("dailyGoal")]
     public int? DailyGoal { get; set; }
+
+    /// <summary>Which metric the goal tracks: "stamps" or "appointments".</summary>
+    [JsonPropertyName("dailyGoalType")]
+    public string DailyGoalType { get; set; } = "stamps";
+
+    /// <summary>Personal daily appointment goal override (null = fall back to business default).</summary>
+    [JsonPropertyName("appointmentDailyGoalOverride")]
+    public int? AppointmentDailyGoalOverride { get; set; }
+
+    /// <summary>Effective daily appointment goal (override, else business default).</summary>
+    [JsonPropertyName("appointmentDailyGoal")]
+    public int? AppointmentDailyGoal { get; set; }
+
+    /// <summary>Today's appointment count (business-scoped).</summary>
+    [JsonPropertyName("appointmentsToday")]
+    public int AppointmentsToday { get; set; }
+
+    /// <summary>Appointments in the trailing 7 days (business-scoped).</summary>
+    [JsonPropertyName("appointmentsLast7d")]
+    public int AppointmentsLast7d { get; set; }
 
     /// <summary>Stamps issued today (business-scoped, from staff daily analytics).</summary>
     [JsonPropertyName("stampsToday")]
@@ -1058,9 +1098,21 @@ public class StaffAnalyticsResponse
     [JsonPropertyName("rewardReadyCount")]
     public int RewardReadyCount { get; set; }
 
-    /// <summary>Effective daily-stamp goal (staff override, else business default).</summary>
+    /// <summary>Effective daily goal (staff override, else business default) for the active goal type.</summary>
     [JsonPropertyName("dailyGoal")]
     public int? DailyGoal { get; set; }
+
+    /// <summary>Which metric the goal tracks: "stamps" or "appointments".</summary>
+    [JsonPropertyName("dailyGoalType")]
+    public string DailyGoalType { get; set; } = "stamps";
+
+    /// <summary>Effective daily appointment goal (override, else business default).</summary>
+    [JsonPropertyName("appointmentDailyGoal")]
+    public int? AppointmentDailyGoal { get; set; }
+
+    /// <summary>Today's appointment count for this staff member (goal progress).</summary>
+    [JsonPropertyName("appointmentsToday")]
+    public int AppointmentsToday { get; set; }
 
     [JsonPropertyName("recentActivity")]
     public List<StaffActivityItem> RecentActivity { get; set; } = [];
@@ -1201,13 +1253,37 @@ public class StaffMemberAnalyticsResponse
     [JsonPropertyName("totalCustomersAllTime")]
     public int TotalCustomersAllTime { get; set; }
 
-    /// <summary>Effective daily-stamp goal (staff override, else business default).</summary>
+    /// <summary>Effective daily goal (staff override, else business default) for the active goal type.</summary>
     [JsonPropertyName("dailyGoal")]
     public int? DailyGoal { get; set; }
 
-    /// <summary>Personal override if set (null = using business default).</summary>
+    /// <summary>Personal stamp override if set (null = using business default).</summary>
     [JsonPropertyName("dailyGoalOverride")]
     public int? DailyGoalOverride { get; set; }
+
+    /// <summary>Which metric the goal tracks: "stamps" or "appointments".</summary>
+    [JsonPropertyName("dailyGoalType")]
+    public string DailyGoalType { get; set; } = "stamps";
+
+    /// <summary>Personal appointment override if set (null = using business default).</summary>
+    [JsonPropertyName("appointmentDailyGoalOverride")]
+    public int? AppointmentDailyGoalOverride { get; set; }
+
+    /// <summary>Effective daily appointment goal (override, else business default).</summary>
+    [JsonPropertyName("appointmentDailyGoal")]
+    public int? AppointmentDailyGoal { get; set; }
+
+    /// <summary>Today's appointment count for this staff member (goal progress).</summary>
+    [JsonPropertyName("appointmentsToday")]
+    public int AppointmentsToday { get; set; }
+
+    /// <summary>Last-7d appointment count.</summary>
+    [JsonPropertyName("appointmentsLast7d")]
+    public int AppointmentsLast7d { get; set; }
+
+    /// <summary>Lifetime appointment count.</summary>
+    [JsonPropertyName("appointmentsIssued")]
+    public int AppointmentsIssued { get; set; }
 
     [JsonPropertyName("recentActivity")]
     public List<StaffActivityItem> RecentActivity { get; set; } = [];

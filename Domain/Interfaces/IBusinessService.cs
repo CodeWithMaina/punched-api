@@ -26,6 +26,17 @@ public interface IBusinessService
     Task<ApiResponse<BusinessDashboardResponse>> GetDashboardAsync(Guid ownerId);
     Task<ApiResponse<StaffBusinessResponse>> GetStaffBusinessAsync(Guid staffUserId);
     Task<ApiResponse<StaffAnalyticsResponse>> GetStaffAnalyticsAsync(Guid staffUserId);
+
+    /// <summary>
+    /// Paginated roster of the distinct customers the authenticated staff member has
+    /// served in their connected business (via awarded stamps, redemptions or assigned
+    /// appointments). Scoped to the staff member's own linked business — no cross-tenant.
+    /// </summary>
+    Task<ApiResponse<PaginatedResponse<BusinessCustomerResponse>>> GetStaffCustomersAsync(
+        Guid staffUserId, string? search = null, string? status = null, int page = 1, int pageSize = 25);
+
+    /// <summary>Single customer served by this staff member (business-scoped).</summary>
+    Task<ApiResponse<BusinessCustomerResponse>> GetStaffCustomerAsync(Guid staffUserId, Guid customerId);
     Task<ApiResponse<StaffListResponse>> GetMyStaffAsync(
     Guid ownerId,
     string? search = null,
@@ -42,8 +53,8 @@ Task<ApiResponse<StaffOverviewResponse>> GetStaffOverviewAsync(Guid ownerId);
     Task<ApiResponse<StaffActivityFeedResponse>> GetMyStaffActivityAsync(Guid staffUserId, StaffActivityFilterRequest request);
     Task<ApiResponse<CustomerPeriodStatsResponse>> GetCustomerPeriodStatsAsync(Guid ownerId, Guid customerId, string period);
     Task<ApiResponse<MessageResponse>> LinkStaffToBusinessAsync(Guid ownerId, Guid staffUserId);
-    Task<ApiResponse<BusinessResponse>> SetBusinessDailyGoalAsync(Guid ownerId, int? dailyGoal);
-    Task<ApiResponse<StaffMemberResponse>> SetStaffDailyGoalAsync(Guid ownerId, Guid staffUserId, int? dailyGoal);
+    Task<ApiResponse<BusinessResponse>> SetBusinessDailyGoalAsync(Guid ownerId, int? dailyGoal, string? dailyGoalType = null, int? appointmentDailyGoal = null);
+    Task<ApiResponse<StaffMemberResponse>> SetStaffDailyGoalAsync(Guid ownerId, Guid staffUserId, int? dailyGoal, int? appointmentDailyGoal = null);
     Task<ApiResponse<BusinessAnalyticsResponse>> GetBusinessAnalyticsAsync(Guid ownerId, string period);
     Task<ApiResponse<BusinessAnalyticsComparisonResponse>> GetBusinessAnalyticsComparisonAsync(
         Guid ownerId, string period, string? prev, DateOnly? start, DateOnly? end);
