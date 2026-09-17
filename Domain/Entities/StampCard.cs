@@ -3,15 +3,15 @@ using System.ComponentModel.DataAnnotations;
 namespace PunchedApi.Domain.Entities;
 
 /// <summary>
-/// An individual stamp card customers can use within a loyalty program (campaign).
-/// A campaign owns one or more stamp cards (one-to-many); each card defines its
+/// An individual stamp card customers can use within a loyalty program.
+/// A loyalty program owns one or more stamp cards (one-to-many); each card defines its
 /// own stamp goal, reward and visual design. The classic program-level fields on
 /// <see cref="LoyaltyProgram"/> remain the default/stamp-pipeline values so
 /// existing stamping behaviour is unchanged.
 /// </summary>
 public class StampCard : BaseEntity
 {
-    /// <summary>FK to the campaign (LoyaltyProgram) that owns this card.</summary>
+    /// <summary>FK to the loyalty program that owns this card.</summary>
     [Required]
     public Guid ProgramId { get; set; }
 
@@ -24,7 +24,7 @@ public class StampCard : BaseEntity
     [MaxLength(100)]
     public string Name { get; set; } = "Stamp Card";
 
-    /// <summary>Optional human-readable description shown in the campaign manager.</summary>
+    /// <summary>Optional human-readable description shown in the program manager.</summary>
     [MaxLength(500)]
     public string? Description { get; set; }
 

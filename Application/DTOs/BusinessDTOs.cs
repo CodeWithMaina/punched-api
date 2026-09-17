@@ -300,11 +300,11 @@ public class LoyaltyProgramResponse
 }
 
 /// <summary>
-/// A public, customer-facing campaign (active loyalty program) for a business.
-/// Projected to only the fields the Campaigns tab needs; enrolled programs are
+/// A public, customer-facing active loyalty program for a business.
+/// Projected to only the fields the loyalty programs tab needs; enrolled programs are
 /// ordered first by the database.
 /// </summary>
-public class CustomerCampaignResponse
+public class CustomerProgramResponse
 {
     [JsonPropertyName("id")]
     public Guid Id { get; set; }
@@ -334,7 +334,7 @@ public class CustomerCampaignResponse
     [JsonPropertyName("endsAt")]
     public DateTime? EndsAt { get; set; }
 
-    /// <summary>True when the calling customer already holds a card in this campaign.</summary>
+    /// <summary>True when the calling customer already holds a card in this program.</summary>
     [JsonPropertyName("isEnrolled")]
     public bool IsEnrolled { get; set; }
 }

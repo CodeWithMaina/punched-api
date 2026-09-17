@@ -470,12 +470,12 @@ public class LoyaltyService : ILoyaltyService
     }
 
     /// <summary>
-    /// Public, DB-first, paginated campaigns list for a business. Only active,
-    /// in-window programs are returned; enrolled campaigns are ordered first by
+    /// Public, DB-first, paginated loyalty programs list for a business. Only active,
+    /// in-window programs are returned; enrolled programs are ordered first by
     /// the database and the enrolled flag is computed in SQL (no Includes, no
     /// load-then-filter, only the requested page is materialised).
     /// </summary>
-    public async Task<ApiResponse<PaginatedResponse<CustomerCampaignResponse>>> GetBusinessCampaignsAsync(Guid businessId, Guid? customerId, int page, int pageSize)
+    public async Task<ApiResponse<PaginatedResponse<CustomerProgramResponse>>> GetBusinessProgramsAsync(Guid businessId, Guid? customerId, int page, int pageSize)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 50);
@@ -512,7 +512,7 @@ public class LoyaltyService : ILoyaltyService
             .Take(pageSize)
             .ToListAsync();
 
-        var items = rows.Select(x => new CustomerCampaignResponse
+        var items = rows.Select(x => new CustomerProgramResponse
         {
             Id = x.Id,
             Name = x.Name,
@@ -526,7 +526,7 @@ public class LoyaltyService : ILoyaltyService
             IsEnrolled = x.IsEnrolled
         }).ToList();
 
-        return ApiResponse<PaginatedResponse<CustomerCampaignResponse>>.Ok(new PaginatedResponse<CustomerCampaignResponse>
+        return ApiResponse<PaginatedResponse<CustomerProgramResponse>>.Ok(new PaginatedResponse<CustomerProgramResponse>
         {
             Items = items,
             TotalCount = totalCount,

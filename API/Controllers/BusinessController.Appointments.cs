@@ -339,4 +339,34 @@ public partial class BusinessController
         var result = await _appointmentService.GetAvailableSlotsAsync(Guid.Empty, "Anonymous", businessId, request);
         return result.Success ? Ok(result) : MapFailure(result);
     }
+
+    /// <summary>
+    /// Public: full bookable grid for the booking wizard — every slot in the range
+    /// with its status (available / booked / off_duty / past), per-day rollups and
+    /// alternative-staff suggestions when the chosen staff member is full.
+    /// </summary>
+    [RequireModule("appointments")]
+    [HttpGet("{businessId:guid}/availability/calendar")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<AvailabilityCalendarResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetAvailabilityCalendar(
+        Guid businessId,
+        [FromQuery] Guid[] serviceIds,
+        [FromQuery] Guid? staffId,
+        [FromQuery] DateOnly startDate,
+        [FromQuery] DateOnly endDate)
+    {
+        var request = new AvailabilityQueryRequest
+        {
+            BusinessId = businessId,
+            ServiceIds = serviceIds,
+            StaffUserId = staffId,
+            StartDate = startDate,
+            EndDate = endDate
+        };
+
+        var result = await _appointmentService.GetAvailabilityCalendarAsync(Guid.Empty, "Anonymous", businessId, request);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
 }

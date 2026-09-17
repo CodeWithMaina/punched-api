@@ -7,7 +7,7 @@ using PunchedApi.Domain.Interfaces;
 namespace PunchedApi.Application.Services;
 
 /// <summary>
-/// Business-facing management of stamp cards (children of campaigns) and
+/// Business-facing management of stamp cards (children of loyalty programs) and
 /// reusable card designs (sanitized HTML templates), plus the shared preview
 /// rendering pipeline.
 /// </summary>
@@ -82,7 +82,7 @@ public class StampCardService : IStampCardService
         var program = await _unitOfWork.LoyaltyPrograms
             .FirstOrDefaultAsync(p => p.Id == programId && p.BusinessId == business.Id);
         if (program == null)
-            return ApiResponse<List<StampCardResponse>>.Fail("NOT_FOUND", "Campaign not found.");
+            return ApiResponse<List<StampCardResponse>>.Fail("NOT_FOUND", "Loyalty program not found.");
 
         var cards = await _unitOfWork.StampCards.FindAsync(c => c.ProgramId == programId);
         var enrolled = await _unitOfWork.LoyaltyCards.CountAsync(lc => lc.ProgramId == programId);
@@ -122,7 +122,7 @@ public class StampCardService : IStampCardService
             var program = await _unitOfWork.LoyaltyPrograms
                 .FirstOrDefaultAsync(p => p.Id == programId && p.BusinessId == business.Id);
             if (program == null)
-                return ApiResponse<StampCardResponse>.Fail("NOT_FOUND", "Campaign not found.");
+                return ApiResponse<StampCardResponse>.Fail("NOT_FOUND", "Loyalty program not found.");
 
             if (request.CardDesignId.HasValue)
             {

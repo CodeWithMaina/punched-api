@@ -12,6 +12,12 @@ public interface IAppointmentService
     /// <summary>Computes bookable slots for a business across a date range.</summary>
     Task<ApiResponse<List<AvailabilitySlotResponse>>> GetAvailableSlotsAsync(Guid userId, string role, Guid businessId, AvailabilityQueryRequest request);
 
+    /// <summary>
+    /// Full bookable grid (including blocked slots, per-day rollups and
+    /// alternative-staff suggestions) powering the booking wizard's time step.
+    /// </summary>
+    Task<ApiResponse<AvailabilityCalendarResponse>> GetAvailabilityCalendarAsync(Guid userId, string role, Guid businessId, AvailabilityQueryRequest request);
+
     /// <summary>Customer self-service booking. CustomerId is forced to the caller.</summary>
     Task<ApiResponse<AppointmentResponse>> CreateAppointmentAsync(Guid callerUserId, string role, CreateAppointmentRequest request);
 

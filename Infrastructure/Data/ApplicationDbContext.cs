@@ -54,6 +54,12 @@ public class ApplicationDbContext : DbContext
     public DbSet<StampCard> StampCards => Set<StampCard>();
     public DbSet<CardDesign> CardDesigns => Set<CardDesign>();
 
+    // ── Loyalty programs: earning rules, transactions, rewards ──
+    public DbSet<LoyaltyEarningRule> LoyaltyEarningRules => Set<LoyaltyEarningRule>();
+    public DbSet<StampTransaction> StampTransactions => Set<StampTransaction>();
+    public DbSet<Reward> Rewards => Set<Reward>();
+    public DbSet<RewardEntitlement> RewardEntitlements => Set<RewardEntitlement>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

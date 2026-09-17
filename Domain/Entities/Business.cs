@@ -99,6 +99,41 @@ public class Business : BaseEntity
     [Range(1, 1000)]
     public int? DefaultAppointmentDailyGoal { get; set; }
 
+    // ── Booking window (availability engine) ────────────────
+    /// <summary>
+    /// IANA timezone the business trades in. Staff shift hours and the default
+    /// booking window are interpreted in this zone before being converted to UTC,
+    /// so a "09:00" slot means 09:00 on the shop floor, not 09:00 UTC.
+    /// </summary>
+    [MaxLength(64)]
+    public string TimeZoneId { get; set; } = "Africa/Nairobi";
+
+    /// <summary>
+    /// Default opening hour (business-local, 0-23) used to build the bookable grid
+    /// for any staff member with no shift row on a given date.
+    /// </summary>
+    [Range(0, 23)]
+    public int BookingOpenHour { get; set; } = 9;
+
+    /// <summary>
+    /// Default closing hour (business-local, 1-24, exclusive).
+    /// </summary>
+    [Range(1, 24)]
+    public int BookingCloseHour { get; set; } = 18;
+
+    /// <summary>
+    /// Granularity of the bookable grid in minutes (e.g. 15 → :00/:15/:30/:45).
+    /// </summary>
+    [Range(5, 240)]
+    public int BookingSlotIntervalMinutes { get; set; } = 15;
+
+    /// <summary>
+    /// Minimum notice, in minutes, between "now" and the start of a bookable slot.
+    /// Slots inside the lead time are returned as <c>past</c> and cannot be booked.
+    /// </summary>
+    [Range(0, 10080)]
+    public int BookingLeadTimeMinutes { get; set; } = 60;
+
     // ── Navigation ──────────────────────────────────────────
     /// <summary>
     /// The business's current subscription (one per business).

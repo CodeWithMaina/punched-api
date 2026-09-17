@@ -9,7 +9,7 @@ public enum StampCardStatus
     /// <summary>Being configured; not yet usable by customers.</summary>
     Draft = 0,
 
-    /// <summary>Live — selectable/enrollable within its campaign.</summary>
+    /// <summary>Live — selectable/enrollable within its loyalty program.</summary>
     Active = 1,
 
     /// <summary>Temporarily disabled by the owner; can be reactivated.</summary>

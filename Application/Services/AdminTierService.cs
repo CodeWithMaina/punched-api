@@ -477,12 +477,20 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
     /// <summary>Atomically replaces a tier's module set (validating existence + dependencies).</summary>
     private async Task<(string Code, string Message)?> ApplyModuleSetAsync(SubscriptionPlan tier, IReadOnlyCollection<string> requestedKeys)
     {
-        var normalized = requestedKeys.Select(k => k.Trim().ToLowerInvariant()).Distinct().ToList();
-        var modulesByKey = await _context.Modules.Where(m => normalized.Contains(m.Key)).ToDictionaryAsync(m => m.Key, StringComparer.OrdinalIgnoreCase);
+        // Module keys are matched case-insensitively: the catalog allows
+        // mixed-case keys (e.g. "serviceCatalog") while callers may send any
+        // casing, so a case-sensitive SQL `IN` filter would falsely reject them.
+        var normalized = requestedKeys
+            .Select(k => k.Trim())
+            .Where(k => k.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var allModules = await _context.Modules.AsNoTracking().ToListAsync();
+        var modulesByKey = allModules.ToDictionary(m => m.Key, StringComparer.OrdinalIgnoreCase);
 
-        if (modulesByKey.Count != normalized.Count)
+        if (modulesByKey.Count < normalized.Count || normalized.Any(k => !modulesByKey.ContainsKey(k)))
         {
-            var missing = normalized.First(k => !modulesByKey.ContainsKey(k));
+            var missing = normalized.FirstOrDefault(k => !modulesByKey.ContainsKey(k));
             return (ErrInvalidModule, $"Module '{missing}' does not exist in the catalog.");
         }
 

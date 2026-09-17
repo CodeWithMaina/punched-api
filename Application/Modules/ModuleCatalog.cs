@@ -133,6 +133,8 @@ public static class ModuleCatalog
             {
                 new PermissionDefinition("loyalty.view",   new[] { "Business", "Customer" }),
                 new PermissionDefinition("loyalty.manage", new[] { "Business" }),
+                new PermissionDefinition("loyalty.stamp",  new[] { "Business", "Staff" }),
+                new PermissionDefinition("loyalty.redeem", new[] { "Business", "Staff" }),
             }),
         new ModuleDefinition(
             Key: "rewards", Name: "Rewards",

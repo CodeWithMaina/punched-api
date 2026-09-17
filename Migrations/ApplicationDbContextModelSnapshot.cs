@@ -229,6 +229,30 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<int>("BookingCloseHour")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(18)
+                        .HasColumnName("booking_close_hour");
+
+                    b.Property<int>("BookingLeadTimeMinutes")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(60)
+                        .HasColumnName("booking_lead_time_minutes");
+
+                    b.Property<int>("BookingOpenHour")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(9)
+                        .HasColumnName("booking_open_hour");
+
+                    b.Property<int>("BookingSlotIntervalMinutes")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(15)
+                        .HasColumnName("booking_slot_interval_minutes");
+
                     b.Property<string>("Category")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -239,24 +263,25 @@ namespace PunchedApi.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
-                    b.Property<int?>("DefaultDailyGoal")
-                        .HasColumnType("integer")
-                        .HasColumnName("default_daily_goal");
+                    b.Property<string>("DailyGoalType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("stamps")
+                        .HasColumnName("daily_goal_type");
 
                     b.Property<int?>("DefaultAppointmentDailyGoal")
                         .HasColumnType("integer")
                         .HasColumnName("default_appointment_daily_goal");
 
+                    b.Property<int?>("DefaultDailyGoal")
+                        .HasColumnType("integer")
+                        .HasColumnName("default_daily_goal");
+
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at");
-
-                    b.Property<string>("DailyGoalType")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("daily_goal_type")
-                        .HasDefaultValue("stamps");
 
                     b.Property<string>("Description")
                         .HasMaxLength(500)
@@ -306,6 +331,14 @@ namespace PunchedApi.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("phone_number");
 
+                    b.Property<string>("TimeZoneId")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasDefaultValue("Africa/Nairobi")
+                        .HasColumnName("time_zone_id");
+
                     b.HasKey("Id");
 
                     b.HasIndex("Category");
@@ -316,7 +349,12 @@ namespace PunchedApi.Migrations
 
                     b.HasIndex("OwnerId", "IsDeleted");
 
-                    b.ToTable("businesses", (string)null);
+                    b.ToTable("businesses", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_business_booking_hours", "\"booking_open_hour\" >= 0 AND \"booking_open_hour\" <= 23 AND \"booking_close_hour\" >= 1 AND \"booking_close_hour\" <= 24 AND \"booking_close_hour\" > \"booking_open_hour\"");
+
+                            t.HasCheckConstraint("chk_business_booking_interval", "\"booking_slot_interval_minutes\" >= 5 AND \"booking_slot_interval_minutes\" <= 240");
+                        });
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessDailyAnalytics", b =>
@@ -2262,6 +2300,10 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<int?>("AppointmentDailyGoalOverride")
+                        .HasColumnType("integer")
+                        .HasColumnName("appointment_daily_goal_override");
+
                     b.Property<string>("AvatarUrl")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)")
@@ -2274,10 +2316,6 @@ namespace PunchedApi.Migrations
                     b.Property<int?>("DailyGoalOverride")
                         .HasColumnType("integer")
                         .HasColumnName("daily_goal_override");
-
-                    b.Property<int?>("AppointmentDailyGoalOverride")
-                        .HasColumnType("integer")
-                        .HasColumnName("appointment_daily_goal_override");
 
                     b.Property<DateOnly?>("DateOfBirth")
                         .HasColumnType("date");

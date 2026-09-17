@@ -11,6 +11,7 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using PunchedApi.API.Middleware;
 using PunchedApi.Application.Authorization;
+using PunchedApi.Application.Loyalty;
 using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Modules;
 using PunchedApi.Application.Services;
@@ -141,6 +142,19 @@ try
     builder.Services.AddScoped<IBusinessService, BusinessService>();
     builder.Services.AddScoped<ILoyaltyService, LoyaltyService>();
             builder.Services.AddScoped<IStampService, StampService>();
+
+    // ── Loyalty module (earning rules, stamp ledger, rewards) ──
+    // Subscription-gated via the existing module entitlement system:
+    // ModuleCatalog["loyalty"] + [RequireModule("loyalty")] + service-layer checks.
+    builder.Services.AddScoped<ILoyaltyScopeResolver, LoyaltyScopeResolver>();
+    builder.Services.AddScoped<ILoyaltyStampingService, LoyaltyStampingService>();
+    builder.Services.AddScoped<ILoyaltyEarningRuleService, LoyaltyEarningRuleService>();
+    builder.Services.AddScoped<ILoyaltyRewardService, LoyaltyRewardService>();
+
+    // Domain-event dispatch for automatic earning. Producers (Appointments,
+    // Referrals) publish facts they own; Loyalty is the only subscriber.
+    builder.Services.AddScoped<ILoyaltyEventBus, LoyaltyEventBus>();
+    builder.Services.AddScoped<ILoyaltyEventHandler, LoyaltyAutomaticEarningHandler>();
     builder.Services.AddScoped<IStampCardService, StampCardService>();
     builder.Services.AddScoped<PunchedApi.Application.Programs.IProgramRuleEngine, PunchedApi.Application.Programs.ProgramRuleEngine>();
     builder.Services.AddScoped<IIdempotencyService, IdempotencyService>();

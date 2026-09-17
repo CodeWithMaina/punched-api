@@ -39,6 +39,10 @@ public class UnitOfWork : IUnitOfWork
     private IRepository<StaffServiceAssignment>? _staffServiceAssignments;
     private IRepository<StampCard>? _stampCards;
     private IRepository<CardDesign>? _cardDesigns;
+    private IRepository<LoyaltyEarningRule>? _loyaltyEarningRules;
+    private IRepository<StampTransaction>? _stampTransactions;
+    private IRepository<Reward>? _rewards;
+    private IRepository<RewardEntitlement>? _rewardEntitlements;
 
     public UnitOfWork(ApplicationDbContext context)
     {
@@ -139,6 +143,22 @@ public class UnitOfWork : IUnitOfWork
     /// <inheritdoc />
     public IRepository<CardDesign> CardDesigns =>
         _cardDesigns ??= new Repository<CardDesign>(_context);
+
+    /// <inheritdoc />
+    public IRepository<LoyaltyEarningRule> LoyaltyEarningRules =>
+        _loyaltyEarningRules ??= new Repository<LoyaltyEarningRule>(_context);
+
+    /// <inheritdoc />
+    public IRepository<StampTransaction> StampTransactions =>
+        _stampTransactions ??= new Repository<StampTransaction>(_context);
+
+    /// <inheritdoc />
+    public IRepository<Reward> Rewards =>
+        _rewards ??= new Repository<Reward>(_context);
+
+    /// <inheritdoc />
+    public IRepository<RewardEntitlement> RewardEntitlements =>
+        _rewardEntitlements ??= new Repository<RewardEntitlement>(_context);
 
     /// <inheritdoc />
     public async Task<int> SaveChangesAsync()

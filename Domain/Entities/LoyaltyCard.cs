@@ -90,4 +90,15 @@ public class LoyaltyCard : BaseEntity
     /// All redemptions claimed on this card.
     /// </summary>
     public virtual ICollection<Redemption> Redemptions { get; set; } = new List<Redemption>();
+
+    /// <summary>
+    /// The immutable stamp transaction ledger for this card. This is the source
+    /// of truth for the balance; <see cref="TotalStamps"/> is its materialized sum.
+    /// </summary>
+    public virtual ICollection<StampTransaction> StampTransactions { get; set; } = new List<StampTransaction>();
+
+    /// <summary>
+    /// Rewards this card has unlocked (redeemed and unredeemed).
+    /// </summary>
+    public virtual ICollection<RewardEntitlement> RewardEntitlements { get; set; } = new List<RewardEntitlement>();
 }

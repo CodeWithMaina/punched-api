@@ -121,4 +121,19 @@ public class LoyaltyProgram : BaseEntity
     /// Loyalty cards enrolled in this program.
     /// </summary>
     public virtual ICollection<LoyaltyCard> LoyaltyCards { get; set; } = new List<LoyaltyCard>();
+
+    /// <summary>
+    /// Earning rules that award stamps for this program.
+    /// </summary>
+    public virtual ICollection<LoyaltyEarningRule> EarningRules { get; set; } = new List<LoyaltyEarningRule>();
+
+    /// <summary>
+    /// Rewards unlockable within this program.
+    /// </summary>
+    public virtual ICollection<Reward> Rewards { get; set; } = new List<Reward>();
+
+    /// <summary>
+    /// The immutable stamp transaction ledger for this program.
+    /// </summary>
+    public virtual ICollection<StampTransaction> StampTransactions { get; set; } = new List<StampTransaction>();
 }

@@ -74,6 +74,36 @@ public class BusinessConfiguration : IEntityTypeConfiguration<Business>
         builder.Property(e => e.DefaultAppointmentDailyGoal)
             .HasColumnName("default_appointment_daily_goal");
 
+        builder.Property(e => e.TimeZoneId)
+            .IsRequired()
+            .HasMaxLength(64)
+            .HasColumnName("time_zone_id")
+            .HasDefaultValue("Africa/Nairobi");
+
+        builder.Property(e => e.BookingOpenHour)
+            .HasColumnName("booking_open_hour")
+            .HasDefaultValue(9);
+
+        builder.Property(e => e.BookingCloseHour)
+            .HasColumnName("booking_close_hour")
+            .HasDefaultValue(18);
+
+        builder.Property(e => e.BookingSlotIntervalMinutes)
+            .HasColumnName("booking_slot_interval_minutes")
+            .HasDefaultValue(15);
+
+        builder.Property(e => e.BookingLeadTimeMinutes)
+            .HasColumnName("booking_lead_time_minutes")
+            .HasDefaultValue(60);
+
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("chk_business_booking_hours",
+                "\"booking_open_hour\" >= 0 AND \"booking_open_hour\" <= 23 AND \"booking_close_hour\" >= 1 AND \"booking_close_hour\" <= 24 AND \"booking_close_hour\" > \"booking_open_hour\"");
+            t.HasCheckConstraint("chk_business_booking_interval",
+                "\"booking_slot_interval_minutes\" >= 5 AND \"booking_slot_interval_minutes\" <= 240");
+        });
+
         builder.Property(e => e.CreatedAt)
             .HasColumnName("created_at");
 

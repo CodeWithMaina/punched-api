@@ -4,12 +4,12 @@ namespace PunchedApi.Domain.Interfaces;
 
 /// <summary>
 /// Stamp card + card design management for business owners.
-/// Stamp cards are children of loyalty programs (campaigns); card designs are
+/// Stamp cards are children of loyalty programs; card designs are
 /// reusable HTML templates owned by the business.
 /// </summary>
 public interface IStampCardService
 {
-    // Stamp cards (children of campaigns)
+    // Stamp cards (children of loyalty programs)
     Task<ApiResponse<List<StampCardResponse>>> GetProgramStampCardsAsync(Guid ownerId, Guid programId);
     Task<ApiResponse<StampCardResponse>> GetStampCardAsync(Guid ownerId, Guid stampCardId);
     Task<ApiResponse<StampCardResponse>> CreateStampCardAsync(Guid ownerId, Guid programId, CreateStampCardRequest request);

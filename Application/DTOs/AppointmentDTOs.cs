@@ -105,7 +105,53 @@ public class CancelAppointmentRequest
 // ═══════════════════════════════════════════════════════════════
 
 /// <summary>
-/// A single bookable slot produced by the availability engine.
+/// Why a slot cannot be booked. Rendered verbatim by the booking UI, so the
+/// values are part of the API contract.
+/// </summary>
+public static class SlotStatuses
+{
+    public const string Available = "available";
+    public const string Booked = "booked";
+    public const string OffDuty = "off_duty";
+    public const string Past = "past";
+}
+
+/// <summary>
+/// Minimal staff descriptor embedded in availability payloads.
+/// </summary>
+public class AvailabilityStaffRef
+{
+    [JsonPropertyName("staffUserId")]
+    public Guid StaffUserId { get; set; }
+
+    [JsonPropertyName("staffName")]
+    public string StaffName { get; set; } = string.Empty;
+
+    [JsonPropertyName("avatarUrl")]
+    public string? AvatarUrl { get; set; }
+}
+
+/// <summary>
+/// An alternative staff member the customer can switch to when their preferred
+/// staff member (or the whole roster) is fully booked on the viewed day.
+/// </summary>
+public class StaffAvailabilitySuggestion : AvailabilityStaffRef
+{
+    [JsonPropertyName("availableSlotCount")]
+    public int AvailableSlotCount { get; set; }
+
+    [JsonPropertyName("nextAvailableUtc")]
+    public DateTime? NextAvailableUtc { get; set; }
+
+    /// <summary>Business-local "HH:mm" of <see cref="NextAvailableUtc"/>.</summary>
+    [JsonPropertyName("nextAvailableLocalTime")]
+    public string? NextAvailableLocalTime { get; set; }
+}
+
+/// <summary>
+/// A single slot on the bookable grid. Unlike the legacy engine this is emitted
+/// for unbookable times too, so the UI can render the full day and mark the
+/// blocked times instead of showing an empty state.
 /// </summary>
 public class AvailabilitySlotResponse
 {
@@ -115,14 +161,121 @@ public class AvailabilitySlotResponse
     [JsonPropertyName("endAtUtc")]
     public DateTime EndAtUtc { get; set; }
 
+    /// <summary>Staff who would take the slot. Null when nobody is free at this time.</summary>
     [JsonPropertyName("staffUserId")]
-    public Guid StaffUserId { get; set; }
+    public Guid? StaffUserId { get; set; }
 
     [JsonPropertyName("staffName")]
     public string StaffName { get; set; } = string.Empty;
 
     [JsonPropertyName("serviceIds")]
     public Guid[] ServiceIds { get; set; } = [];
+
+    /// <summary>One of <see cref="SlotStatuses"/>.</summary>
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = SlotStatuses.Available;
+
+    [JsonPropertyName("isAvailable")]
+    public bool IsAvailable { get; set; }
+
+    /// <summary>Business-local date, "yyyy-MM-dd".</summary>
+    [JsonPropertyName("localDate")]
+    public string LocalDate { get; set; } = string.Empty;
+
+    /// <summary>Business-local start time, "HH:mm".</summary>
+    [JsonPropertyName("localTime")]
+    public string LocalTime { get; set; } = string.Empty;
+
+    /// <summary>"morning" | "afternoon" | "evening" (business-local).</summary>
+    [JsonPropertyName("dayPart")]
+    public string DayPart { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Other staff free at this exact time. Populated when the requested staff
+    /// member is blocked, so the UI can offer an instant swap.
+    /// </summary>
+    [JsonPropertyName("alternativeStaff")]
+    public List<AvailabilityStaffRef> AlternativeStaff { get; set; } = [];
+}
+
+/// <summary>
+/// One business-local day of the bookable grid plus its rollups.
+/// </summary>
+public class DayAvailabilityResponse
+{
+    [JsonPropertyName("date")]
+    public string Date { get; set; } = string.Empty;
+
+    /// <summary>Short weekday label in the business locale, e.g. "Mon".</summary>
+    [JsonPropertyName("weekday")]
+    public string Weekday { get; set; } = string.Empty;
+
+    [JsonPropertyName("dayOfMonth")]
+    public int DayOfMonth { get; set; }
+
+    /// <summary>False when nobody in scope works this day (closed / day off).</summary>
+    [JsonPropertyName("isOpen")]
+    public bool IsOpen { get; set; }
+
+    [JsonPropertyName("totalSlots")]
+    public int TotalSlots { get; set; }
+
+    [JsonPropertyName("availableSlots")]
+    public int AvailableSlots { get; set; }
+
+    [JsonPropertyName("firstAvailableUtc")]
+    public DateTime? FirstAvailableUtc { get; set; }
+
+    [JsonPropertyName("slots")]
+    public List<AvailabilitySlotResponse> Slots { get; set; } = [];
+
+    /// <summary>Staff with openings this day, excluding the currently selected one.</summary>
+    [JsonPropertyName("suggestions")]
+    public List<StaffAvailabilitySuggestion> Suggestions { get; set; } = [];
+}
+
+/// <summary>
+/// Full availability calendar for the booking wizard's time step.
+/// </summary>
+public class AvailabilityCalendarResponse
+{
+    [JsonPropertyName("businessId")]
+    public Guid BusinessId { get; set; }
+
+    [JsonPropertyName("businessName")]
+    public string BusinessName { get; set; } = string.Empty;
+
+    [JsonPropertyName("timeZoneId")]
+    public string TimeZoneId { get; set; } = string.Empty;
+
+    [JsonPropertyName("serviceIds")]
+    public Guid[] ServiceIds { get; set; } = [];
+
+    [JsonPropertyName("totalDurationMinutes")]
+    public int TotalDurationMinutes { get; set; }
+
+    [JsonPropertyName("slotIntervalMinutes")]
+    public int SlotIntervalMinutes { get; set; }
+
+    [JsonPropertyName("leadTimeMinutes")]
+    public int LeadTimeMinutes { get; set; }
+
+    /// <summary>Echo of the requested staff filter (null = "any available").</summary>
+    [JsonPropertyName("staffUserId")]
+    public Guid? StaffUserId { get; set; }
+
+    [JsonPropertyName("staffName")]
+    public string? StaffName { get; set; }
+
+    [JsonPropertyName("days")]
+    public List<DayAvailabilityResponse> Days { get; set; } = [];
+
+    /// <summary>Machine-readable reason the calendar is empty, when it is.</summary>
+    [JsonPropertyName("noticeCode")]
+    public string? NoticeCode { get; set; }
+
+    [JsonPropertyName("notice")]
+    public string? Notice { get; set; }
 }
 
 // ═══════════════════════════════════════════════════════════════

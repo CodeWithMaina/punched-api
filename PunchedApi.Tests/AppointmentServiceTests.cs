@@ -42,7 +42,7 @@ public class AppointmentServiceTests
         await BookingTestBase.SeedAsync(context, owner, business, customer, staff, s1, s2,
             BookingTestBase.CreateAssignment(business.Id, staff.Id, s1.Id),
             BookingTestBase.CreateAssignment(business.Id, staff.Id, s2.Id),
-            BookingTestBase.CreateShift(business.Id, staff.Id, new DateOnly(2026, 8, 20), 9, 18));
+            BookingTestBase.CreateShift(business.Id, staff.Id, DateOnly.FromDateTime(Ten), 9, 18));
 
         return new Env
         {
