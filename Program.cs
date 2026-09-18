@@ -10,6 +10,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using PunchedApi.API.Middleware;
+using PunchedApi.Application.Attendance;
+using PunchedApi.Application.Attendance.Verification;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.Loyalty;
 using PunchedApi.Application.Mappings;
@@ -173,6 +175,15 @@ try
     builder.Services.AddScoped<IAppointmentService, AppointmentService>();
     builder.Services.AddScoped<AppointmentAvailabilityService>();
     builder.Services.AddScoped<IServiceCatalogService, ServiceCatalogService>();
+
+    // ── Attendance module (Phase 2: verification engine + QR credentials) ──
+    // Verifiers are registered as IAttendanceVerifier so the engine receives
+    // them all through IEnumerable and policy decides which ones run (§7.2).
+    builder.Services.AddScoped<IAttendanceVerifier, AuthenticatedUserVerifier>();
+    builder.Services.AddScoped<IAttendanceVerifier, QrVerifier>();
+    builder.Services.AddScoped<IAttendanceVerificationEngine, AttendanceVerificationEngine>();
+    builder.Services.AddScoped<IAttendanceLocationService, AttendanceLocationService>();
+    builder.Services.AddScoped<IAttendancePolicyService, AttendancePolicyService>();
 
     // ── Module entitlements (plugin architecture Phases 1-3) ─
     builder.Services.AddScoped<IModuleEntitlementService, ModuleEntitlementService>();
