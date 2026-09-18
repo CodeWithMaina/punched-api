@@ -54,6 +54,13 @@ public class ApplicationDbContext : DbContext
     public DbSet<StampCard> StampCards => Set<StampCard>();
     public DbSet<CardDesign> CardDesigns => Set<CardDesign>();
 
+    // ── Attendance module ─────────────────────────────────────
+    public DbSet<AttendancePolicy> AttendancePolicies => Set<AttendancePolicy>();
+    public DbSet<AttendanceLocation> AttendanceLocations => Set<AttendanceLocation>();
+    public DbSet<AttendanceQrCredential> AttendanceQrCredentials => Set<AttendanceQrCredential>();
+    public DbSet<AttendanceEvent> AttendanceEvents => Set<AttendanceEvent>();
+    public DbSet<AttendanceSession> AttendanceSessions => Set<AttendanceSession>();
+
     // ── Loyalty programs: earning rules, transactions, rewards ──
     public DbSet<LoyaltyEarningRule> LoyaltyEarningRules => Set<LoyaltyEarningRule>();
     public DbSet<StampTransaction> StampTransactions => Set<StampTransaction>();

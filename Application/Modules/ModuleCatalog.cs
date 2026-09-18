@@ -120,6 +120,18 @@ public static class ModuleCatalog
                 new PermissionDefinition("serviceCatalog.view",   new[] { "Business", "Customer" }),
                 new PermissionDefinition("serviceCatalog.manage", new[] { "Business" }),
             }),
+        new ModuleDefinition(
+            Key: "attendance", Name: "Attendance",
+            Description: "Staff clock-in and clock-out with business QR codes",
+            Version: "1.0.0", Visibility: ModuleVisibility.Standard,
+            Dependencies: new[] { "staff" },
+            RequiredRoles: new[] { "Business", "Staff" },
+            Permissions: new[]
+            {
+                new PermissionDefinition("attendance.view",   new[] { "Business", "Staff" }),
+                new PermissionDefinition("attendance.clock",  new[] { "Business", "Staff" }),
+                new PermissionDefinition("attendance.manage", new[] { "Business" }),
+            }),
 
 
         // ── Premium ─────────────────────────────────────────────

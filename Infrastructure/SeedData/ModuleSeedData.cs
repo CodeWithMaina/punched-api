@@ -23,6 +23,7 @@ public static class ModuleSeedData
         new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000009"), Key = "notifications", Name = "Notifications", Description = "Push notifications", IsCore = false, IsActive = true, DependenciesJson = "[\"customers\",\"staff\"]" },
         new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000010"), Key = "settings", Name = "Settings", Description = "Business settings", IsCore = true, IsActive = true },
         new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000011"), Key = "referral", Name = "Referrals", Description = "Customer referral program", IsCore = false, IsActive = true, DependenciesJson = "[\"loyalty\",\"stamps\"]" },
-        new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000012"), Key = "serviceCatalog", Name = "Service Catalog", Description = "Bookable services the business offers", IsCore = false, IsActive = true }
+        new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000012"), Key = "serviceCatalog", Name = "Service Catalog", Description = "Bookable services the business offers", IsCore = false, IsActive = true },
+        new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000013"), Key = "attendance", Name = "Attendance", Description = "Staff clock-in and clock-out with business QR codes", IsCore = false, IsActive = true, DependenciesJson = "[\"staff\"]" }
     };
 }

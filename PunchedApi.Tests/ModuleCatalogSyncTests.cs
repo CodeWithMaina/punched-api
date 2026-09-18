@@ -106,4 +106,47 @@ public class ModuleCatalogSyncTests
             Assert.True(plan.IsActive, $"Plan '{key}' must be active.");
         }
     }
+
+    [Fact]
+    public void AttendanceModule_IsRegisteredInCatalogAndSeeds_AndDependsOnStaff()
+    {
+        // Catalog entry
+        var definition = Catalog.SingleOrDefault(m => m.Key == "attendance");
+        Assert.NotNull(definition);
+        Assert.Equal("Attendance", definition!.Name);
+        Assert.Equal("1.0.0", definition.Version);
+        Assert.Equal(ModuleVisibility.Standard, definition.Visibility);
+        Assert.Contains("staff", definition.Dependencies);
+        Assert.Contains("Business", definition.RequiredRoles);
+        Assert.Contains("Staff", definition.RequiredRoles);
+        Assert.Contains(definition.Permissions, p => p.Code == "attendance.view");
+        Assert.Contains(definition.Permissions, p => p.Code == "attendance.clock");
+        Assert.Contains(definition.Permissions, p => p.Code == "attendance.manage");
+
+        // Seed row mirrors the catalog entry
+        var seed = SeedModules.SingleOrDefault(m => m.Key == "attendance");
+        Assert.NotNull(seed);
+        Assert.False(seed!.IsCore);
+        Assert.True(seed.IsActive);
+        Assert.Equal(
+            definition.Dependencies.OrderBy(d => d, StringComparer.Ordinal),
+            ParseDependencies(seed).OrderBy(d => d, StringComparer.Ordinal));
+
+        // Plan grants: growth/pro/enterprise (NOT starter — starter uses the
+        // existing owner override/add-on mechanism).
+        var grantsByPlan = PlanModuleSeedData.GetPlanModules()
+            .GroupBy(pm => pm.PlanKey, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(pm => pm.ModuleKey).ToHashSet(StringComparer.Ordinal));
+
+        foreach (var planKey in new[] { "growth", "pro", "enterprise" })
+        {
+            Assert.True(grantsByPlan[planKey].Contains("attendance"),
+                $"Plan '{planKey}' must grant 'attendance'.");
+            Assert.True(grantsByPlan[planKey].Contains("staff"),
+                $"Plan '{planKey}' grants 'attendance' so it must also grant its dependency 'staff'.");
+        }
+
+        Assert.False(grantsByPlan["starter"].Contains("attendance"),
+            "Plan 'starter' must NOT grant 'attendance'.");
+    }
 }

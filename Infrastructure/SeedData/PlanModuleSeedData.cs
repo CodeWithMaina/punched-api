@@ -15,17 +15,18 @@ public static class PlanModuleSeedData
         // Growth
         ("growth", "customers"), ("growth", "staff"), ("growth", "settings"),
         ("growth", "appointments"), ("growth", "stamps"), ("growth", "notifications"),
-        ("growth", "serviceCatalog"),
+        ("growth", "serviceCatalog"), ("growth", "attendance"),
 
         // Pro
         ("pro", "customers"), ("pro", "staff"), ("pro", "settings"),
         ("pro", "appointments"), ("pro", "stamps"), ("pro", "notifications"),
         ("pro", "loyalty"), ("pro", "analytics"), ("pro", "referral"), ("pro", "serviceCatalog"),
+        ("pro", "attendance"),
 
         // Enterprise
         ("enterprise", "customers"), ("enterprise", "staff"), ("enterprise", "settings"),
         ("enterprise", "appointments"), ("enterprise", "stamps"), ("enterprise", "notifications"),
         ("enterprise", "loyalty"), ("enterprise", "rewards"), ("enterprise", "analytics"), ("enterprise", "programs"),
-        ("enterprise", "referral"), ("enterprise", "serviceCatalog")
+        ("enterprise", "referral"), ("enterprise", "serviceCatalog"), ("enterprise", "attendance")
     };
 }
