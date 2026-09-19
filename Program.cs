@@ -158,10 +158,13 @@ try
     builder.Services.AddScoped<ILoyaltyEventBus, LoyaltyEventBus>();
     builder.Services.AddScoped<ILoyaltyEventHandler, LoyaltyAutomaticEarningHandler>();
     builder.Services.AddScoped<IStampCardService, StampCardService>();
+    builder.Services.AddScoped<ICardDesignService, CardDesignService>();
+    builder.Services.AddScoped<ICardDesignResolver, CardDesignResolver>();
     builder.Services.AddScoped<PunchedApi.Application.Programs.IProgramRuleEngine, PunchedApi.Application.Programs.ProgramRuleEngine>();
     builder.Services.AddScoped<IIdempotencyService, IdempotencyService>();
     builder.Services.AddScoped<INotificationsService, NotificationsService>();
     builder.Services.AddScoped<IQrService, QrService>();
+    builder.Services.AddScoped<ICustomerEnrollmentService, CustomerEnrollmentService>();
     builder.Services.AddScoped<IRedemptionService, RedemptionService>();
     builder.Services.AddScoped<IReferralService, ReferralService>();
     builder.Services.AddScoped<IAdminService, AdminService>();
@@ -184,6 +187,9 @@ try
     builder.Services.AddScoped<IAttendanceVerificationEngine, AttendanceVerificationEngine>();
     builder.Services.AddScoped<IAttendanceLocationService, AttendanceLocationService>();
     builder.Services.AddScoped<IAttendancePolicyService, AttendancePolicyService>();
+    // Phase 3: the staff hot path (status / clock-in / clock-out / history).
+    builder.Services.AddScoped<IAttendanceService, AttendanceService>();
+
 
     // ── Module entitlements (plugin architecture Phases 1-3) ─
     builder.Services.AddScoped<IModuleEntitlementService, ModuleEntitlementService>();
@@ -345,6 +351,22 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 _ => new FixedWindowRateLimiterOptions
                 {
                     PermitLimit = 20,
+                    Window = TimeSpan.FromHours(1),
+                    QueueLimit = 0
+                });
+        });
+
+        // Attendance clock-in/out: 60 scans per hour per (IP + user) — the
+        // double-tap safe-by-construction bound (429 never reaches the service).
+        options.AddPolicy("attendance-clock", httpContext =>
+        {
+            var userId = httpContext.User?.FindFirst("userId")?.Value ?? "anon";
+            var partitionKey = $"{httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown"}:{userId}";
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey,
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 60,
                     Window = TimeSpan.FromHours(1),
                     QueueLimit = 0
                 });

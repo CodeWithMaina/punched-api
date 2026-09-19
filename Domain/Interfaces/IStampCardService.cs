@@ -3,9 +3,12 @@ using PunchedApi.Application.DTOs;
 namespace PunchedApi.Domain.Interfaces;
 
 /// <summary>
-/// Stamp card + card design management for business owners.
-/// Stamp cards are children of loyalty programs; card designs are
-/// reusable HTML templates owned by the business.
+/// Stamp card management for business owners. Stamp cards are children of
+/// loyalty programs.
+///
+/// Card design authoring lives in <see cref="ICardDesignService"/> (Admin only);
+/// stamp cards may only reference a design that
+/// <see cref="ICardDesignService.ValidateSelectionAsync"/> accepts.
 /// </summary>
 public interface IStampCardService
 {
@@ -17,14 +20,4 @@ public interface IStampCardService
     Task<ApiResponse<StampCardResponse>> UpdateStampCardStatusAsync(Guid ownerId, Guid stampCardId, UpdateStampCardStatusRequest request);
     Task<ApiResponse<StampCardResponse>> DuplicateStampCardAsync(Guid ownerId, Guid stampCardId, DuplicateStampCardRequest? request);
     Task<ApiResponse<bool>> DeleteStampCardAsync(Guid ownerId, Guid stampCardId);
-
-    // Card designs (reusable per business)
-    Task<ApiResponse<List<CardDesignResponse>>> GetCardDesignsAsync(Guid ownerId);
-    Task<ApiResponse<CardDesignResponse>> GetCardDesignAsync(Guid ownerId, Guid designId);
-    Task<ApiResponse<CardDesignResponse>> CreateCardDesignAsync(Guid ownerId, CreateCardDesignRequest request);
-    Task<ApiResponse<CardDesignResponse>> UpdateCardDesignAsync(Guid ownerId, Guid designId, UpdateCardDesignRequest request);
-    Task<ApiResponse<bool>> DeleteCardDesignAsync(Guid ownerId, Guid designId);
-
-    // Preview (shared rendering pipeline)
-    Task<ApiResponse<PreviewCardDesignResponse>> PreviewCardDesignAsync(Guid ownerId, PreviewCardDesignRequest request);
 }

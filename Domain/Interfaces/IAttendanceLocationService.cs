@@ -28,6 +28,25 @@ public interface IAttendanceLocationService
     /// <summary>Same as <see cref="MintQrAsync"/> but audited as <c>QR_REGENERATED</c> (distinct UI copy).</summary>
     Task<ApiResponse<AttendanceQrCredentialResponse>> RotateQrAsync(Guid ownerUserId, Guid locationId);
 
-    /// <summary>Revokes the Active credential, leaving the location unusable until a new one is minted.</summary>
+        /// <summary>Revokes the Active credential, leaving the location unusable until a new one is minted.</summary>
     Task<ApiResponse<bool>> RevokeQrAsync(Guid ownerUserId, Guid locationId);
+
+    /// <summary>
+    /// Effective attendance settings: policy + derived readiness (location count,
+    /// active-credential count, isConfigured). Missing policy row ⇒ implicit
+    /// Standard default (plan §6.1, §13.3).
+    /// </summary>
+    Task<ApiResponse<AttendanceSettingsResponse>> GetSettingsAsync(Guid ownerUserId);
+
+    /// <summary>PUT settings: validates + writes the policy row (plan §15.2, D8).</summary>
+    Task<ApiResponse<AttendanceSettingsResponse>> UpdateSettingsAsync(
+        Guid ownerUserId, AttendanceSettingsRequest request);
+
+    /// <summary>Owner "who is clocked in now" overview for a business-local day (plan §13.3).</summary>
+    Task<ApiResponse<AttendanceOverviewResponse>> GetOverviewAsync(
+        Guid ownerUserId, DateOnly? date = null);
+
+    /// <summary>Owner per-staff drill-down history; staff id is business-scoped (§10.2).</summary>
+    Task<ApiResponse<PaginatedResponse<AttendanceHistoryItem>>> GetStaffHistoryAsync(
+        Guid ownerUserId, Guid staffUserId, AttendanceHistoryQuery query);
 }

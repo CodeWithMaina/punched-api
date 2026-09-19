@@ -150,7 +150,8 @@ internal static class AttendanceAuditActions
     public const string LocationUpdated = "ATTENDANCE_LOCATION_UPDATED";
     public const string LocationDeactivated = "ATTENDANCE_LOCATION_DEACTIVATED";
     public const string LocationDeleted = "ATTENDANCE_LOCATION_DELETED";
-    public const string QrCreated = "QR_CREATED";
+        public const string QrCreated = "QR_CREATED";
     public const string QrRegenerated = "QR_REGENERATED";
     public const string QrRevoked = "QR_REVOKED";
+    public const string SettingsUpdated = "ATTENDANCE_SETTINGS_UPDATED";
 }

@@ -184,20 +184,50 @@ public partial class BusinessController
     //  BOOKING — STAFF APPOINTMENT ROUTES
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-    /// <summary>Staff: list the authenticated staff member's own appointments.</summary>
+    /// <summary>
+    /// Staff: list the authenticated staff member's own appointments —
+    /// backend-driven search, price filter, sort and pagination.
+    /// </summary>
     [RequireModule("appointments")]
     [HttpGet("staff/appointments")]
     [Authorize(Roles = "Staff")]
-    [ProducesResponseType(typeof(ApiResponse<List<AppointmentResponse>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<AppointmentResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetStaffAppointments(
         [FromQuery] string? status,
+        [FromQuery] string? search,
+        [FromQuery] string? priceFilter,
+        [FromQuery] string? sort,
         [FromQuery] DateTime? from,
-        [FromQuery] DateTime? to)
+        [FromQuery] DateTime? to,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20)
     {
         var userId = GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _appointmentService.GetStaffAppointmentsAsync(userId.Value, status, from, to);
+        var result = await _appointmentService.GetStaffAppointmentsAsync(
+            userId.Value, status, search, priceFilter, sort, from, to, page, pageSize);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// Staff: book an appointment for themselves at their linked business.
+    /// Staff/customer are forced to the caller server-side — the booking can
+    /// never land on another staff member, and the slot must be on the
+    /// availability engine's bookable grid (lead time enforced).
+    /// </summary>
+    [RequireModule("appointments")]
+    [HttpPost("staff/appointments/self")]
+    [Authorize(Roles = "Staff")]
+    [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> CreateStaffSelfAppointment(
+        [FromBody] CreateAppointmentRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.CreateStaffSelfAppointmentAsync(userId.Value, request);
         return result.Success ? Ok(result) : MapFailure(result);
     }
 

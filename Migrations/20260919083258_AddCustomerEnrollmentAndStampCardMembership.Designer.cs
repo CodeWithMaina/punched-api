@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using PunchedApi.Infrastructure.Data;
@@ -11,9 +12,11 @@ using PunchedApi.Infrastructure.Data;
 namespace PunchedApi.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260919083258_AddCustomerEnrollmentAndStampCardMembership")]
+    partial class AddCustomerEnrollmentAndStampCardMembership
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -862,7 +865,7 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<Guid?>("BusinessId")
+                    b.Property<Guid>("BusinessId")
                         .HasColumnType("uuid")
                         .HasColumnName("business_id");
 
@@ -882,12 +885,6 @@ namespace PunchedApi.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("is_active");
 
-                    b.Property<bool>("IsDefault")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("is_default");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -900,15 +897,7 @@ namespace PunchedApi.Migrations
 
                     b.HasIndex("BusinessId");
 
-                    b.HasIndex("IsDefault")
-                        .IsUnique()
-                        .HasDatabaseName("ux_card_designs_single_default")
-                        .HasFilter("\"is_default\" = TRUE");
-
-                    b.ToTable("card_designs", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_card_designs_default_is_system", "\"is_default\" = FALSE OR \"business_id\" IS NULL");
-                        });
+                    b.ToTable("card_designs", (string)null);
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.CustomerBusinessEnrollment", b =>
@@ -1358,10 +1347,6 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("business_id");
 
-                    b.Property<Guid?>("CardDesignId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("card_design_id");
-
                     b.Property<string>("ConfigJson")
                         .HasColumnType("text")
                         .HasColumnName("config_json");
@@ -1449,8 +1434,6 @@ namespace PunchedApi.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("BusinessId");
-
-                    b.HasIndex("CardDesignId");
 
                     b.ToTable("loyalty_programs", null, t =>
                         {
@@ -3481,7 +3464,8 @@ namespace PunchedApi.Migrations
                     b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
                         .WithMany()
                         .HasForeignKey("BusinessId")
-                        .OnDelete(DeleteBehavior.Cascade);
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.Navigation("Business");
                 });
@@ -3617,14 +3601,7 @@ namespace PunchedApi.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("PunchedApi.Domain.Entities.CardDesign", "CardDesign")
-                        .WithMany("LoyaltyPrograms")
-                        .HasForeignKey("CardDesignId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
                     b.Navigation("Business");
-
-                    b.Navigation("CardDesign");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.LoyaltyProgramHistory", b =>
@@ -4102,8 +4079,6 @@ namespace PunchedApi.Migrations
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.CardDesign", b =>
                 {
-                    b.Navigation("LoyaltyPrograms");
-
                     b.Navigation("StampCards");
                 });
 

@@ -111,11 +111,26 @@ public class LoyaltyProgram : BaseEntity
     /// <summary>Optional end date for the program's active window.</summary>
     public DateTime? EndsAt { get; set; }
 
+    /// <summary>
+    /// The card design the business selected for this program.
+    ///
+    /// Null means "use the platform default design". This value is NEVER cleared
+    /// by a subscription change — the entitlement system decides at render time
+    /// whether the selected design (or the default) is used, which keeps
+    /// downgrade/upgrade reversible (plan §12–13).
+    /// </summary>
+    public Guid? CardDesignId { get; set; }
+
     // ── Navigation ──────────────────────────────────────────
     /// <summary>
     /// The business this program belongs to.
     /// </summary>
     public virtual Business Business { get; set; } = null!;
+
+    /// <summary>
+    /// The selected card design (null ⇒ platform default).
+    /// </summary>
+    public virtual CardDesign? CardDesign { get; set; }
 
     /// <summary>
     /// Loyalty cards enrolled in this program.

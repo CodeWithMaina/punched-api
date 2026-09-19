@@ -19,6 +19,20 @@ public class StampCardServiceTests
     private readonly ApplicationDbContext _context;
     private readonly UnitOfWork _unitOfWork;
     private readonly StampCardService _service;
+    private readonly CardDesignService _designService;
+
+    /// <summary>Entitlement stub that enables every module (incl. customCardDesign).</summary>
+    private class AllModulesEnabled : IModuleEntitlementService
+    {
+        public Task<ModuleEntitlementResult> GetBusinessModulesAsync(Guid businessId, Guid? userId = null) =>
+            Task.FromResult(new ModuleEntitlementResult());
+        public Task<bool> IsModuleEnabledAsync(Guid businessId, string moduleKey) => Task.FromResult(true);
+        public Task<HashSet<string>> GetEffectiveModuleKeysAsync(Guid businessId) =>
+            Task.FromResult(new HashSet<string>());
+        public void Invalidate(Guid businessId) { }
+        public IReadOnlyList<string> ValidateConfiguration(IEnumerable<(string ModuleKey, bool Enabled)> overrides) =>
+            Array.Empty<string>();
+    }
 
     public StampCardServiceTests()
     {
@@ -32,7 +46,10 @@ public class StampCardServiceTests
         _context.Database.EnsureCreated();
 
         _unitOfWork = new UnitOfWork(_context);
-        _service = new StampCardService(_unitOfWork, NullLogger<StampCardService>.Instance);
+        var entitlements = new AllModulesEnabled();
+        var resolver = new CardDesignResolver(_unitOfWork, entitlements, NullLogger<CardDesignResolver>.Instance);
+        _designService = new CardDesignService(_unitOfWork, resolver, NullLogger<CardDesignService>.Instance);
+        _service = new StampCardService(_unitOfWork, _designService, NullLogger<StampCardService>.Instance);
 
         SeedBusinessAndProgram();
     }
@@ -105,11 +122,11 @@ public class StampCardServiceTests
     public async Task CreateAndAssignReusableCardDesign()
     {
         var programId = await FirstProgramIdAsync();
-        var design = await _service.CreateCardDesignAsync(_ownerId, new CreateCardDesignRequest
+        var design = await _designService.CreateDesignAsync(_businessId, new CreateCardDesignRequest
         {
             Name = "Christmas",
             HtmlTemplate = "<div class=\"card\">{{business.name}}</div><script>evil()</script>"
-        });
+        }, null);
         Assert.True(design.Success);
         Assert.DoesNotContain("script", design.Data!.HtmlTemplate, StringComparison.OrdinalIgnoreCase);
 
@@ -157,28 +174,27 @@ public class StampCardServiceTests
     [Fact]
     public async Task Preview_RendersSanitizedTemplateAndVariables()
     {
-        var design = await _service.CreateCardDesignAsync(_ownerId, new CreateCardDesignRequest
-        { Name = "V", HtmlTemplate = "<div>{{business.name}}:{{customer.name}}:{{stamps}}</div>" });
-        var preview = await _service.PreviewCardDesignAsync(_ownerId, new PreviewCardDesignRequest
-        { CardDesignId = design.Data!.Id });
+        var created = await _designService.CreateDesignAsync(_businessId, new CreateCardDesignRequest
+        { Name = "V", HtmlTemplate = "<div>{{business.name}}:{{customer.name}}:{{stamps}}</div>" }, null);
+        var preview = await _designService.PreviewAsync(new AdminPreviewCardDesignRequest
+        { BusinessId = _businessId, CardDesignId = created.Data!.Id });
 
         Assert.True(preview.Success);
         Assert.Contains("Java House", preview.Data!.RenderedHtml);
-        Assert.Contains("Peter Maina", preview.Data.RenderedHtml);
         Assert.Contains("stamp filled", preview.Data.RenderedHtml);
         Assert.NotEmpty(preview.Data.Variables);
     }
 
-        [Fact]
+    [Fact]
     public async Task DeleteDesign_AssignedToCard_IsBlocked()
     {
         var programId = await FirstProgramIdAsync();
-        var design = await _service.CreateCardDesignAsync(_ownerId, new CreateCardDesignRequest
-        { Name = "D", HtmlTemplate = "<div>x</div>" });
+        var design = await _designService.CreateDesignAsync(_businessId, new CreateCardDesignRequest
+        { Name = "D", HtmlTemplate = "<div>x</div>" }, null);
         await _service.CreateStampCardAsync(_ownerId, programId, new CreateStampCardRequest
         { Name = "C", StampsRequired = 5, RewardDescription = "R", RewardValue = 10, CardDesignId = design.Data!.Id });
 
-        var delete = await _service.DeleteCardDesignAsync(_ownerId, design.Data!.Id);
+        var delete = await _designService.DeleteDesignAsync(design.Data!.Id);
         Assert.False(delete.Success);
         Assert.Equal("IN_USE", delete.Error!.Code);
     }

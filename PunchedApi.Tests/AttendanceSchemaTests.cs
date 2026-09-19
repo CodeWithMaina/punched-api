@@ -342,3 +342,156 @@ public class AttendanceSchemaTests : IDisposable
         _ctx.ChangeTracker.Clear();
     }
 }
+
+/// <summary>
+/// Phase 3 schema extension: the full event ↔ session FK cycle with real
+/// foreign keys ON, and the close-consistency + worked_minutes semantics the
+/// service relies on (plan §18.7).
+/// </summary>
+public class AttendanceSessionLinkageTests : IDisposable
+{
+    private readonly SqliteConnection _connection;
+    private readonly ApplicationDbContext _ctx;
+
+    public AttendanceSessionLinkageTests()
+    {
+        _connection = new SqliteConnection("DataSource=:memory:");
+        _connection.Open();
+        _ctx = new ApplicationDbContext(
+            new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseSqlite(_connection)
+                .Options);
+        _ctx.Database.EnsureCreated();
+    }
+
+    public void Dispose()
+    {
+        _ctx.Dispose();
+        _connection.Dispose();
+    }
+
+    [Fact]
+    public void EventSessionLinkage_Persists_WithRealForeignKeys()
+    {
+        var now = DateTime.UtcNow;
+
+        // Real parent rows (foreign keys are ON in this fixture) — committed
+        // one by one so any FK problem points at a single row.
+        var owner = BookingTestBase.CreateOwner("linkage-owner@schema.test");
+        var business = BookingTestBase.CreateBusiness(owner.Id, "Linkage Biz");
+        var staff = BookingTestBase.CreateStaff(business.Id, "linkage-staff@schema.test");
+        _ctx.Add(owner);
+        _ctx.SaveChanges();
+        _ctx.Add(business);
+        _ctx.SaveChanges();
+        _ctx.Add(staff);
+        _ctx.SaveChanges();
+        _ctx.ChangeTracker.Clear();
+
+        // CLOCK_IN event → OPEN session with back-filled attendance_session_id.
+        var clockIn = new AttendanceEvent
+        {
+            Id = Guid.NewGuid(),
+            BusinessId = business.Id,
+            StaffUserId = staff.Id,
+            EventType = AttendanceEventType.ClockIn,
+            OccurredAt = now.AddHours(-8),
+            CreatedByUserId = staff.Id, // FK → users
+        };
+        _ctx.AttendanceEvents.Add(clockIn);
+        _ctx.SaveChanges();
+
+        var session = new AttendanceSession
+        {
+            Id = Guid.NewGuid(),
+            BusinessId = business.Id,
+            StaffUserId = staff.Id,
+            OpeningEventId = clockIn.Id,
+            OpenedAt = clockIn.OccurredAt,
+            OpeningLocationId = null,
+            Status = AttendanceSessionStatus.Open,
+        };
+        _ctx.AttendanceSessions.Add(session);
+        clockIn.AttendanceSessionId = session.Id;
+        _ctx.SaveChanges();
+        _ctx.ChangeTracker.Clear();
+
+        // CLOCK_OUT event closes the session and computes worked minutes (§9.5).
+        var clockOut = new AttendanceEvent
+        {
+            Id = Guid.NewGuid(),
+            BusinessId = business.Id,
+            StaffUserId = staff.Id,
+            EventType = AttendanceEventType.ClockOut,
+            OccurredAt = now,
+            AttendanceSessionId = session.Id,
+        };
+        _ctx.AttendanceEvents.Add(clockOut);
+
+        var tracked = _ctx.AttendanceSessions.Single(s => s.Id == session.Id);
+        tracked.ClosingEventId = clockOut.Id;
+        tracked.ClosedAt = clockOut.OccurredAt;
+        tracked.WorkedMinutes = (int)Math.Floor((tracked.ClosedAt!.Value - tracked.OpenedAt).TotalMinutes);
+        tracked.Status = AttendanceSessionStatus.Closed;
+        _ctx.SaveChanges();
+        _ctx.ChangeTracker.Clear();
+
+        var closed = _ctx.AttendanceSessions.Single();
+        Assert.Equal(AttendanceSessionStatus.Closed, closed.Status);
+        Assert.Equal(clockOut.Id, closed.ClosingEventId);
+        Assert.InRange(closed.WorkedMinutes!.Value, 479, 481); // 8 h in whole minutes
+
+        // Both ledger rows reference the same session.
+        Assert.Equal(2, _ctx.AttendanceEvents.Count(e => e.AttendanceSessionId == closed.Id));
+    }
+
+    [Fact]
+    public void StaleAutoCloseShape_SatisfiesCloseConsistencyConstraint()
+    {
+        // The §9.2 auto-close (no fabricated CLOCK_OUT event): closed_at is set
+        // with closing_event_id anchored to the OPENING event — accepted.
+        var owner = BookingTestBase.CreateOwner("stale-owner@schema.test");
+        var business = BookingTestBase.CreateBusiness(owner.Id, "Stale Biz");
+        var staff = BookingTestBase.CreateStaff(business.Id, "stale-staff@schema.test");
+        _ctx.Add(owner);
+        _ctx.SaveChanges();
+        _ctx.Add(business);
+        _ctx.SaveChanges();
+        _ctx.Add(staff);
+        _ctx.SaveChanges();
+        _ctx.ChangeTracker.Clear();
+
+        var openedAt = DateTime.UtcNow.AddHours(-17);
+        var clockIn = new AttendanceEvent
+        {
+            Id = Guid.NewGuid(),
+            BusinessId = business.Id,
+            StaffUserId = staff.Id,
+            EventType = AttendanceEventType.ClockIn,
+            OccurredAt = openedAt,
+            CreatedByUserId = staff.Id, // FK → users
+        };
+        _ctx.AttendanceEvents.Add(clockIn);
+        _ctx.SaveChanges();
+
+        _ctx.AttendanceSessions.Add(new AttendanceSession
+        {
+            Id = Guid.NewGuid(),
+            BusinessId = clockIn.BusinessId,
+            StaffUserId = clockIn.StaffUserId,
+            OpeningEventId = clockIn.Id,
+            OpenedAt = openedAt,
+            ClosedAt = openedAt.AddHours(16),
+            ClosingEventId = clockIn.Id, // anchored — no synthetic event
+            WorkedMinutes = 16 * 60,     // capped duration
+            Status = AttendanceSessionStatus.Closed,
+        });
+        _ctx.SaveChanges();
+        _ctx.ChangeTracker.Clear();
+
+        var autoClosed = _ctx.AttendanceSessions.Single();
+        Assert.Equal(openedAt.AddHours(16), autoClosed.ClosedAt);
+        Assert.Equal(clockIn.Id, autoClosed.ClosingEventId);
+        Assert.Equal(960, autoClosed.WorkedMinutes);
+    }
+}

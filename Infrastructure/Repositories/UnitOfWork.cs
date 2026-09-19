@@ -38,6 +38,8 @@ public class UnitOfWork : IUnitOfWork
     private IRepository<StaffShift>? _staffShifts;
     private IRepository<StaffServiceAssignment>? _staffServiceAssignments;
     private IRepository<StampCard>? _stampCards;
+    private IRepository<CustomerBusinessEnrollment>? _enrollments;
+    private IRepository<CustomerStampCard>? _customerStampCards;
     private IRepository<CardDesign>? _cardDesigns;
     private IRepository<LoyaltyEarningRule>? _loyaltyEarningRules;
     private IRepository<StampTransaction>? _stampTransactions;
@@ -139,6 +141,14 @@ public class UnitOfWork : IUnitOfWork
     /// <inheritdoc />
     public IRepository<StampCard> StampCards =>
         _stampCards ??= new Repository<StampCard>(_context);
+
+    /// <inheritdoc />
+    public IRepository<CustomerBusinessEnrollment> CustomerBusinessEnrollments =>
+        _enrollments ??= new Repository<CustomerBusinessEnrollment>(_context);
+
+    /// <inheritdoc />
+    public IRepository<CustomerStampCard> CustomerStampCards =>
+        _customerStampCards ??= new Repository<CustomerStampCard>(_context);
 
     /// <inheritdoc />
     public IRepository<CardDesign> CardDesigns =>

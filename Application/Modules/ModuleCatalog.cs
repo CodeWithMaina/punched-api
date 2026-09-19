@@ -195,6 +195,21 @@ public static class ModuleCatalog
                 new PermissionDefinition("referral.view",   new[] { "Business", "Customer" }),
                 new PermissionDefinition("referral.manage", new[] { "Business" }),
             }),
+        new ModuleDefinition(
+            Key: "customCardDesign", Name: "Custom Card Design",
+            Description: "Business-specific HTML card designs for loyalty stamp cards",
+            Version: "1.0.0", Visibility: ModuleVisibility.Premium,
+            // Must stay in sync with ModuleSeedData.DependenciesJson
+            // (["loyalty"]) — asserted by ModuleCatalogSyncTests.
+            // Loyalty deliberately does NOT depend on this module: the default
+            // card design ships with loyalty, custom designs are an enhancement.
+            Dependencies: new[] { "loyalty" },
+            RequiredRoles: new[] { "Business" },
+            Permissions: new[]
+            {
+                new PermissionDefinition("cardDesigns.view",   new[] { "Business" }),
+                new PermissionDefinition("cardDesigns.select", new[] { "Business" }),
+            }),
     };
 
     /// <summary>Finds a module definition by key (case-insensitive).</summary>

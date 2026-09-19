@@ -110,6 +110,12 @@ public class AppointmentService : IAppointmentService
             if (business == null)
                 return ApiResponse<AppointmentResponse>.Fail("BUSINESS_NOT_FOUND", "Business not found.");
             businessId = business.Id;
+            // Database-first enrollment gate: customers book only where enrolled.
+            var enrolled = await _context.CustomerBusinessEnrollments.AnyAsync(e =>
+                e.CustomerId == callerUserId && e.BusinessId == businessId &&
+                e.Status == CustomerBusinessEnrollmentStatus.Active);
+            if (!enrolled)
+                return ApiResponse<AppointmentResponse>.Fail("NOT_ENROLLED", "Enroll in this business before booking.");
         }
 
         var (services, svcError, svcMsg) = await ValidateServicesAsync(businessId, request.ServiceIds);
@@ -763,10 +769,15 @@ public class AppointmentService : IAppointmentService
         });
     }
 
-    public async Task<ApiResponse<List<AppointmentResponse>>> GetStaffAppointmentsAsync(
-        Guid staffUserId, string? status, DateTime? from, DateTime? to)
+    public async Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetStaffAppointmentsAsync(
+        Guid staffUserId, string? status, string? search, string? priceFilter, string? sort,
+        DateTime? from, DateTime? to, int page, int pageSize)
     {
+        page = page < 1 ? 1 : page;
+        pageSize = pageSize < 1 ? 20 : (pageSize > 100 ? 100 : pageSize);
+
         var query = _context.Appointments
+            .AsNoTracking()
             .Include(a => a.Resources)
             .Where(a => a.StaffUserId == staffUserId);
 
@@ -777,7 +788,44 @@ public class AppointmentService : IAppointmentService
         if (to.HasValue)
             query = query.Where(a => a.ScheduledAt <= to.Value);
 
-        var items = await query.OrderByDescending(a => a.ScheduledAt).ToListAsync();
+        // Search across the customer name and the booked service names.
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            var matchingCustomerIds = await _context.Users.AsNoTracking()
+                .Where(u => u.FullName.ToLower().Contains(term.ToLower()))
+                .Select(u => u.Id)
+                .ToListAsync();
+
+            query = query.Where(a =>
+                matchingCustomerIds.Contains(a.CustomerId) ||
+                a.Resources.Any(r => r.Name.ToLower().Contains(term.ToLower())));
+        }
+
+        // Server-side price band filter (sum of booked service prices).
+        var price = priceFilter?.Trim();
+        if (price == "free")
+            query = query.Where(a => a.Resources.Sum(r => r.Price) == 0);
+        else if (price == "under-1000")
+            query = query.Where(a => a.Resources.Sum(r => r.Price) > 0 && a.Resources.Sum(r => r.Price) < 1000);
+        else if (price == "1000-5000")
+            query = query.Where(a => a.Resources.Sum(r => r.Price) >= 1000 && a.Resources.Sum(r => r.Price) <= 5000);
+        else if (price == "over-5000")
+            query = query.Where(a => a.Resources.Sum(r => r.Price) > 5000);
+
+        query = sort switch
+        {
+            "time-desc" => query.OrderByDescending(a => a.ScheduledAt),
+            "price-desc" => query.OrderByDescending(a => a.Resources.Sum(r => r.Price)),
+            "price-asc" => query.OrderBy(a => a.Resources.Sum(r => r.Price)),
+            _ => query.OrderBy(a => a.ScheduledAt), // "time-asc" (default)
+        };
+
+        var total = await query.CountAsync();
+        var items = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
 
         var latestChanges = await GetLatestStatusChangesAsync(items.Select(a => a.Id));
         var pendingRequests = await GetPendingRescheduleRequestsAsync(items.Select(a => a.Id));
@@ -785,12 +833,59 @@ public class AppointmentService : IAppointmentService
             .Select(a =>
             {
                 var r = MapResponse(a, latestChanges);
-                                r.PendingReschedule = MapPendingReschedule(pendingRequests.GetValueOrDefault(a.Id));
+                r.PendingReschedule = MapPendingReschedule(pendingRequests.GetValueOrDefault(a.Id));
                 return r;
             })
             .ToList();
 
-        return ApiResponse<List<AppointmentResponse>>.Ok(responses);
+        return ApiResponse<PaginatedResponse<AppointmentResponse>>.Ok(new PaginatedResponse<AppointmentResponse>
+        {
+            Items = responses,
+            TotalCount = total,
+            Page = page,
+            PageSize = pageSize
+        });
+    }
+
+    /// <summary>
+    /// Staff: book an appointment for themselves at their linked business.
+    /// StaffUserId and CustomerId are forced to the caller (never another staff
+    /// member), services/staff are validated, and the availability engine — the
+    /// backend source of truth — must return the slot as bookable, with the
+    /// same lead-time rules customers are subject to.
+    /// </summary>
+    public async Task<ApiResponse<AppointmentResponse>> CreateStaffSelfAppointmentAsync(
+        Guid staffUserId, CreateAppointmentRequest request)
+    {
+        var staff = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId && u.StaffBusinessId != null);
+        if (staff?.StaffBusinessId == null)
+            return ApiResponse<AppointmentResponse>.Fail("NOT_LINKED", "You are not linked to any business.");
+
+        var businessId = staff.StaffBusinessId.Value;
+
+        var (services, svcError, svcMsg) = await ValidateServicesAsync(businessId, request.ServiceIds);
+        if (svcError != null)
+            return ApiResponse<AppointmentResponse>.Fail(svcError, svcMsg!);
+
+        var totalMinutes = services.Sum(s => s.DurationMinutes);
+
+        // Staff is ALWAYS the caller — the request can never assign another staff member.
+        var (_, staffError, staffMsg) = await ResolveStaffAsync(businessId, staffUserId, request.ServiceIds);
+        if (staffError != null)
+            return ApiResponse<AppointmentResponse>.Fail(staffError, staffMsg!);
+
+        var scheduledAt = NormalizeUtc(request.ScheduledAt);
+        var resolution = await _availability.ResolveBookingStaffAsync(
+            businessId, request.ServiceIds, staffUserId, scheduledAt, totalMinutes,
+            excludeAppointmentId: null, enforceLeadTime: true);
+        if (!resolution.Ok)
+            return ApiResponse<AppointmentResponse>.Fail(resolution.ErrorCode!, resolution.ErrorMessage!);
+
+        // The staff member books themselves as the customer of the appointment.
+        var endAt = scheduledAt.AddMinutes(totalMinutes);
+
+        return await InsertAppointmentTransactionallyAsync(
+            businessId, staffUserId, staffUserId, scheduledAt, endAt, services, request.Note, staffUserId, Guid.Empty);
     }
 
     /// <summary>

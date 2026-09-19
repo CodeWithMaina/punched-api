@@ -23,10 +23,13 @@ public static class PlanModuleSeedData
         ("pro", "loyalty"), ("pro", "analytics"), ("pro", "referral"), ("pro", "serviceCatalog"),
         ("pro", "attendance"),
 
-        // Enterprise
+        // Enterprise — the only tier that includes the optional Custom Card
+        // Design enhancement. Every tier with "loyalty" keeps the DEFAULT card;
+        // only enterprise may use business-specific designs.
         ("enterprise", "customers"), ("enterprise", "staff"), ("enterprise", "settings"),
         ("enterprise", "appointments"), ("enterprise", "stamps"), ("enterprise", "notifications"),
         ("enterprise", "loyalty"), ("enterprise", "rewards"), ("enterprise", "analytics"), ("enterprise", "programs"),
-        ("enterprise", "referral"), ("enterprise", "serviceCatalog"), ("enterprise", "attendance")
+        ("enterprise", "referral"), ("enterprise", "serviceCatalog"), ("enterprise", "attendance"),
+        ("enterprise", "customCardDesign")
     };
 }

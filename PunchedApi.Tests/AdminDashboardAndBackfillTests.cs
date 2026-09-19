@@ -43,7 +43,8 @@ public class AdminDashboardAndBackfillTests
             new Mock<IInsightService>().Object,
             new AnalyticsAggregationService(context, TestHelpers.CreateLogger<AnalyticsAggregationService>()),
             new SegmentationService(context, TestHelpers.CreateLogger<SegmentationService>()),
-            new LoyaltyService(new UnitOfWork(context), context, new Mock<IStampService>().Object, new ProgramRuleEngine(), TestHelpers.CreateLogger<LoyaltyService>()),
+            new LoyaltyService(new UnitOfWork(context), context, new Mock<IStampService>().Object, new ProgramRuleEngine(),
+                new Mock<ICardDesignService>().Object, new Mock<ICardDesignResolver>().Object, TestHelpers.CreateLogger<LoyaltyService>()),
             TestHelpers.CreateLogger<AdminService>());
 [Fact]
     public async Task AdminDashboardAsync_IncludesChurnedBusinessesCount()

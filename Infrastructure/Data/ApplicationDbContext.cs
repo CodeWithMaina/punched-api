@@ -53,6 +53,8 @@ public class ApplicationDbContext : DbContext
     public DbSet<SubscriptionAuditLog> SubscriptionAuditLogs => Set<SubscriptionAuditLog>();
     public DbSet<StampCard> StampCards => Set<StampCard>();
     public DbSet<CardDesign> CardDesigns => Set<CardDesign>();
+    public DbSet<CustomerBusinessEnrollment> CustomerBusinessEnrollments => Set<CustomerBusinessEnrollment>();
+    public DbSet<CustomerStampCard> CustomerStampCards => Set<CustomerStampCard>();
 
     // ── Attendance module ─────────────────────────────────────
     public DbSet<AttendancePolicy> AttendancePolicies => Set<AttendancePolicy>();
