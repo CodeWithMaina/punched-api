@@ -9,7 +9,7 @@ using Microsoft.AspNetCore.RateLimiting;
 namespace PunchedApi.API.Controllers;
 
 /// <summary>
-/// Stamp card management — stamp cards are children of loyalty programs (campaigns).
+/// Stamp card management — stamp cards are children of loyalty programs.
 /// Base route: /v1/programs/me/{programId}/stamp-cards + /v1/stamp-cards/me/{id}
 /// </summary>
 [ApiController]
@@ -25,7 +25,7 @@ public class StampCardController : ControllerBase
         _stampCardService = stampCardService;
     }
 
-    /// <summary>List all stamp cards belonging to a campaign.</summary>
+    /// <summary>List all stamp cards belonging to a loyalty program.</summary>
     [HttpGet("v1/programs/me/{programId:guid}/stamp-cards")]
     [ProducesResponseType(typeof(ApiResponse<List<StampCardResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetProgramStampCards(Guid programId)
@@ -36,7 +36,7 @@ public class StampCardController : ControllerBase
         return result.Success ? Ok(result) : NotFound(result);
     }
 
-    /// <summary>Create a new stamp card under a campaign.</summary>
+    /// <summary>Create a new stamp card under a loyalty program.</summary>
     [HttpPost("v1/programs/me/{programId:guid}/stamp-cards")]
     [ProducesResponseType(typeof(ApiResponse<StampCardResponse>), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]

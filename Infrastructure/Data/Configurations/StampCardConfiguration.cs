@@ -6,7 +6,7 @@ namespace PunchedApi.Infrastructure.Data.Configurations;
 
 /// <summary>
 /// Fluent API configuration for <see cref="StampCard"/>.
-/// One campaign (LoyaltyProgram) owns many stamp cards.
+/// One loyalty program owns many stamp cards.
 /// </summary>
 public class StampCardConfiguration : IEntityTypeConfiguration<StampCard>
 {

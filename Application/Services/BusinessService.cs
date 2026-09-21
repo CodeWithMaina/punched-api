@@ -228,76 +228,106 @@ public partial class BusinessService : IBusinessService
         if (businessId == null)
             return ApiResponse<PaginatedResponse<BusinessCustomerResponse>>.Fail("NOT_FOUND", "No business found for this account.");
 
-        var query = _context.LoyaltyCards
-            .Where(c => c.BusinessId == businessId.Value)
-            .AsNoTracking()
-            .AsQueryable();
+        // Database-first: the roster is anchored on the persisted Customer ↔ Business
+        // enrollment (left-joined to the loyalty card), so enrolled-but-cardless
+        // customers appear and left/blocked members can be filtered.
+        var baseQuery =
+            from e in _context.CustomerBusinessEnrollments.AsNoTracking()
+            where e.BusinessId == businessId.Value
+            join c in _context.LoyaltyCards.AsNoTracking()
+                on new { e.CustomerId, e.BusinessId } equals new { c.CustomerId, c.BusinessId } into cards
+            from c in cards.DefaultIfEmpty()
+            select new { e, c };
+
+        // Default roster shows active members only; status filter can widen it.
+        if (string.IsNullOrWhiteSpace(status) || status.ToLowerInvariant() == "enrolled")
+        {
+            baseQuery = baseQuery.Where(x => x.e.Status == CustomerBusinessEnrollmentStatus.Active);
+        }
+        else if (status.ToLowerInvariant() is "left" or "blocked")
+        {
+            var wanted = status.ToLowerInvariant() == "left"
+                ? CustomerBusinessEnrollmentStatus.Left
+                : CustomerBusinessEnrollmentStatus.Blocked;
+            baseQuery = baseQuery.Where(x => x.e.Status == wanted);
+        }
+
+        var query = baseQuery.AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(search))
         {
-            var pattern = $"%{search}%";
-            query = query.Where(c =>
-                EF.Functions.ILike(c.Customer.FullName, pattern) ||
-                EF.Functions.ILike(c.Customer.Email, pattern) ||
-                (c.Customer.PhoneNumber != null && EF.Functions.ILike(c.Customer.PhoneNumber, pattern)));
+            var pattern = $"%{EscapeLike(search)}%";
+            query = query.Where(x =>
+                EF.Functions.ILike(x.e.Customer.FullName, pattern) ||
+                EF.Functions.ILike(x.e.Customer.Email, pattern) ||
+                (x.e.Customer.PhoneNumber != null && EF.Functions.ILike(x.e.Customer.PhoneNumber, pattern)));
         }
 
         if (status?.ToLowerInvariant() == "active")
         {
             var activeSince = DateTime.UtcNow.AddDays(-7);
-            query = query.Where(c => c.LastStampAt >= activeSince);
+            query = query.Where(x => x.c != null && x.c.LastStampAt >= activeSince);
         }
         else if (status?.ToLowerInvariant() == "ready")
         {
-            query = query.Where(c => c.TotalStamps >= c.Program.StampsRequired);
+            query = query.Where(x => x.c != null && x.c.TotalStamps >= x.c.Program.StampsRequired);
         }
 
         if (enrolledFrom.HasValue)
         {
             var from = enrolledFrom.Value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
-            query = query.Where(c => c.EnrolledAt >= from);
+            query = query.Where(x => x.e.EnrolledAt >= from);
         }
 
         if (enrolledTo.HasValue)
         {
             var toExclusive = enrolledTo.Value.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
-            query = query.Where(c => c.EnrolledAt < toExclusive);
+            query = query.Where(x => x.e.EnrolledAt < toExclusive);
         }
 
         var descending = !string.Equals(sortDirection, "asc", StringComparison.OrdinalIgnoreCase);
         query = sortBy.ToLowerInvariant() switch
         {
-            "stamps" => descending ? query.OrderByDescending(c => c.TotalStamps).ThenBy(c => c.Customer.FullName) : query.OrderBy(c => c.TotalStamps).ThenBy(c => c.Customer.FullName),
-            "name" => descending ? query.OrderByDescending(c => c.Customer.FullName) : query.OrderBy(c => c.Customer.FullName),
-            _ => descending ? query.OrderByDescending(c => c.LastStampAt ?? c.EnrolledAt) : query.OrderBy(c => c.LastStampAt ?? c.EnrolledAt)
+            "stamps" => descending
+                ? query.OrderByDescending(x => x.c != null ? x.c.TotalStamps : 0).ThenBy(x => x.e.Customer.FullName)
+                : query.OrderBy(x => x.c != null ? x.c.TotalStamps : 0).ThenBy(x => x.e.Customer.FullName),
+            "name" => descending
+                ? query.OrderByDescending(x => x.e.Customer.FullName)
+                : query.OrderBy(x => x.e.Customer.FullName),
+            _ => descending
+                ? query.OrderByDescending(x => (DateTime?)(x.c != null ? x.c.LastStampAt : null) ?? x.e.EnrolledAt)
+                : query.OrderBy(x => (DateTime?)(x.c != null ? x.c.LastStampAt : null) ?? x.e.EnrolledAt)
         };
 
         var totalCount = await query.CountAsync();
-        var cards = await query
+        var rows = await query
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(c => new BusinessCustomerResponse
+            .Select(x => new BusinessCustomerResponse
             {
-                UserId = c.CustomerId,
-                FullName = c.Customer.FullName,
-                Email = c.Customer.Email,
-                PhoneNumber = c.Customer.PhoneNumber,
-                DateOfBirth = c.Customer.DateOfBirth,
-                Gender = c.Customer.Gender,
-                AvatarUrl = c.Customer.AvatarUrl,
-                CardId = c.Id,
-                TotalStamps = c.TotalStamps,
-                LifetimeStamps = c.LifetimeStamps,
-                TotalRedemptions = c.TotalRedemptions,
-                EnrolledAt = c.EnrolledAt,
-                LastStampAt = c.LastStampAt,
-                StampsRequired = c.Program.StampsRequired
+                UserId = x.e.CustomerId,
+                FullName = x.e.Customer.FullName,
+                Email = x.e.Customer.Email,
+                PhoneNumber = x.e.Customer.PhoneNumber,
+                DateOfBirth = x.e.Customer.DateOfBirth,
+                Gender = x.e.Customer.Gender,
+                AvatarUrl = x.e.Customer.AvatarUrl,
+                CardId = x.c != null ? (Guid?)x.c.Id : null,
+                EnrollmentStatus = x.e.Status == CustomerBusinessEnrollmentStatus.Active
+                    ? "active"
+                    : x.e.Status.ToString().ToLowerInvariant(),
+                TotalStamps = x.c != null ? x.c.TotalStamps : 0,
+                LifetimeStamps = x.c != null ? x.c.LifetimeStamps : 0,
+                TotalRedemptions = x.c != null ? x.c.TotalRedemptions : 0,
+                EnrolledAt = x.e.EnrolledAt,
+                LastStampAt = x.c != null ? x.c.LastStampAt : null,
+                StampsRequired = x.c != null ? (int?)x.c.Program.StampsRequired : null
             })
             .ToListAsync();
 
         return ApiResponse<PaginatedResponse<BusinessCustomerResponse>>.Ok(new PaginatedResponse<BusinessCustomerResponse>
         {
-            Items = cards,
+            Items = rows,
             TotalCount = totalCount,
             Page = page,
             PageSize = pageSize
@@ -310,33 +340,44 @@ public partial class BusinessService : IBusinessService
         if (businessId == null)
             return ApiResponse<BusinessCustomerResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
-        var card = await _context.LoyaltyCards
-            .Include(c => c.Customer)
-            .FirstOrDefaultAsync(c => c.BusinessId == businessId && c.CustomerId == customerId);
+        // Database-first: the detail view works on the persisted enrollment,
+        // so enrolled-but-cardless customers resolve too.
+        var enrollment = await _context.CustomerBusinessEnrollments
+            .Include(e => e.Customer)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(e => e.BusinessId == businessId && e.CustomerId == customerId);
 
-        if (card == null)
+        if (enrollment == null)
             return ApiResponse<BusinessCustomerResponse>.Fail("NOT_FOUND", "Customer not enrolled in this business.");
 
-        var stampsRequired = await _context.LoyaltyPrograms
-            .Where(p => p.BusinessId == businessId.Value && p.IsActive)
-            .Select(p => (int?)p.StampsRequired)
-            .FirstOrDefaultAsync();
+        var card = await _context.LoyaltyCards
+            .FirstOrDefaultAsync(c => c.BusinessId == businessId && c.CustomerId == customerId);
+
+        var stampsRequired = card == null
+            ? null
+            : await _context.LoyaltyPrograms
+                .Where(p => p.Id == card.ProgramId)
+                .Select(p => (int?)p.StampsRequired)
+                .FirstOrDefaultAsync();
 
         return ApiResponse<BusinessCustomerResponse>.Ok(new BusinessCustomerResponse
         {
-            UserId = card.CustomerId,
-            FullName = card.Customer.FullName,
-            Email = card.Customer.Email,
-            PhoneNumber = card.Customer.PhoneNumber,
-            DateOfBirth = card.Customer.DateOfBirth,
-            Gender = card.Customer.Gender,
-            AvatarUrl = card.Customer.AvatarUrl,
-            CardId = card.Id,
-            TotalStamps = card.TotalStamps,
-            LifetimeStamps = card.LifetimeStamps,
-            TotalRedemptions = card.TotalRedemptions,
-            EnrolledAt = card.EnrolledAt,
-            LastStampAt = card.LastStampAt,
+            UserId = enrollment.CustomerId,
+            FullName = enrollment.Customer.FullName,
+            Email = enrollment.Customer.Email,
+            PhoneNumber = enrollment.Customer.PhoneNumber,
+            DateOfBirth = enrollment.Customer.DateOfBirth,
+            Gender = enrollment.Customer.Gender,
+            AvatarUrl = enrollment.Customer.AvatarUrl,
+            CardId = card?.Id,
+            EnrollmentStatus = enrollment.Status == CustomerBusinessEnrollmentStatus.Active
+                ? "active"
+                : enrollment.Status.ToString().ToLowerInvariant(),
+            TotalStamps = card?.TotalStamps ?? 0,
+            LifetimeStamps = card?.LifetimeStamps ?? 0,
+            TotalRedemptions = card?.TotalRedemptions ?? 0,
+            EnrolledAt = enrollment.EnrolledAt,
+            LastStampAt = card?.LastStampAt,
             StampsRequired = stampsRequired
         });
     }
@@ -2208,10 +2249,17 @@ public partial class BusinessService : IBusinessService
                 .Where(r => r.ReferrerId == customerId)
                 .Select(r => r.BusinessId);
 
-            // Union the three sources, then join the business in one query.
+            // Persisted enrollments are the authoritative Customer ↔ Business
+            // relationship and are always included in the union.
+            var enrollmentIds = _context.CustomerBusinessEnrollments
+                .Where(e => e.CustomerId == customerId)
+                .Select(e => e.BusinessId);
+
+            // Union the sources, then join the business in one query.
             var union = cardIds
                 .Union(appointmentIds)
-                .Union(referralIds);
+                .Union(referralIds)
+                .Union(enrollmentIds);
 
             var businesses = await _context.Businesses
                 .AsNoTracking()
@@ -2233,12 +2281,14 @@ public partial class BusinessService : IBusinessService
             var cardSet = new HashSet<Guid>(await cardIds.ToListAsync());
             var appointmentSet = new HashSet<Guid>(await appointmentIds.ToListAsync());
             var referralSet = new HashSet<Guid>(await referralIds.ToListAsync());
+            var enrollmentSet = new HashSet<Guid>(await enrollmentIds.ToListAsync());
 
             foreach (var item in result)
             {
                 item.ViaCard = cardSet.Contains(item.Id);
                 item.ViaAppointment = appointmentSet.Contains(item.Id);
                 item.ViaReferral = referralSet.Contains(item.Id);
+                item.ViaEnrollment = enrollmentSet.Contains(item.Id);
             }
 
             return ApiResponse<List<CustomerAssociatedBusinessResponse>>.Ok(result);

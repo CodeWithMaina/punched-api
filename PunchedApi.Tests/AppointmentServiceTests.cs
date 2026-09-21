@@ -42,7 +42,14 @@ public class AppointmentServiceTests
         await BookingTestBase.SeedAsync(context, owner, business, customer, staff, s1, s2,
             BookingTestBase.CreateAssignment(business.Id, staff.Id, s1.Id),
             BookingTestBase.CreateAssignment(business.Id, staff.Id, s2.Id),
-            BookingTestBase.CreateShift(business.Id, staff.Id, new DateOnly(2026, 8, 20), 9, 18));
+            BookingTestBase.CreateShift(business.Id, staff.Id, DateOnly.FromDateTime(Ten), 9, 18),
+            // Customer bookings now require a persisted enrollment (DB-first gate).
+            new CustomerBusinessEnrollment
+            {
+                Id = Guid.NewGuid(), CustomerId = customer.Id, BusinessId = business.Id,
+                Status = CustomerBusinessEnrollmentStatus.Active, Source = "test",
+                EnrolledAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
+            });
 
         return new Env
         {
@@ -359,13 +366,15 @@ public class AppointmentServiceTests
             BookingTestBase.CreateResource(a1.Id, env.S1.Id, env.S1.Name, 60, 500m, 0),
             BookingTestBase.CreateResource(a2.Id, env.S2.Id, env.S2.Name, 30, 300m, 0));
 
-        var result = await env.Service.GetStaffAppointmentsAsync(env.Staff.Id, null, null, null);
+        var result = await env.Service.GetStaffAppointmentsAsync(env.Staff.Id, null, null, null, sort: null,
+            from: null, to: null, page: 1, pageSize: 20);
         Assert.True(result.Success, result.Error?.Message);
-        Assert.Single(result.Data!);
-        Assert.Equal(a1.Id, result.Data![0].Id);
+        Assert.Single(result.Data!.Items);
+        Assert.Equal(a1.Id, result.Data.Items[0].Id);
 
-        var filtered = await env.Service.GetStaffAppointmentsAsync(env.Staff.Id, "booked", null, null);
-        Assert.Empty(filtered.Data!);
+        var filtered = await env.Service.GetStaffAppointmentsAsync(env.Staff.Id, "booked", null, null, sort: null,
+            from: null, to: null, page: 1, pageSize: 20);
+        Assert.Empty(filtered.Data!.Items);
     }
 [Fact]
     public async Task StatusTransitions_ValidTransitions_UpdateStatusAndAppendHistory()

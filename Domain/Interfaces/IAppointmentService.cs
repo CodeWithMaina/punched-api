@@ -12,6 +12,12 @@ public interface IAppointmentService
     /// <summary>Computes bookable slots for a business across a date range.</summary>
     Task<ApiResponse<List<AvailabilitySlotResponse>>> GetAvailableSlotsAsync(Guid userId, string role, Guid businessId, AvailabilityQueryRequest request);
 
+    /// <summary>
+    /// Full bookable grid (including blocked slots, per-day rollups and
+    /// alternative-staff suggestions) powering the booking wizard's time step.
+    /// </summary>
+    Task<ApiResponse<AvailabilityCalendarResponse>> GetAvailabilityCalendarAsync(Guid userId, string role, Guid businessId, AvailabilityQueryRequest request);
+
     /// <summary>Customer self-service booking. CustomerId is forced to the caller.</summary>
     Task<ApiResponse<AppointmentResponse>> CreateAppointmentAsync(Guid callerUserId, string role, CreateAppointmentRequest request);
 
@@ -58,8 +64,22 @@ public interface IAppointmentService
     /// <summary>Paged business appointment list with filters.</summary>
     Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetBusinessAppointmentsAsync(Guid ownerUserId, string? status, DateTime? from, DateTime? to, Guid? staffUserId, Guid? customerId, Guid? serviceId, int page, int pageSize);
 
-        /// <summary>Lists a staff member's own appointments.</summary>
-    Task<ApiResponse<List<AppointmentResponse>>> GetStaffAppointmentsAsync(Guid staffUserId, string? status, DateTime? from, DateTime? to);
+        /// <summary>
+        /// Lists a staff member's own appointments — backend-driven search,
+        /// price filtering, sorting and pagination (page/pageSize/totalCount/totalPages).
+        /// </summary>
+        Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetStaffAppointmentsAsync(
+            Guid staffUserId, string? status, string? search, string? priceFilter, string? sort,
+            DateTime? from, DateTime? to, int page, int pageSize);
+
+    /// <summary>
+    /// Staff: book an appointment for themselves at their linked business.
+    /// StaffUserId and CustomerId are always forced to the caller — a staff
+    /// member can never book for (or as) another staff member. The slot must
+    /// still be on the bookable grid and lead time is enforced like customers.
+    /// </summary>
+    Task<ApiResponse<AppointmentResponse>> CreateStaffSelfAppointmentAsync(
+        Guid staffUserId, CreateAppointmentRequest request);
 
     /// <summary>
     /// Staff: a specific customer's appointments at the staff member's

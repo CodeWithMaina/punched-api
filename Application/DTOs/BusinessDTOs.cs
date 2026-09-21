@@ -179,6 +179,14 @@ public class CreateLoyaltyProgramRequest
 
     [JsonPropertyName("endsAt")]
     public DateTime? EndsAt { get; set; }
+
+    /// <summary>
+    /// Optional card design selection. Null ⇒ the platform default design.
+    /// A business-specific design is only accepted when the business holds the
+    /// Custom Card Design entitlement; validated server-side.
+    /// </summary>
+    [JsonPropertyName("cardDesignId")]
+    public Guid? CardDesignId { get; set; }
 }
 
 public class UpdateLoyaltyProgramRequest
@@ -221,6 +229,18 @@ public class UpdateLoyaltyProgramRequest
 
     [JsonPropertyName("endsAt")]
     public DateTime? EndsAt { get; set; }
+
+    /// <summary>
+    /// Card design selection. Null with <see cref="ClearCardDesign"/> false means
+    /// "leave unchanged". Clearing is never done implicitly by a subscription
+    /// change — it is always an explicit business owner action.
+    /// </summary>
+    [JsonPropertyName("cardDesignId")]
+    public Guid? CardDesignId { get; set; }
+
+    /// <summary>Explicitly revert this program to the platform default design.</summary>
+    [JsonPropertyName("clearCardDesign")]
+    public bool ClearCardDesign { get; set; }
 }
 
 /// <summary>Legacy upsert kept for backward-compatibility.</summary>
@@ -295,16 +315,27 @@ public class LoyaltyProgramResponse
     [JsonPropertyName("endsAt")]
     public DateTime? EndsAt { get; set; }
 
+    /// <summary>
+    /// Selected card design (null ⇒ platform default). Preserved across
+    /// subscription changes so downgrade/upgrade is reversible.
+    /// </summary>
+    [JsonPropertyName("cardDesignId")]
+    public Guid? CardDesignId { get; set; }
+
+    /// <summary>Display name of the selected design, when one is selected.</summary>
+    [JsonPropertyName("cardDesignName")]
+    public string? CardDesignName { get; set; }
+
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
 }
 
 /// <summary>
-/// A public, customer-facing campaign (active loyalty program) for a business.
-/// Projected to only the fields the Campaigns tab needs; enrolled programs are
+/// A public, customer-facing active loyalty program for a business.
+/// Projected to only the fields the loyalty programs tab needs; enrolled programs are
 /// ordered first by the database.
 /// </summary>
-public class CustomerCampaignResponse
+public class CustomerProgramResponse
 {
     [JsonPropertyName("id")]
     public Guid Id { get; set; }
@@ -334,9 +365,85 @@ public class CustomerCampaignResponse
     [JsonPropertyName("endsAt")]
     public DateTime? EndsAt { get; set; }
 
-    /// <summary>True when the calling customer already holds a card in this campaign.</summary>
+    /// <summary>True when the calling customer already holds a card in this program.</summary>
     [JsonPropertyName("isEnrolled")]
     public bool IsEnrolled { get; set; }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CUSTOMER ENROLLMENT DTOs (database-first source of truth)
+// ═══════════════════════════════════════════════════════════════
+
+/// <summary>One business the authenticated customer is enrolled in.</summary>
+public class CustomerBusinessDto
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    [JsonPropertyName("businessId")]
+    public Guid BusinessId { get; set; }
+
+    [JsonPropertyName("businessName")]
+    public string BusinessName { get; set; } = string.Empty;
+
+    [JsonPropertyName("logoUrl")]
+    public string? LogoUrl { get; set; }
+
+    [JsonPropertyName("category")]
+    public string? Category { get; set; }
+
+    [JsonPropertyName("location")]
+    public string? Location { get; set; }
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "active";
+
+    [JsonPropertyName("source")]
+    public string Source { get; set; } = "discovery";
+
+    [JsonPropertyName("enrolledAt")]
+    public DateTime EnrolledAt { get; set; }
+}
+
+/// <summary>Request body for POST enroll (source optional: qr|discovery|business|booking|referral|loyalty).</summary>
+public class EnrollBusinessRequest
+{
+    [JsonPropertyName("source")]
+    public string? Source { get; set; }
+}
+
+/// <summary>One stamp card owned by the authenticated customer.</summary>
+public class CustomerStampCardDto
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    [JsonPropertyName("stampCardId")]
+    public Guid StampCardId { get; set; }
+
+    [JsonPropertyName("businessId")]
+    public Guid BusinessId { get; set; }
+
+    [JsonPropertyName("businessName")]
+    public string BusinessName { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("rewardDescription")]
+    public string RewardDescription { get; set; } = string.Empty;
+
+    [JsonPropertyName("stampsRequired")]
+    public int StampsRequired { get; set; }
+
+    [JsonPropertyName("currentStamps")]
+    public int CurrentStamps { get; set; }
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "active";
+
+    [JsonPropertyName("joinedAt")]
+    public DateTime JoinedAt { get; set; }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -394,6 +501,33 @@ public class LoyaltyCardResponse
     /// </summary>
     [JsonPropertyName("lockedStamps")]
     public int LockedStamps { get; set; }
+
+    /// <summary>
+    /// The card design actually used for this customer's card. Null/absent and
+    /// <see cref="CardDesignHtml"/> empty ⇒ render the built-in default Punched
+    /// card (the core loyalty experience).
+    ///
+    /// The server resolves this at render time, honouring the business's
+    /// subscription: if the custom designs module is disabled the default is
+    /// used even when the program still has a design selected.
+    /// </summary>
+    [JsonPropertyName("cardDesignId")]
+    public Guid? CardDesignId { get; set; }
+
+    /// <summary>Display name of the applied design (default design name otherwise).</summary>
+    [JsonPropertyName("cardDesignName")]
+    public string? CardDesignName { get; set; }
+
+    /// <summary>True when the platform default design is applied.</summary>
+    [JsonPropertyName("cardDesignIsDefault")]
+    public bool CardDesignIsDefault { get; set; }
+
+    /// <summary>
+    /// The fully rendered card HTML (single shared rendering pipeline). Render
+    /// inside a sandboxed iframe. Null/empty ⇒ use the built-in React card.
+    /// </summary>
+    [JsonPropertyName("cardDesignHtml")]
+    public string? CardDesignHtml { get; set; }
 
     [JsonPropertyName("program")]
     public LoyaltyProgramResponse Program { get; set; } = null!;
@@ -629,8 +763,13 @@ public class BusinessCustomerResponse
     [JsonPropertyName("avatarUrl")]
     public string? AvatarUrl { get; set; }
 
+    /// <summary>Null when the customer is enrolled but has no loyalty card yet.</summary>
     [JsonPropertyName("cardId")]
-    public Guid CardId { get; set; }
+    public Guid? CardId { get; set; }
+
+    /// <summary>Persisted enrollment status: active | left | blocked.</summary>
+    [JsonPropertyName("enrollmentStatus")]
+    public string EnrollmentStatus { get; set; } = "active";
 
     [JsonPropertyName("totalStamps")]
     public int TotalStamps { get; set; }
@@ -1870,4 +2009,8 @@ public class CustomerAssociatedBusinessResponse
     /// <summary>Whether the customer generated a referral link for this business.</summary>
     [JsonPropertyName("viaReferral")]
     public bool ViaReferral { get; set; }
+
+    /// <summary>Whether the customer has a persisted enrollment with this business.</summary>
+    [JsonPropertyName("viaEnrollment")]
+    public bool ViaEnrollment { get; set; }
 }

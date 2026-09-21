@@ -117,6 +117,9 @@ internal static class BookingTestBase
         Location = "Nairobi",
         MpesaNumber = "123456",
         OwnerId = ownerId,
+        // Tests are authored in UTC slot semantics (see the availability tests);
+        // UTC is a valid IANA zone so the engine treats shift hours as UTC.
+        TimeZoneId = "UTC",
         CreatedAt = DateTime.UtcNow
     };
 

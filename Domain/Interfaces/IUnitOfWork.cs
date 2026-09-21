@@ -80,8 +80,26 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Repository for StampCard entities.</summary>
     IRepository<StampCard> StampCards { get; }
 
+    /// <summary>Repository for CustomerBusinessEnrollment entities.</summary>
+    IRepository<CustomerBusinessEnrollment> CustomerBusinessEnrollments { get; }
+
+    /// <summary>Repository for CustomerStampCard entities.</summary>
+    IRepository<CustomerStampCard> CustomerStampCards { get; }
+
     /// <summary>Repository for CardDesign entities.</summary>
     IRepository<CardDesign> CardDesigns { get; }
+
+    /// <summary>Repository for LoyaltyEarningRule entities.</summary>
+    IRepository<LoyaltyEarningRule> LoyaltyEarningRules { get; }
+
+    /// <summary>Repository for the immutable StampTransaction ledger.</summary>
+    IRepository<StampTransaction> StampTransactions { get; }
+
+    /// <summary>Repository for Reward entities.</summary>
+    IRepository<Reward> Rewards { get; }
+
+    /// <summary>Repository for RewardEntitlement entities.</summary>
+    IRepository<RewardEntitlement> RewardEntitlements { get; }
 
     /// <summary>
     /// Commits all pending changes to the database.

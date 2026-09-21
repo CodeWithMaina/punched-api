@@ -111,6 +111,16 @@ public class LoyaltyProgram : BaseEntity
     /// <summary>Optional end date for the program's active window.</summary>
     public DateTime? EndsAt { get; set; }
 
+    /// <summary>
+    /// The card design the business selected for this program.
+    ///
+    /// Null means "use the platform default design". This value is NEVER cleared
+    /// by a subscription change — the entitlement system decides at render time
+    /// whether the selected design (or the default) is used, which keeps
+    /// downgrade/upgrade reversible (plan §12–13).
+    /// </summary>
+    public Guid? CardDesignId { get; set; }
+
     // ── Navigation ──────────────────────────────────────────
     /// <summary>
     /// The business this program belongs to.
@@ -118,7 +128,27 @@ public class LoyaltyProgram : BaseEntity
     public virtual Business Business { get; set; } = null!;
 
     /// <summary>
+    /// The selected card design (null ⇒ platform default).
+    /// </summary>
+    public virtual CardDesign? CardDesign { get; set; }
+
+    /// <summary>
     /// Loyalty cards enrolled in this program.
     /// </summary>
     public virtual ICollection<LoyaltyCard> LoyaltyCards { get; set; } = new List<LoyaltyCard>();
+
+    /// <summary>
+    /// Earning rules that award stamps for this program.
+    /// </summary>
+    public virtual ICollection<LoyaltyEarningRule> EarningRules { get; set; } = new List<LoyaltyEarningRule>();
+
+    /// <summary>
+    /// Rewards unlockable within this program.
+    /// </summary>
+    public virtual ICollection<Reward> Rewards { get; set; } = new List<Reward>();
+
+    /// <summary>
+    /// The immutable stamp transaction ledger for this program.
+    /// </summary>
+    public virtual ICollection<StampTransaction> StampTransactions { get; set; } = new List<StampTransaction>();
 }

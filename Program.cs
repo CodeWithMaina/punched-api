@@ -10,7 +10,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using PunchedApi.API.Middleware;
+using PunchedApi.Application.Attendance;
+using PunchedApi.Application.Attendance.Verification;
 using PunchedApi.Application.Authorization;
+using PunchedApi.Application.Loyalty;
 using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Modules;
 using PunchedApi.Application.Services;
@@ -141,11 +144,27 @@ try
     builder.Services.AddScoped<IBusinessService, BusinessService>();
     builder.Services.AddScoped<ILoyaltyService, LoyaltyService>();
             builder.Services.AddScoped<IStampService, StampService>();
+
+    // ── Loyalty module (earning rules, stamp ledger, rewards) ──
+    // Subscription-gated via the existing module entitlement system:
+    // ModuleCatalog["loyalty"] + [RequireModule("loyalty")] + service-layer checks.
+    builder.Services.AddScoped<ILoyaltyScopeResolver, LoyaltyScopeResolver>();
+    builder.Services.AddScoped<ILoyaltyStampingService, LoyaltyStampingService>();
+    builder.Services.AddScoped<ILoyaltyEarningRuleService, LoyaltyEarningRuleService>();
+    builder.Services.AddScoped<ILoyaltyRewardService, LoyaltyRewardService>();
+
+    // Domain-event dispatch for automatic earning. Producers (Appointments,
+    // Referrals) publish facts they own; Loyalty is the only subscriber.
+    builder.Services.AddScoped<ILoyaltyEventBus, LoyaltyEventBus>();
+    builder.Services.AddScoped<ILoyaltyEventHandler, LoyaltyAutomaticEarningHandler>();
     builder.Services.AddScoped<IStampCardService, StampCardService>();
+    builder.Services.AddScoped<ICardDesignService, CardDesignService>();
+    builder.Services.AddScoped<ICardDesignResolver, CardDesignResolver>();
     builder.Services.AddScoped<PunchedApi.Application.Programs.IProgramRuleEngine, PunchedApi.Application.Programs.ProgramRuleEngine>();
     builder.Services.AddScoped<IIdempotencyService, IdempotencyService>();
     builder.Services.AddScoped<INotificationsService, NotificationsService>();
     builder.Services.AddScoped<IQrService, QrService>();
+    builder.Services.AddScoped<ICustomerEnrollmentService, CustomerEnrollmentService>();
     builder.Services.AddScoped<IRedemptionService, RedemptionService>();
     builder.Services.AddScoped<IReferralService, ReferralService>();
     builder.Services.AddScoped<IAdminService, AdminService>();
@@ -159,6 +178,18 @@ try
     builder.Services.AddScoped<IAppointmentService, AppointmentService>();
     builder.Services.AddScoped<AppointmentAvailabilityService>();
     builder.Services.AddScoped<IServiceCatalogService, ServiceCatalogService>();
+
+    // ── Attendance module (Phase 2: verification engine + QR credentials) ──
+    // Verifiers are registered as IAttendanceVerifier so the engine receives
+    // them all through IEnumerable and policy decides which ones run (§7.2).
+    builder.Services.AddScoped<IAttendanceVerifier, AuthenticatedUserVerifier>();
+    builder.Services.AddScoped<IAttendanceVerifier, QrVerifier>();
+    builder.Services.AddScoped<IAttendanceVerificationEngine, AttendanceVerificationEngine>();
+    builder.Services.AddScoped<IAttendanceLocationService, AttendanceLocationService>();
+    builder.Services.AddScoped<IAttendancePolicyService, AttendancePolicyService>();
+    // Phase 3: the staff hot path (status / clock-in / clock-out / history).
+    builder.Services.AddScoped<IAttendanceService, AttendanceService>();
+
 
     // ── Module entitlements (plugin architecture Phases 1-3) ─
     builder.Services.AddScoped<IModuleEntitlementService, ModuleEntitlementService>();
@@ -320,6 +351,22 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 _ => new FixedWindowRateLimiterOptions
                 {
                     PermitLimit = 20,
+                    Window = TimeSpan.FromHours(1),
+                    QueueLimit = 0
+                });
+        });
+
+        // Attendance clock-in/out: 60 scans per hour per (IP + user) — the
+        // double-tap safe-by-construction bound (429 never reaches the service).
+        options.AddPolicy("attendance-clock", httpContext =>
+        {
+            var userId = httpContext.User?.FindFirst("userId")?.Value ?? "anon";
+            var partitionKey = $"{httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown"}:{userId}";
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey,
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 60,
                     Window = TimeSpan.FromHours(1),
                     QueueLimit = 0
                 });

@@ -20,10 +20,11 @@ namespace PunchedApi.API.Controllers;
 [EnableRateLimiting("general")]
 public partial class BusinessController : ControllerBase
 {
-    private readonly IBusinessService _businessService;
+        private readonly IBusinessService _businessService;
     private readonly IStampService _stampService;
     private readonly INotificationsService _notificationsService;
     private readonly IAppointmentService _appointmentService;
+    private readonly IAttendanceLocationService _attendanceLocationService;
     private readonly ILogger<BusinessController> _logger;
 
     public BusinessController(
@@ -31,12 +32,14 @@ public partial class BusinessController : ControllerBase
         IStampService stampService,
         INotificationsService notificationsService,
         IAppointmentService appointmentService,
+        IAttendanceLocationService attendanceLocationService,
         ILogger<BusinessController> logger)
     {
         _businessService = businessService;
         _stampService = stampService;
         _notificationsService = notificationsService;
         _appointmentService = appointmentService;
+        _attendanceLocationService = attendanceLocationService;
         _logger = logger;
     }
 
@@ -214,6 +217,11 @@ public partial class BusinessController : ControllerBase
             "NOT_FOUND" or "SERVICE_NOT_FOUND" or "STAFF_NOT_FOUND" or "CUSTOMER_NOT_FOUND" => NotFound(result),
             "FORBIDDEN" or "MODULE_DISABLED" => StatusCode(StatusCodes.Status403Forbidden, result),
             "OVERBOOKING" or "SLOT_UNAVAILABLE" or "INVALID_STATUS_TRANSITION" => Conflict(result),
+            // Attendance owner surface (§9.6): state/availability conflicts map to 409 so the
+            // declarative client (one primary action, §5.4) can explain them, not retry them.
+            "ALREADY_CLOCKED_IN" or "NOT_CLOCKED_IN" or "ATTENDANCE_DISABLED" or
+            "ATTENDANCE_NOT_CONFIGURED" or "VERIFICATION_METHOD_UNAVAILABLE" or
+            "LOCATION_HAS_HISTORY" or "LOCATION_NAME_EXISTS" => Conflict(result),
             _ => BadRequest(result)   // STAFF_NOT_AVAILABLE, VALIDATION_ERROR, BUSINESS_NOT_FOUND, fallback
         };
 

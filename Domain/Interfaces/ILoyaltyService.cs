@@ -24,8 +24,8 @@ public interface ILoyaltyService
     Task<ApiResponse<LoyaltyProgramResponse>> UpsertProgramAsync(Guid ownerId, UpsertLoyaltyProgramRequest request);
     Task<ApiResponse<LoyaltyProgramResponse>> GetProgramAsync(Guid businessId);
 
-    // Customer-facing, DB-first campaigns list for a business (enrolled first)
-    Task<ApiResponse<PaginatedResponse<CustomerCampaignResponse>>> GetBusinessCampaignsAsync(Guid businessId, Guid? customerId, int page, int pageSize);
+    // Customer-facing, DB-first loyalty programs list for a business (enrolled first)
+    Task<ApiResponse<PaginatedResponse<CustomerProgramResponse>>> GetBusinessProgramsAsync(Guid businessId, Guid? customerId, int page, int pageSize);
 
     // Customer card operations
     Task<ApiResponse<LoyaltyCardResponse>> EnrollAsync(Guid customerId, EnrollCardRequest request);

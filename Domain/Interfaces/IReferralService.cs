@@ -25,6 +25,21 @@ public interface IReferralService
     // ── Business Referral Tracking ──────────────────────────
     Task<ApiResponse<BusinessReferralOverviewResponse>> GetBusinessReferralsAsync(Guid ownerId);
 
-    // ── Internal: called by StampService on first stamp ─────
+    // ── Internal qualification triggers ─────────────────────
+
+    /// <summary>
+    /// Shared qualification routine: turns a waiting referral into a successful
+    /// one and issues the referral program's reward. Idempotent — a referral that
+    /// is already qualified or rewarded is left untouched. Legacy trigger: the
+    /// referee's first stamp.
+    /// </summary>
     Task ProcessFirstStampReferralAsync(Guid refereeId, Guid businessId);
+
+    /// <summary>
+    /// Appointment-completion trigger (spec §17): a referral only becomes
+    /// successful once the referred customer completes their FIRST qualifying
+    /// appointment. Publishing the resulting ReferralCompleted fact for
+    /// downstream consumers (Loyalty) is owned here, not by the consumer.
+    /// </summary>
+    Task ProcessAppointmentCompletionAsync(Guid refereeId, Guid businessId, Guid appointmentId);
 }

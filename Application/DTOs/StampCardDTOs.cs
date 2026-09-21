@@ -4,7 +4,7 @@ namespace PunchedApi.Application.DTOs;
 
 // ═══════════════════════════════════════════════════════════════
 //  STAMP CARD DTOs
-//  Stamp cards are children of campaigns (LoyaltyProgram).
+//  Stamp cards are children of loyalty programs.
 // ═══════════════════════════════════════════════════════════════
 
 /// <summary>POST /v1/programs/me/{programId}/stamp-cards request body.</summary>
@@ -104,7 +104,7 @@ public class StampCardResponse
     [JsonPropertyName("cardDesignName")]
     public string? CardDesignName { get; set; }
 
-    /// <summary>Basic usage info: customer cards enrolled in the parent campaign.</summary>
+    /// <summary>Basic usage info: customer cards enrolled in the parent loyalty program.</summary>
     [JsonPropertyName("enrolledCustomers")]
     public int EnrolledCustomers { get; set; }
 

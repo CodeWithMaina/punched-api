@@ -151,7 +151,8 @@ public class AnalyticsBackfillTests
         // Act
         var logger = TestHelpers.CreateLogger<LoyaltyService>();
         var uow = new UnitOfWork(context);
-        var service = new LoyaltyService(uow, context, new Mock<IStampService>().Object, new ProgramRuleEngine(), logger);
+        var service = new LoyaltyService(uow, context, new Mock<IStampService>().Object, new ProgramRuleEngine(),
+            new Mock<ICardDesignService>().Object, new Mock<ICardDesignResolver>().Object, logger);
         await service.BackfillProgramHistoryAsync();
 
         // Assert

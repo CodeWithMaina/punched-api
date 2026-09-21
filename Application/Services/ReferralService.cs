@@ -8,20 +8,23 @@ using PunchedApi.Infrastructure.Data;
 
 namespace PunchedApi.Application.Services;
 
-public class ReferralService : IReferralService
+public partial class ReferralService : IReferralService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ApplicationDbContext _context;
     private readonly ILogger<ReferralService> _logger;
+    private readonly PunchedApi.Application.Loyalty.ILoyaltyEventBus _loyaltyEvents;
 
     public ReferralService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
-        ILogger<ReferralService> logger)
+        ILogger<ReferralService> logger,
+        PunchedApi.Application.Loyalty.ILoyaltyEventBus loyaltyEvents)
     {
         _unitOfWork = unitOfWork;
         _context = context;
         _logger = logger;
+        _loyaltyEvents = loyaltyEvents;
     }
 
     // ═══════════════════════════════════════════════════════════

@@ -69,6 +69,13 @@ public class AppointmentService : IAppointmentService
             request.BusinessId, request.ServiceIds, request.StaffUserId, request.StartDate, request.EndDate);
     }
 
+    public async Task<ApiResponse<AvailabilityCalendarResponse>> GetAvailabilityCalendarAsync(
+        Guid userId, string role, Guid businessId, AvailabilityQueryRequest request)
+    {
+        return await _availability.GetAvailabilityCalendarAsync(
+            request.BusinessId, request.ServiceIds, request.StaffUserId, request.StartDate, request.EndDate);
+    }
+
     // ═══════════════════════════════════════════════════════════
     //  CREATE
     // ═══════════════════════════════════════════════════════════
@@ -103,6 +110,12 @@ public class AppointmentService : IAppointmentService
             if (business == null)
                 return ApiResponse<AppointmentResponse>.Fail("BUSINESS_NOT_FOUND", "Business not found.");
             businessId = business.Id;
+            // Database-first enrollment gate: customers book only where enrolled.
+            var enrolled = await _context.CustomerBusinessEnrollments.AnyAsync(e =>
+                e.CustomerId == callerUserId && e.BusinessId == businessId &&
+                e.Status == CustomerBusinessEnrollmentStatus.Active);
+            if (!enrolled)
+                return ApiResponse<AppointmentResponse>.Fail("NOT_ENROLLED", "Enroll in this business before booking.");
         }
 
         var (services, svcError, svcMsg) = await ValidateServicesAsync(businessId, request.ServiceIds);
@@ -115,13 +128,22 @@ public class AppointmentService : IAppointmentService
         if (staffError != null)
             return ApiResponse<AppointmentResponse>.Fail(staffError, staffMsg!);
 
+        // The slot must still be on the bookable grid. When the customer picked
+        // "any available" this also assigns a concrete staff member, so the
+        // appointment actually occupies somebody's diary.
+        var scheduledAt = NormalizeUtc(request.ScheduledAt);
+        var resolution = await _availability.ResolveBookingStaffAsync(
+            businessId, request.ServiceIds, staff?.Id, scheduledAt, totalMinutes,
+            excludeAppointmentId: null, enforceLeadTime: IsRole(role, "Customer"));
+        if (!resolution.Ok)
+            return ApiResponse<AppointmentResponse>.Fail(resolution.ErrorCode!, resolution.ErrorMessage!);
+
         // CustomerId is always forced to the caller for self-service booking.
         var customerId = callerUserId;
-        var scheduledAt = request.ScheduledAt;
         var endAt = scheduledAt.AddMinutes(totalMinutes);
 
         return await InsertAppointmentTransactionallyAsync(
-            businessId, customerId, staff?.Id, scheduledAt, endAt, services, request.Note, callerUserId, Guid.Empty);
+            businessId, customerId, resolution.StaffUserId, scheduledAt, endAt, services, request.Note, callerUserId, Guid.Empty);
     }
 
     public async Task<ApiResponse<AppointmentResponse>> CreateAppointmentOnBehalfAsync(
@@ -167,11 +189,19 @@ public class AppointmentService : IAppointmentService
         if (staffError != null)
             return ApiResponse<AppointmentResponse>.Fail(staffError, staffMsg!);
 
-        var scheduledAt = request.ScheduledAt;
+        // Owners/staff booking on behalf may back-date (walk-ins), so lead time is
+        // not enforced — but the slot still has to be on somebody's working grid.
+        var scheduledAt = NormalizeUtc(request.ScheduledAt);
+        var resolution = await _availability.ResolveBookingStaffAsync(
+            businessId, request.ServiceIds, staff?.Id, scheduledAt, totalMinutes,
+            excludeAppointmentId: null, enforceLeadTime: false);
+        if (!resolution.Ok)
+            return ApiResponse<AppointmentResponse>.Fail(resolution.ErrorCode!, resolution.ErrorMessage!);
+
         var endAt = scheduledAt.AddMinutes(totalMinutes);
 
         return await InsertAppointmentTransactionallyAsync(
-            businessId, request.CustomerId, staff?.Id, scheduledAt, endAt, services, request.Note, callerUserId, Guid.Empty);
+            businessId, request.CustomerId, resolution.StaffUserId, scheduledAt, endAt, services, request.Note, callerUserId, Guid.Empty);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -210,12 +240,19 @@ public class AppointmentService : IAppointmentService
 
         var totalMinutes = services.Sum(s => s.DurationMinutes);
 
-        var effectiveStaffId = request.StaffUserId ?? appointment.StaffUserId;
-        var (staff, staffError, staffMsg) = await ResolveStaffAsync(appointment.BusinessId, effectiveStaffId, serviceIds);
+        var requestedStaffId = request.StaffUserId ?? appointment.StaffUserId;
+        var (staff, staffError, staffMsg) = await ResolveStaffAsync(appointment.BusinessId, requestedStaffId, serviceIds);
         if (staffError != null)
             return ApiResponse<AppointmentResponse>.Fail(staffError, staffMsg!);
 
-        var scheduledAt = request.ScheduledAt;
+        var scheduledAt = NormalizeUtc(request.ScheduledAt);
+        var resolution = await _availability.ResolveBookingStaffAsync(
+            appointment.BusinessId, serviceIds, requestedStaffId, scheduledAt, totalMinutes,
+            excludeAppointmentId: appointmentId, enforceLeadTime: false);
+        if (!resolution.Ok)
+            return ApiResponse<AppointmentResponse>.Fail(resolution.ErrorCode!, resolution.ErrorMessage!);
+
+        var effectiveStaffId = resolution.StaffUserId;
         var endAt = scheduledAt.AddMinutes(totalMinutes);
 
         await using var transaction = await _context.Database.BeginTransactionAsync();
@@ -326,24 +363,24 @@ public class AppointmentService : IAppointmentService
         if (svcError != null)
             return ApiResponse<AppointmentResponse>.Fail(svcError, svcMsg!);
 
-        var effectiveStaffId = request.StaffUserId ?? appointment.StaffUserId;
-        var (staff, staffError, staffMsg) = await ResolveStaffAsync(appointment.BusinessId, effectiveStaffId, serviceIds);
+        var requestedStaffId = request.StaffUserId ?? appointment.StaffUserId;
+        var (staff, staffError, staffMsg) = await ResolveStaffAsync(appointment.BusinessId, requestedStaffId, serviceIds);
         if (staffError != null)
             return ApiResponse<AppointmentResponse>.Fail(staffError, staffMsg!);
 
-        var scheduledAt = request.ScheduledAt;
-        var endAt = scheduledAt.AddMinutes(services.Sum(s => s.DurationMinutes));
+        var totalMinutes = services.Sum(s => s.DurationMinutes);
+        var scheduledAt = NormalizeUtc(request.ScheduledAt);
+        var endAt = scheduledAt.AddMinutes(totalMinutes);
 
-        // Real availability: the proposed slot must not collide with other bookings.
-        if (effectiveStaffId.HasValue)
-        {
-            var overlaps = await _context.Appointments
-                .Where(a => a.BusinessId == appointment.BusinessId && a.StaffUserId == effectiveStaffId.Value
-                    && a.ScheduledAt < endAt && a.EndAt > scheduledAt && a.Id != appointment.Id)
-                .AnyAsync();
-            if (overlaps)
-                return ApiResponse<AppointmentResponse>.Fail("OVERBOOKING", "The requested slot is already booked.");
-        }
+        // Real availability: the proposal must land on the bookable grid and not
+        // collide with another booking, otherwise the owner gets an unapprovable request.
+        var resolution = await _availability.ResolveBookingStaffAsync(
+            appointment.BusinessId, serviceIds, requestedStaffId, scheduledAt, totalMinutes,
+            excludeAppointmentId: appointment.Id, enforceLeadTime: true);
+        if (!resolution.Ok)
+            return ApiResponse<AppointmentResponse>.Fail(resolution.ErrorCode!, resolution.ErrorMessage!);
+
+        var effectiveStaffId = resolution.StaffUserId;
 
         var snapshot = services
             .Select((s, i) => new AppointmentServiceSnapshot
@@ -732,10 +769,15 @@ public class AppointmentService : IAppointmentService
         });
     }
 
-    public async Task<ApiResponse<List<AppointmentResponse>>> GetStaffAppointmentsAsync(
-        Guid staffUserId, string? status, DateTime? from, DateTime? to)
+    public async Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetStaffAppointmentsAsync(
+        Guid staffUserId, string? status, string? search, string? priceFilter, string? sort,
+        DateTime? from, DateTime? to, int page, int pageSize)
     {
+        page = page < 1 ? 1 : page;
+        pageSize = pageSize < 1 ? 20 : (pageSize > 100 ? 100 : pageSize);
+
         var query = _context.Appointments
+            .AsNoTracking()
             .Include(a => a.Resources)
             .Where(a => a.StaffUserId == staffUserId);
 
@@ -746,7 +788,44 @@ public class AppointmentService : IAppointmentService
         if (to.HasValue)
             query = query.Where(a => a.ScheduledAt <= to.Value);
 
-        var items = await query.OrderByDescending(a => a.ScheduledAt).ToListAsync();
+        // Search across the customer name and the booked service names.
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            var matchingCustomerIds = await _context.Users.AsNoTracking()
+                .Where(u => u.FullName.ToLower().Contains(term.ToLower()))
+                .Select(u => u.Id)
+                .ToListAsync();
+
+            query = query.Where(a =>
+                matchingCustomerIds.Contains(a.CustomerId) ||
+                a.Resources.Any(r => r.Name.ToLower().Contains(term.ToLower())));
+        }
+
+        // Server-side price band filter (sum of booked service prices).
+        var price = priceFilter?.Trim();
+        if (price == "free")
+            query = query.Where(a => a.Resources.Sum(r => r.Price) == 0);
+        else if (price == "under-1000")
+            query = query.Where(a => a.Resources.Sum(r => r.Price) > 0 && a.Resources.Sum(r => r.Price) < 1000);
+        else if (price == "1000-5000")
+            query = query.Where(a => a.Resources.Sum(r => r.Price) >= 1000 && a.Resources.Sum(r => r.Price) <= 5000);
+        else if (price == "over-5000")
+            query = query.Where(a => a.Resources.Sum(r => r.Price) > 5000);
+
+        query = sort switch
+        {
+            "time-desc" => query.OrderByDescending(a => a.ScheduledAt),
+            "price-desc" => query.OrderByDescending(a => a.Resources.Sum(r => r.Price)),
+            "price-asc" => query.OrderBy(a => a.Resources.Sum(r => r.Price)),
+            _ => query.OrderBy(a => a.ScheduledAt), // "time-asc" (default)
+        };
+
+        var total = await query.CountAsync();
+        var items = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
 
         var latestChanges = await GetLatestStatusChangesAsync(items.Select(a => a.Id));
         var pendingRequests = await GetPendingRescheduleRequestsAsync(items.Select(a => a.Id));
@@ -754,12 +833,59 @@ public class AppointmentService : IAppointmentService
             .Select(a =>
             {
                 var r = MapResponse(a, latestChanges);
-                                r.PendingReschedule = MapPendingReschedule(pendingRequests.GetValueOrDefault(a.Id));
+                r.PendingReschedule = MapPendingReschedule(pendingRequests.GetValueOrDefault(a.Id));
                 return r;
             })
             .ToList();
 
-        return ApiResponse<List<AppointmentResponse>>.Ok(responses);
+        return ApiResponse<PaginatedResponse<AppointmentResponse>>.Ok(new PaginatedResponse<AppointmentResponse>
+        {
+            Items = responses,
+            TotalCount = total,
+            Page = page,
+            PageSize = pageSize
+        });
+    }
+
+    /// <summary>
+    /// Staff: book an appointment for themselves at their linked business.
+    /// StaffUserId and CustomerId are forced to the caller (never another staff
+    /// member), services/staff are validated, and the availability engine — the
+    /// backend source of truth — must return the slot as bookable, with the
+    /// same lead-time rules customers are subject to.
+    /// </summary>
+    public async Task<ApiResponse<AppointmentResponse>> CreateStaffSelfAppointmentAsync(
+        Guid staffUserId, CreateAppointmentRequest request)
+    {
+        var staff = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId && u.StaffBusinessId != null);
+        if (staff?.StaffBusinessId == null)
+            return ApiResponse<AppointmentResponse>.Fail("NOT_LINKED", "You are not linked to any business.");
+
+        var businessId = staff.StaffBusinessId.Value;
+
+        var (services, svcError, svcMsg) = await ValidateServicesAsync(businessId, request.ServiceIds);
+        if (svcError != null)
+            return ApiResponse<AppointmentResponse>.Fail(svcError, svcMsg!);
+
+        var totalMinutes = services.Sum(s => s.DurationMinutes);
+
+        // Staff is ALWAYS the caller — the request can never assign another staff member.
+        var (_, staffError, staffMsg) = await ResolveStaffAsync(businessId, staffUserId, request.ServiceIds);
+        if (staffError != null)
+            return ApiResponse<AppointmentResponse>.Fail(staffError, staffMsg!);
+
+        var scheduledAt = NormalizeUtc(request.ScheduledAt);
+        var resolution = await _availability.ResolveBookingStaffAsync(
+            businessId, request.ServiceIds, staffUserId, scheduledAt, totalMinutes,
+            excludeAppointmentId: null, enforceLeadTime: true);
+        if (!resolution.Ok)
+            return ApiResponse<AppointmentResponse>.Fail(resolution.ErrorCode!, resolution.ErrorMessage!);
+
+        // The staff member books themselves as the customer of the appointment.
+        var endAt = scheduledAt.AddMinutes(totalMinutes);
+
+        return await InsertAppointmentTransactionallyAsync(
+            businessId, staffUserId, staffUserId, scheduledAt, endAt, services, request.Note, staffUserId, Guid.Empty);
     }
 
     /// <summary>
@@ -1085,4 +1211,15 @@ public class AppointmentService : IAppointmentService
 
     private static bool IsRole(string value, string expected) =>
         string.Equals(value?.Trim(), expected, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Appointment times are stored and compared in UTC. Payloads without an
+    /// offset are treated as UTC rather than as server-local time.
+    /// </summary>
+    private static DateTime NormalizeUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+    };
 }

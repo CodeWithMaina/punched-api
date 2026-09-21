@@ -222,12 +222,369 @@ namespace PunchedApi.Migrations
                     b.ToTable("appointment_status_history", (string)null);
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AttendanceEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("AttendanceLocationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attendance_location_id");
+
+                    b.Property<Guid?>("AttendanceQrCredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attendance_qr_credential_id");
+
+                    b.Property<Guid?>("AttendanceSessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attendance_session_id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<string>("ClientIdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("client_idempotency_key");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("event_type");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<DateTime>("RecordedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("recorded_at");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("source");
+
+                    b.Property<Guid>("StaffUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("staff_user_id");
+
+                    b.Property<string>("VerificationSummaryJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("verification_summary_json");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AttendanceQrCredentialId")
+                        .HasDatabaseName("ix_attendance_events_qr_credential");
+
+                    b.HasIndex("AttendanceSessionId")
+                        .HasDatabaseName("ix_attendance_events_session");
+
+                    b.HasIndex("AttendanceLocationId", "OccurredAt")
+                        .HasDatabaseName("ix_attendance_events_location_occurred");
+
+                    b.HasIndex("BusinessId", "OccurredAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_attendance_events_business_occurred");
+
+                    b.HasIndex("StaffUserId", "OccurredAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_attendance_events_staff_occurred");
+
+                    b.HasIndex("BusinessId", "StaffUserId", "ClientIdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ix_attendance_events_idempotency");
+
+                    b.ToTable("attendance_events", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_attendance_events_clockout_requires_session", "\"event_type\" <> 'ClockOut' OR \"attendance_session_id\" IS NOT NULL");
+                        });
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AttendanceLocation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("description");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_active");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("name");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("BusinessId", "IsActive")
+                        .HasDatabaseName("ix_attendance_locations_business_active");
+
+                    b.ToTable("attendance_locations", (string)null);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AttendancePolicy", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_active");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("mode");
+
+                    b.Property<string>("RequiredVerificationsJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("required_verifications_json");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_attendance_policies_business");
+
+                    b.ToTable("attendance_policies", (string)null);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AttendanceQrCredential", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AttendanceLocationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attendance_location_id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime?>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_used_at");
+
+                    b.Property<DateTime?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at");
+
+                    b.Property<Guid?>("RevokedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("revoked_by_user_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("token_hash");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AttendanceLocationId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_attendance_qr_credentials_one_active_per_location")
+                        .HasFilter("\"status\" = 'Active'");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ix_attendance_qr_credentials_token_hash");
+
+                    b.HasIndex("BusinessId", "Status")
+                        .HasDatabaseName("ix_attendance_qr_credentials_business");
+
+                    b.ToTable("attendance_qr_credentials", (string)null);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AttendanceSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime?>("ClosedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("closed_at");
+
+                    b.Property<Guid?>("ClosingEventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("closing_event_id");
+
+                    b.Property<Guid?>("ClosingLocationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("closing_location_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime>("OpenedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("opened_at");
+
+                    b.Property<Guid>("OpeningEventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("opening_event_id");
+
+                    b.Property<Guid?>("OpeningLocationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("opening_location_id");
+
+                    b.Property<Guid>("StaffUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("staff_user_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<int?>("WorkedMinutes")
+                        .HasColumnType("integer")
+                        .HasColumnName("worked_minutes");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ClosingEventId");
+
+                    b.HasIndex("ClosingLocationId");
+
+                    b.HasIndex("OpeningEventId");
+
+                    b.HasIndex("OpeningLocationId");
+
+                    b.HasIndex("StaffUserId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_attendance_sessions_open_per_staff")
+                        .HasFilter("\"closed_at\" IS NULL");
+
+                    b.HasIndex("BusinessId", "OpenedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_attendance_sessions_business_opened");
+
+                    b.HasIndex("StaffUserId", "OpenedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_attendance_sessions_staff_opened");
+
+                    b.ToTable("attendance_sessions", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_attendance_sessions_close_consistency", "\"closed_at\" IS NULL OR (\"closing_event_id\" IS NOT NULL AND \"closed_at\" >= \"opened_at\")");
+                        });
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.Business", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
+
+                    b.Property<int>("BookingCloseHour")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(18)
+                        .HasColumnName("booking_close_hour");
+
+                    b.Property<int>("BookingLeadTimeMinutes")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(60)
+                        .HasColumnName("booking_lead_time_minutes");
+
+                    b.Property<int>("BookingOpenHour")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(9)
+                        .HasColumnName("booking_open_hour");
+
+                    b.Property<int>("BookingSlotIntervalMinutes")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(15)
+                        .HasColumnName("booking_slot_interval_minutes");
 
                     b.Property<string>("Category")
                         .IsRequired()
@@ -239,24 +596,25 @@ namespace PunchedApi.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
-                    b.Property<int?>("DefaultDailyGoal")
-                        .HasColumnType("integer")
-                        .HasColumnName("default_daily_goal");
+                    b.Property<string>("DailyGoalType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("stamps")
+                        .HasColumnName("daily_goal_type");
 
                     b.Property<int?>("DefaultAppointmentDailyGoal")
                         .HasColumnType("integer")
                         .HasColumnName("default_appointment_daily_goal");
 
+                    b.Property<int?>("DefaultDailyGoal")
+                        .HasColumnType("integer")
+                        .HasColumnName("default_daily_goal");
+
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at");
-
-                    b.Property<string>("DailyGoalType")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("daily_goal_type")
-                        .HasDefaultValue("stamps");
 
                     b.Property<string>("Description")
                         .HasMaxLength(500)
@@ -306,6 +664,14 @@ namespace PunchedApi.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("phone_number");
 
+                    b.Property<string>("TimeZoneId")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasDefaultValue("Africa/Nairobi")
+                        .HasColumnName("time_zone_id");
+
                     b.HasKey("Id");
 
                     b.HasIndex("Category");
@@ -316,7 +682,12 @@ namespace PunchedApi.Migrations
 
                     b.HasIndex("OwnerId", "IsDeleted");
 
-                    b.ToTable("businesses", (string)null);
+                    b.ToTable("businesses", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_business_booking_hours", "\"booking_open_hour\" >= 0 AND \"booking_open_hour\" <= 23 AND \"booking_close_hour\" >= 1 AND \"booking_close_hour\" <= 24 AND \"booking_close_hour\" > \"booking_open_hour\"");
+
+                            t.HasCheckConstraint("chk_business_booking_interval", "\"booking_slot_interval_minutes\" >= 5 AND \"booking_slot_interval_minutes\" <= 240");
+                        });
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessDailyAnalytics", b =>
@@ -491,7 +862,7 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<Guid>("BusinessId")
+                    b.Property<Guid?>("BusinessId")
                         .HasColumnType("uuid")
                         .HasColumnName("business_id");
 
@@ -511,6 +882,12 @@ namespace PunchedApi.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("is_active");
 
+                    b.Property<bool>("IsDefault")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_default");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -523,7 +900,72 @@ namespace PunchedApi.Migrations
 
                     b.HasIndex("BusinessId");
 
-                    b.ToTable("card_designs", (string)null);
+                    b.HasIndex("IsDefault")
+                        .IsUnique()
+                        .HasDatabaseName("ux_card_designs_single_default")
+                        .HasFilter("\"is_default\" = TRUE");
+
+                    b.ToTable("card_designs", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_card_designs_default_is_system", "\"is_default\" = FALSE OR \"business_id\" IS NULL");
+                        });
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.CustomerBusinessEnrollment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CustomerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("customer_id");
+
+                    b.Property<DateTime>("EnrolledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("enrolled_at");
+
+                    b.Property<DateTime?>("LeftAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("left_at");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("discovery")
+                        .HasColumnName("source");
+
+                    b.Property<int>("Status")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId", "Status");
+
+                    b.HasIndex("CustomerId", "BusinessId")
+                        .IsUnique();
+
+                    b.HasIndex("CustomerId", "Status");
+
+                    b.ToTable("customer_business_enrollments", (string)null);
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.CustomerSegment", b =>
@@ -566,6 +1008,55 @@ namespace PunchedApi.Migrations
                         {
                             t.HasCheckConstraint("chk_customer_segment_score", "\"score\" >= 0 AND \"score\" <= 100");
                         });
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.CustomerStampCard", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CustomerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("customer_id");
+
+                    b.Property<DateTime>("JoinedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("joined_at");
+
+                    b.Property<DateTime?>("LeftAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("left_at");
+
+                    b.Property<Guid>("StampCardId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("stamp_card_id");
+
+                    b.Property<int>("Status")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("StampCardId");
+
+                    b.HasIndex("CustomerId", "StampCardId")
+                        .IsUnique();
+
+                    b.HasIndex("CustomerId", "Status");
+
+                    b.ToTable("customer_stamp_cards", (string)null);
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.IdempotencyKey", b =>
@@ -793,6 +1284,69 @@ namespace PunchedApi.Migrations
                         });
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.LoyaltyEarningRule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("ActivatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("activated_at");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("description");
+
+                    b.Property<Guid>("ProgramId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("program_id");
+
+                    b.Property<Guid?>("QualifyingServiceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("qualifying_service_id");
+
+                    b.Property<int>("Source")
+                        .HasColumnType("integer")
+                        .HasColumnName("source");
+
+                    b.Property<int>("StampAmount")
+                        .HasColumnType("integer")
+                        .HasColumnName("stamp_amount");
+
+                    b.Property<int>("StampingMode")
+                        .HasColumnType("integer")
+                        .HasColumnName("stamping_mode");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId", "Status")
+                        .HasDatabaseName("IX_loyalty_earning_rules_BusinessId_Status");
+
+                    b.HasIndex("ProgramId", "Source")
+                        .IsUnique()
+                        .HasDatabaseName("IX_loyalty_earning_rules_ProgramId_Source");
+
+                    b.ToTable("loyalty_earning_rules", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_loyalty_earning_rule_stamp_amount_positive", "\"stamp_amount\" >= 1");
+                        });
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.LoyaltyProgram", b =>
                 {
                     b.Property<Guid>("Id")
@@ -803,6 +1357,10 @@ namespace PunchedApi.Migrations
                     b.Property<Guid>("BusinessId")
                         .HasColumnType("uuid")
                         .HasColumnName("business_id");
+
+                    b.Property<Guid?>("CardDesignId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("card_design_id");
 
                     b.Property<string>("ConfigJson")
                         .HasColumnType("text")
@@ -891,6 +1449,8 @@ namespace PunchedApi.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("BusinessId");
+
+                    b.HasIndex("CardDesignId");
 
                     b.ToTable("loyalty_programs", null, t =>
                         {
@@ -1670,6 +2230,179 @@ namespace PunchedApi.Migrations
                         });
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.Reward", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("description");
+
+                    b.Property<int>("ExpirationHours")
+                        .HasColumnType("integer")
+                        .HasColumnName("expiration_hours");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<int?>("Percentage")
+                        .HasColumnType("integer")
+                        .HasColumnName("percentage");
+
+                    b.Property<Guid>("ProgramId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("program_id");
+
+                    b.Property<int>("RequiredStamps")
+                        .HasColumnType("integer")
+                        .HasColumnName("required_stamps");
+
+                    b.Property<Guid?>("ServiceCatalogItemId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("service_catalog_item_id");
+
+                    b.Property<int>("StampsToConsume")
+                        .HasColumnType("integer")
+                        .HasColumnName("stamps_to_consume");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer")
+                        .HasColumnName("status");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("integer")
+                        .HasColumnName("type");
+
+                    b.Property<decimal>("Value")
+                        .HasColumnType("decimal(18,2)")
+                        .HasColumnName("value");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId")
+                        .HasDatabaseName("IX_rewards_BusinessId");
+
+                    b.HasIndex("ProgramId", "Status")
+                        .HasDatabaseName("IX_rewards_ProgramId_Status");
+
+                    b.ToTable("rewards", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_rewards_required_stamps_positive", "\"required_stamps\" >= 1");
+
+                            t.HasCheckConstraint("chk_rewards_stamps_to_consume_non_negative", "\"stamps_to_consume\" >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.RewardEntitlement", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<Guid>("CardId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("card_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CustomerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("customer_id");
+
+                    b.Property<DateTime?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<Guid>("ProgramId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("program_id");
+
+                    b.Property<DateTime?>("RedeemedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("redeemed_at");
+
+                    b.Property<Guid?>("RedemptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("redemption_id");
+
+                    b.Property<int>("RequiredStamps")
+                        .HasColumnType("integer")
+                        .HasColumnName("required_stamps");
+
+                    b.Property<Guid>("RewardId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reward_id");
+
+                    b.Property<string>("RewardName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("reward_name");
+
+                    b.Property<decimal>("RewardValue")
+                        .HasColumnType("decimal(18,2)")
+                        .HasColumnName("reward_value");
+
+                    b.Property<int>("StampsToConsume")
+                        .HasColumnType("integer")
+                        .HasColumnName("stamps_to_consume");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer")
+                        .HasColumnName("status");
+
+                    b.Property<string>("UnlockKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("unlock_key");
+
+                    b.Property<DateTime>("UnlockedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("unlocked_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProgramId");
+
+                    b.HasIndex("RedemptionId");
+
+                    b.HasIndex("RewardId");
+
+                    b.HasIndex("UnlockKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_reward_entitlements_UnlockKey");
+
+                    b.HasIndex("BusinessId", "Status")
+                        .HasDatabaseName("IX_reward_entitlements_BusinessId_Status");
+
+                    b.HasIndex("CardId", "Status")
+                        .HasDatabaseName("IX_reward_entitlements_CardId_Status");
+
+                    b.ToTable("reward_entitlements", (string)null);
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.ServiceCatalogItem", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2103,6 +2836,107 @@ namespace PunchedApi.Migrations
                         });
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.StampTransaction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("Amount")
+                        .HasColumnType("integer")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<Guid>("CardId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("card_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CreatedByRole")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("created_by_role");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<Guid>("CustomerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("customer_id");
+
+                    b.Property<int>("Direction")
+                        .HasColumnType("integer")
+                        .HasColumnName("direction");
+
+                    b.Property<Guid?>("EarningRuleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("earning_rule_id");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<bool>("IsAutomatic")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_automatic");
+
+                    b.Property<string>("MetadataJson")
+                        .HasColumnType("text")
+                        .HasColumnName("metadata_json");
+
+                    b.Property<Guid>("ProgramId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("program_id");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("source");
+
+                    b.Property<Guid?>("SourceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EarningRuleId");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_stamp_transactions_IdempotencyKey");
+
+                    b.HasIndex("ProgramId");
+
+                    b.HasIndex("BusinessId", "CreatedAt")
+                        .HasDatabaseName("IX_stamp_transactions_BusinessId_CreatedAt");
+
+                    b.HasIndex("CardId", "CreatedAt")
+                        .HasDatabaseName("IX_stamp_transactions_CardId_CreatedAt");
+
+                    b.HasIndex("CustomerId", "CreatedAt")
+                        .HasDatabaseName("IX_stamp_transactions_CustomerId_CreatedAt");
+
+                    b.ToTable("stamp_transactions", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_stamp_transaction_amount_positive", "\"amount\" >= 1");
+                        });
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.SubscriptionAuditLog", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2262,6 +3096,10 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<int?>("AppointmentDailyGoalOverride")
+                        .HasColumnType("integer")
+                        .HasColumnName("appointment_daily_goal_override");
+
                     b.Property<string>("AvatarUrl")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)")
@@ -2274,10 +3112,6 @@ namespace PunchedApi.Migrations
                     b.Property<int?>("DailyGoalOverride")
                         .HasColumnType("integer")
                         .HasColumnName("daily_goal_override");
-
-                    b.Property<int?>("AppointmentDailyGoalOverride")
-                        .HasColumnType("integer")
-                        .HasColumnName("appointment_daily_goal_override");
 
                     b.Property<DateOnly?>("DateOfBirth")
                         .HasColumnType("date");
@@ -2467,6 +3301,117 @@ namespace PunchedApi.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AttendanceEvent", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.AttendanceLocation", null)
+                        .WithMany()
+                        .HasForeignKey("AttendanceLocationId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("PunchedApi.Domain.Entities.AttendanceQrCredential", null)
+                        .WithMany()
+                        .HasForeignKey("AttendanceQrCredentialId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("PunchedApi.Domain.Entities.AttendanceSession", null)
+                        .WithMany()
+                        .HasForeignKey("AttendanceSessionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("StaffUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AttendanceLocation", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AttendancePolicy", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AttendanceQrCredential", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.AttendanceLocation", null)
+                        .WithMany()
+                        .HasForeignKey("AttendanceLocationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AttendanceSession", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.AttendanceEvent", null)
+                        .WithMany()
+                        .HasForeignKey("ClosingEventId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("PunchedApi.Domain.Entities.AttendanceLocation", null)
+                        .WithMany()
+                        .HasForeignKey("ClosingLocationId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("PunchedApi.Domain.Entities.AttendanceEvent", null)
+                        .WithMany()
+                        .HasForeignKey("OpeningEventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.AttendanceLocation", null)
+                        .WithMany()
+                        .HasForeignKey("OpeningLocationId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("PunchedApi.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("StaffUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.Business", b =>
                 {
                     b.HasOne("PunchedApi.Domain.Entities.User", "Owner")
@@ -2536,10 +3481,28 @@ namespace PunchedApi.Migrations
                     b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
                         .WithMany()
                         .HasForeignKey("BusinessId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.Navigation("Business");
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.CustomerBusinessEnrollment", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.User", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("Business");
+
+                    b.Navigation("Customer");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.CustomerSegment", b =>
@@ -2555,6 +3518,25 @@ namespace PunchedApi.Migrations
                         .HasForeignKey("CustomerId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.CustomerStampCard", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.User", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.StampCard", "StampCard")
+                        .WithMany()
+                        .HasForeignKey("StampCardId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Customer");
+
+                    b.Navigation("StampCard");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.IdempotencyKey", b =>
@@ -2608,6 +3590,25 @@ namespace PunchedApi.Migrations
                     b.Navigation("Program");
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.LoyaltyEarningRule", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.LoyaltyProgram", "Program")
+                        .WithMany("EarningRules")
+                        .HasForeignKey("ProgramId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Business");
+
+                    b.Navigation("Program");
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.LoyaltyProgram", b =>
                 {
                     b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
@@ -2616,7 +3617,14 @@ namespace PunchedApi.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("PunchedApi.Domain.Entities.CardDesign", "CardDesign")
+                        .WithMany("LoyaltyPrograms")
+                        .HasForeignKey("CardDesignId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("Business");
+
+                    b.Navigation("CardDesign");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.LoyaltyProgramHistory", b =>
@@ -2809,6 +3817,59 @@ namespace PunchedApi.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.Reward", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.LoyaltyProgram", "Program")
+                        .WithMany("Rewards")
+                        .HasForeignKey("ProgramId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Business");
+
+                    b.Navigation("Program");
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.RewardEntitlement", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.LoyaltyCard", "Card")
+                        .WithMany("RewardEntitlements")
+                        .HasForeignKey("CardId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.LoyaltyProgram", "Program")
+                        .WithMany()
+                        .HasForeignKey("ProgramId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.Redemption", "Redemption")
+                        .WithMany()
+                        .HasForeignKey("RedemptionId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("PunchedApi.Domain.Entities.Reward", "Reward")
+                        .WithMany("Entitlements")
+                        .HasForeignKey("RewardId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Card");
+
+                    b.Navigation("Program");
+
+                    b.Navigation("Redemption");
+
+                    b.Navigation("Reward");
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.ServiceCatalogItem", b =>
                 {
                     b.HasOne("PunchedApi.Domain.Entities.Business", null)
@@ -2947,6 +4008,32 @@ namespace PunchedApi.Migrations
                     b.Navigation("Program");
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.StampTransaction", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.LoyaltyCard", "Card")
+                        .WithMany("StampTransactions")
+                        .HasForeignKey("CardId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.LoyaltyEarningRule", "EarningRule")
+                        .WithMany()
+                        .HasForeignKey("EarningRuleId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("PunchedApi.Domain.Entities.LoyaltyProgram", "Program")
+                        .WithMany("StampTransactions")
+                        .HasForeignKey("ProgramId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Card");
+
+                    b.Navigation("EarningRule");
+
+                    b.Navigation("Program");
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.SubscriptionAuditLog", b =>
                 {
                     b.HasOne("PunchedApi.Domain.Entities.User", "ActorUser")
@@ -3015,6 +4102,8 @@ namespace PunchedApi.Migrations
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.CardDesign", b =>
                 {
+                    b.Navigation("LoyaltyPrograms");
+
                     b.Navigation("StampCards");
                 });
 
@@ -3022,12 +4111,22 @@ namespace PunchedApi.Migrations
                 {
                     b.Navigation("Redemptions");
 
+                    b.Navigation("RewardEntitlements");
+
+                    b.Navigation("StampTransactions");
+
                     b.Navigation("Stamps");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.LoyaltyProgram", b =>
                 {
+                    b.Navigation("EarningRules");
+
                     b.Navigation("LoyaltyCards");
+
+                    b.Navigation("Rewards");
+
+                    b.Navigation("StampTransactions");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.Module", b =>
@@ -3040,6 +4139,11 @@ namespace PunchedApi.Migrations
             modelBuilder.Entity("PunchedApi.Domain.Entities.ReferralLink", b =>
                 {
                     b.Navigation("Referrals");
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.Reward", b =>
+                {
+                    b.Navigation("Entitlements");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.SubscriptionPlan", b =>

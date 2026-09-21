@@ -14,6 +14,8 @@ public class LoyaltyService : ILoyaltyService
     private readonly ApplicationDbContext _context;
     private readonly IStampService _stampService;
     private readonly IProgramRuleEngine _ruleEngine;
+    private readonly ICardDesignService _cardDesignService;
+    private readonly ICardDesignResolver _cardDesignResolver;
     private readonly ILogger<LoyaltyService> _logger;
 
     public LoyaltyService(
@@ -21,12 +23,16 @@ public class LoyaltyService : ILoyaltyService
         ApplicationDbContext context,
         IStampService stampService,
         IProgramRuleEngine ruleEngine,
+        ICardDesignService cardDesignService,
+        ICardDesignResolver cardDesignResolver,
         ILogger<LoyaltyService> logger)
     {
         _unitOfWork = unitOfWork;
         _context = context;
         _stampService = stampService;
         _ruleEngine = ruleEngine;
+        _cardDesignService = cardDesignService;
+        _cardDesignResolver = cardDesignResolver;
         _logger = logger;
     }
 
@@ -149,6 +155,12 @@ public class LoyaltyService : ILoyaltyService
             if (business == null)
                 return ApiResponse<LoyaltyProgramResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
+            // Card design selection: null ⇒ platform default. A business-specific
+            // design requires ownership + the customCardDesign entitlement.
+            var designCheck = await _cardDesignService.ValidateSelectionAsync(business.Id, request.CardDesignId);
+            if (!designCheck.IsValid)
+                return ApiResponse<LoyaltyProgramResponse>.Fail(designCheck.ErrorCode!, designCheck.ErrorMessage!);
+
             var program = new LoyaltyProgram
             {
                 Id = Guid.NewGuid(),
@@ -165,6 +177,7 @@ public class LoyaltyService : ILoyaltyService
                 ConfigJson = request.Config?.ToJson(),
                 StartsAt = NormalizeUtc(request.StartsAt),
                 EndsAt = NormalizeUtc(request.EndsAt),
+                CardDesignId = request.CardDesignId,
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -208,6 +221,21 @@ public class LoyaltyService : ILoyaltyService
             if (request.Description != null) program.Description = request.Description;
             if (request.StartsAt.HasValue) program.StartsAt = NormalizeUtc(request.StartsAt);
             if (request.EndsAt.HasValue) program.EndsAt = NormalizeUtc(request.EndsAt);
+
+            // Card design selection. Clearing is always explicit: a subscription
+            // change never nulls CardDesignId, so downgrade/upgrade is reversible.
+            if (request.ClearCardDesign)
+            {
+                program.CardDesignId = null;
+            }
+            else if (request.CardDesignId.HasValue && request.CardDesignId != program.CardDesignId)
+            {
+                var designCheck = await _cardDesignService.ValidateSelectionAsync(business.Id, request.CardDesignId);
+                if (!designCheck.IsValid)
+                    return ApiResponse<LoyaltyProgramResponse>.Fail(designCheck.ErrorCode!, designCheck.ErrorMessage!);
+                program.CardDesignId = request.CardDesignId;
+            }
+
             if (request.ProgramType != null) program.ProgramType = ValidateProgramType(request.ProgramType);
             if (request.Config != null) program.ConfigJson = request.Config.ToJson();
             if (request.Status.HasValue) ApplyStatus(program, request.Status.Value);
@@ -470,12 +498,12 @@ public class LoyaltyService : ILoyaltyService
     }
 
     /// <summary>
-    /// Public, DB-first, paginated campaigns list for a business. Only active,
-    /// in-window programs are returned; enrolled campaigns are ordered first by
+    /// Public, DB-first, paginated loyalty programs list for a business. Only active,
+    /// in-window programs are returned; enrolled programs are ordered first by
     /// the database and the enrolled flag is computed in SQL (no Includes, no
     /// load-then-filter, only the requested page is materialised).
     /// </summary>
-    public async Task<ApiResponse<PaginatedResponse<CustomerCampaignResponse>>> GetBusinessCampaignsAsync(Guid businessId, Guid? customerId, int page, int pageSize)
+    public async Task<ApiResponse<PaginatedResponse<CustomerProgramResponse>>> GetBusinessProgramsAsync(Guid businessId, Guid? customerId, int page, int pageSize)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 50);
@@ -512,7 +540,7 @@ public class LoyaltyService : ILoyaltyService
             .Take(pageSize)
             .ToListAsync();
 
-        var items = rows.Select(x => new CustomerCampaignResponse
+        var items = rows.Select(x => new CustomerProgramResponse
         {
             Id = x.Id,
             Name = x.Name,
@@ -526,7 +554,7 @@ public class LoyaltyService : ILoyaltyService
             IsEnrolled = x.IsEnrolled
         }).ToList();
 
-        return ApiResponse<PaginatedResponse<CustomerCampaignResponse>>.Ok(new PaginatedResponse<CustomerCampaignResponse>
+        return ApiResponse<PaginatedResponse<CustomerProgramResponse>>.Ok(new PaginatedResponse<CustomerProgramResponse>
         {
             Items = items,
             TotalCount = totalCount,
@@ -550,11 +578,37 @@ public class LoyaltyService : ILoyaltyService
             if (activeProgram == null)
                 return ApiResponse<LoyaltyCardResponse>.Fail("NO_PROGRAM", "This business has no active loyalty program.");
 
+            // Database-first invariant: loyalty enrollment implies business enrollment.
+            var enrollment = await _unitOfWork.CustomerBusinessEnrollments
+                .FirstOrDefaultAsync(e => e.CustomerId == customerId && e.BusinessId == business.Id);
+            if (enrollment == null)
+            {
+                enrollment = new CustomerBusinessEnrollment
+                {
+                    Id = Guid.NewGuid(), CustomerId = customerId, BusinessId = business.Id,
+                    Status = CustomerBusinessEnrollmentStatus.Active, Source = "loyalty",
+                    EnrolledAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
+                };
+                await _unitOfWork.CustomerBusinessEnrollments.AddAsync(enrollment);
+            }
+            else if (enrollment.Status != CustomerBusinessEnrollmentStatus.Active)
+            {
+                enrollment.Status = CustomerBusinessEnrollmentStatus.Active;
+                enrollment.LeftAt = null;
+                enrollment.EnrolledAt = DateTime.UtcNow;
+                enrollment.UpdatedAt = DateTime.UtcNow;
+                enrollment.Source = "loyalty";
+                _unitOfWork.CustomerBusinessEnrollments.Update(enrollment);
+            }
+
             var existing = await _unitOfWork.LoyaltyCards
                 .FirstOrDefaultAsync(c => c.CustomerId == customerId && c.BusinessId == request.BusinessId);
 
             if (existing != null)
+            {
+                try { await _unitOfWork.SaveChangesAsync(); } catch { /* enrollment upsert best-effort */ }
                 return ApiResponse<LoyaltyCardResponse>.Fail("ALREADY_ENROLLED", "You are already enrolled in this program.");
+            }
 
             var now = DateTime.UtcNow;
             var welcomeStamps = Math.Clamp(activeProgram.DefaultEnrollmentStamps, 0, 100);
@@ -586,7 +640,8 @@ public class LoyaltyService : ILoyaltyService
 
             // All welcome stamps start locked — they unlock after the customer's
             // first verified business stamping action.
-            return ApiResponse<LoyaltyCardResponse>.Ok(MapCard(card, business, activeProgram, welcomeStamps));
+            var enrolledDesign = await _cardDesignResolver.ResolveForProgramAsync(activeProgram);
+            return ApiResponse<LoyaltyCardResponse>.Ok(MapCard(card, business, activeProgram, welcomeStamps, enrolledDesign));
         }
         catch (Exception ex)
         {
@@ -606,8 +661,15 @@ public class LoyaltyService : ILoyaltyService
 
         var lockedCounts = await GetLockedStampCountsAsync(cards.Select(c => c.Id).ToList());
 
+        var resolved = new Dictionary<Guid, ResolvedCardDesign>();
+        foreach (var programId in cards.Select(c => c.ProgramId).Distinct())
+        {
+            var program = cards.First(c => c.ProgramId == programId).Program;
+            resolved[programId] = await _cardDesignResolver.ResolveForProgramAsync(program);
+        }
+
         var result = cards.Select(c => MapCard(c, c.Business, c.Program,
-            lockedCounts.GetValueOrDefault(c.Id))).ToList();
+            lockedCounts.GetValueOrDefault(c.Id), resolved[c.ProgramId])).ToList();
         return ApiResponse<List<LoyaltyCardResponse>>.Ok(result);
     }
 
@@ -622,8 +684,10 @@ public class LoyaltyService : ILoyaltyService
             return ApiResponse<LoyaltyCardResponse>.Fail("NOT_FOUND", "Loyalty card not found.");
 
         var lockedCounts = await GetLockedStampCountsAsync(new List<Guid> { card.Id });
+        var design = await _cardDesignResolver.ResolveForProgramAsync(card.Program);
+
         return ApiResponse<LoyaltyCardResponse>.Ok(MapCard(card, card.Business, card.Program,
-            lockedCounts.GetValueOrDefault(card.Id)));
+            lockedCounts.GetValueOrDefault(card.Id), design));
     }
 
     /// <summary>
@@ -666,10 +730,12 @@ public class LoyaltyService : ILoyaltyService
         Config = ProgramConfig.FromJson(p.ConfigJson),
         StartsAt = p.StartsAt,
         EndsAt = p.EndsAt,
+        CardDesignId = p.CardDesignId,
+        CardDesignName = p.CardDesign?.Name,
         CreatedAt = p.CreatedAt
     };
 
-    private static LoyaltyCardResponse MapCard(LoyaltyCard c, Business b, LoyaltyProgram p, int lockedStamps = 0) => new()
+    private static LoyaltyCardResponse MapCard(LoyaltyCard c, Business b, LoyaltyProgram p, int lockedStamps = 0, ResolvedCardDesign? design = null) => new()
     {
         Id = c.Id,
         CustomerId = c.CustomerId,
@@ -684,6 +750,25 @@ public class LoyaltyService : ILoyaltyService
         EnrolledAt = c.EnrolledAt,
         RewardExpiresAt = c.RewardExpiresAt,
         LockedStamps = lockedStamps,
+        CardDesignId = design?.DesignId,
+        CardDesignName = design?.DesignName,
+        CardDesignIsDefault = design?.IsDefault ?? true,
+        CardDesignHtml = design == null
+            ? null
+            : CardDesignResolver.Render(design, BuildCardContext(c, b, p)),
         Program = MapProgram(p)
+    };
+
+    private static CardTemplateRenderer.CardRenderContext BuildCardContext(LoyaltyCard c, Business b, LoyaltyProgram p) => new()
+    {
+        BusinessName = b.Name,
+        BusinessLogoUrl = b.LogoUrl,
+        BusinessDescription = b.Description,
+        CustomerName = c.Customer?.FullName ?? CardPreviewSampleData.CustomerName,
+        CampaignName = p.Name,
+        CardName = p.Name,
+        TotalStamps = p.StampsRequired,
+        CompletedStamps = c.TotalStamps,
+        RewardName = p.RewardDescription
     };
 }

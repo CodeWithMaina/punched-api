@@ -98,6 +98,19 @@ public class LoyaltyProgramConfiguration : IEntityTypeConfiguration<LoyaltyProgr
         // Index on business_id (non-unique: many programs per business)
         builder.HasIndex(e => e.BusinessId);
 
+        // Selected card design (null ⇒ platform default). SET NULL so that
+        // removing a design never destroys a program or its history.
+        builder.Property(e => e.CardDesignId)
+            .HasColumnName("card_design_id");
+
+        builder.HasIndex(e => e.CardDesignId);
+
+        builder.HasOne(e => e.CardDesign)
+            .WithMany(d => d.LoyaltyPrograms)
+            .HasForeignKey(e => e.CardDesignId)
+            .IsRequired(false)
+            .OnDelete(DeleteBehavior.SetNull);
+
         // Relationship: one business -> many programs
         builder.HasOne(e => e.Business)
             .WithMany(b => b.LoyaltyPrograms)

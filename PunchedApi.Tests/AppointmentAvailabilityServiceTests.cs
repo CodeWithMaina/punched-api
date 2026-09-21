@@ -9,7 +9,9 @@ namespace PunchedApi.Tests;
 /// </summary>
 public class AppointmentAvailabilityServiceTests
 {
-    private static readonly DateOnly Day = new(2026, 8, 20);
+    /// <summary>Same-timezone placeholder day as <see cref="BookingTestBase"/>; the availability
+    /// engine treats <paramref name="Day"/> as business-local, so it must never be in the past.</summary>
+    private static readonly DateOnly Day = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(7));
 
     private static AppointmentAvailabilityService CreateAvailability(ApplicationDbContext context)
         => BookingTestBase.CreateAvailabilityService(context);
@@ -40,10 +42,29 @@ public class AppointmentAvailabilityServiceTests
 
         Assert.True(result.Success, result.Error?.Message);
         Assert.NotEmpty(result.Data!);
-        Assert.All(result.Data!, s => Assert.Equal(workingStaff.Id, s.StaffUserId));
-        Assert.All(result.Data!, s => Assert.True(s.StartAtUtc.TimeOfDay >= TimeSpan.FromHours(9)));
-        Assert.All(result.Data!, s => Assert.True(s.EndAtUtc.TimeOfDay <= TimeSpan.FromHours(12)));
-        Assert.All(result.Data!, s => Assert.Equal(60, (s.EndAtUtc - s.StartAtUtc).TotalMinutes));
+
+        // Non-working staff never produce slots.
+        Assert.DoesNotContain(result.Data!, s => s.StaffUserId == offStaff.Id);
+
+        Assert.All(result.Data!, s =>
+        {
+            Assert.Equal(60, (s.EndAtUtc - s.StartAtUtc).TotalMinutes);
+            if (s.StaffUserId == workingStaff.Id)
+            {
+                // Shifted staff: strictly within their shift window.
+                Assert.True(s.StartAtUtc.TimeOfDay >= TimeSpan.FromHours(9));
+                Assert.True(s.EndAtUtc.TimeOfDay <= TimeSpan.FromHours(12));
+            }
+            else
+            {
+                // Staff with no shift row fall back to the business default
+                // window (BookingOpenHour 9 → BookingCloseHour 18): an empty
+                // roster never means "closed".
+                Assert.Equal(absentStaff.Id, s.StaffUserId);
+                Assert.True(s.StartAtUtc.TimeOfDay >= TimeSpan.FromHours(9));
+                Assert.True(s.EndAtUtc.TimeOfDay <= TimeSpan.FromHours(18));
+            }
+        });
     }
 
     [Fact]
@@ -113,8 +134,8 @@ public class AppointmentAvailabilityServiceTests
         var service = BookingTestBase.CreateService(business.Id, "Cut", 60, 500m);
         var busy = BookingTestBase.CreateAppointment(
             business.Id, customer.Id, staff.Id,
-            new DateTime(2026, 8, 20, 10, 0, 0, DateTimeKind.Utc),
-            new DateTime(2026, 8, 20, 11, 0, 0, DateTimeKind.Utc));
+            Day.ToDateTime(new TimeOnly(10, 0), DateTimeKind.Utc),
+            Day.ToDateTime(new TimeOnly(11, 0), DateTimeKind.Utc));
 
         await BookingTestBase.SeedAsync(context, owner, business, customer, staff, service, busy,
             BookingTestBase.CreateAssignment(business.Id, staff.Id, service.Id),
@@ -233,8 +254,8 @@ public class AppointmentAvailabilityServiceTests
         var service = BookingTestBase.CreateService(business.Id, "Cut", 60, 500m);
         var cancelled = BookingTestBase.CreateAppointment(
             business.Id, customer.Id, staff.Id,
-            new DateTime(2026, 8, 20, 10, 0, 0, DateTimeKind.Utc),
-            new DateTime(2026, 8, 20, 11, 0, 0, DateTimeKind.Utc),
+            Day.ToDateTime(new TimeOnly(10, 0), DateTimeKind.Utc),
+            Day.ToDateTime(new TimeOnly(11, 0), DateTimeKind.Utc),
             status: "cancelled");
 
         await BookingTestBase.SeedAsync(context, owner, business, customer, staff, service, cancelled,

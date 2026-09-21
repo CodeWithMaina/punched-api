@@ -120,6 +120,18 @@ public static class ModuleCatalog
                 new PermissionDefinition("serviceCatalog.view",   new[] { "Business", "Customer" }),
                 new PermissionDefinition("serviceCatalog.manage", new[] { "Business" }),
             }),
+        new ModuleDefinition(
+            Key: "attendance", Name: "Attendance",
+            Description: "Staff clock-in and clock-out with business QR codes",
+            Version: "1.0.0", Visibility: ModuleVisibility.Standard,
+            Dependencies: new[] { "staff" },
+            RequiredRoles: new[] { "Business", "Staff" },
+            Permissions: new[]
+            {
+                new PermissionDefinition("attendance.view",   new[] { "Business", "Staff" }),
+                new PermissionDefinition("attendance.clock",  new[] { "Business", "Staff" }),
+                new PermissionDefinition("attendance.manage", new[] { "Business" }),
+            }),
 
 
         // ── Premium ─────────────────────────────────────────────
@@ -133,6 +145,8 @@ public static class ModuleCatalog
             {
                 new PermissionDefinition("loyalty.view",   new[] { "Business", "Customer" }),
                 new PermissionDefinition("loyalty.manage", new[] { "Business" }),
+                new PermissionDefinition("loyalty.stamp",  new[] { "Business", "Staff" }),
+                new PermissionDefinition("loyalty.redeem", new[] { "Business", "Staff" }),
             }),
         new ModuleDefinition(
             Key: "rewards", Name: "Rewards",
@@ -180,6 +194,21 @@ public static class ModuleCatalog
             {
                 new PermissionDefinition("referral.view",   new[] { "Business", "Customer" }),
                 new PermissionDefinition("referral.manage", new[] { "Business" }),
+            }),
+        new ModuleDefinition(
+            Key: "customCardDesign", Name: "Custom Card Design",
+            Description: "Business-specific HTML card designs for loyalty stamp cards",
+            Version: "1.0.0", Visibility: ModuleVisibility.Premium,
+            // Must stay in sync with ModuleSeedData.DependenciesJson
+            // (["loyalty"]) — asserted by ModuleCatalogSyncTests.
+            // Loyalty deliberately does NOT depend on this module: the default
+            // card design ships with loyalty, custom designs are an enhancement.
+            Dependencies: new[] { "loyalty" },
+            RequiredRoles: new[] { "Business" },
+            Permissions: new[]
+            {
+                new PermissionDefinition("cardDesigns.view",   new[] { "Business" }),
+                new PermissionDefinition("cardDesigns.select", new[] { "Business" }),
             }),
     };
 

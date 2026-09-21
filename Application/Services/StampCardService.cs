@@ -7,18 +7,25 @@ using PunchedApi.Domain.Interfaces;
 namespace PunchedApi.Application.Services;
 
 /// <summary>
-/// Business-facing management of stamp cards (children of campaigns) and
-/// reusable card designs (sanitized HTML templates), plus the shared preview
-/// rendering pipeline.
+/// Business-facing management of stamp cards (children of loyalty programs).
+///
+/// Card design *authoring* lives in <see cref="CardDesignService"/> (Admin only);
+/// this service only validates that a business may assign an available design to
+/// one of its stamp cards.
 /// </summary>
 public class StampCardService : IStampCardService
 {
     private readonly IUnitOfWork _unitOfWork;
+    private readonly ICardDesignService _cardDesignService;
     private readonly ILogger<StampCardService> _logger;
 
-    public StampCardService(IUnitOfWork unitOfWork, ILogger<StampCardService> logger)
+    public StampCardService(
+        IUnitOfWork unitOfWork,
+        ICardDesignService cardDesignService,
+        ILogger<StampCardService> logger)
     {
         _unitOfWork = unitOfWork;
+        _cardDesignService = cardDesignService;
         _logger = logger;
     }
 
@@ -60,17 +67,6 @@ public class StampCardService : IStampCardService
         _ => StampCardStatus.Draft
     };
 
-    private static CardDesignResponse MapDesign(CardDesign design, int assignedCards = 0) => new()
-    {
-        Id = design.Id,
-        BusinessId = design.BusinessId,
-        Name = design.Name,
-        HtmlTemplate = design.HtmlTemplate,
-        IsActive = design.IsActive,
-        AssignedCards = assignedCards,
-        CreatedAt = design.CreatedAt
-    };
-
     // ── Stamp cards ─────────────────────────────────────────
 
     public async Task<ApiResponse<List<StampCardResponse>>> GetProgramStampCardsAsync(Guid ownerId, Guid programId)
@@ -82,7 +78,7 @@ public class StampCardService : IStampCardService
         var program = await _unitOfWork.LoyaltyPrograms
             .FirstOrDefaultAsync(p => p.Id == programId && p.BusinessId == business.Id);
         if (program == null)
-            return ApiResponse<List<StampCardResponse>>.Fail("NOT_FOUND", "Campaign not found.");
+            return ApiResponse<List<StampCardResponse>>.Fail("NOT_FOUND", "Loyalty program not found.");
 
         var cards = await _unitOfWork.StampCards.FindAsync(c => c.ProgramId == programId);
         var enrolled = await _unitOfWork.LoyaltyCards.CountAsync(lc => lc.ProgramId == programId);
@@ -122,14 +118,14 @@ public class StampCardService : IStampCardService
             var program = await _unitOfWork.LoyaltyPrograms
                 .FirstOrDefaultAsync(p => p.Id == programId && p.BusinessId == business.Id);
             if (program == null)
-                return ApiResponse<StampCardResponse>.Fail("NOT_FOUND", "Campaign not found.");
+                return ApiResponse<StampCardResponse>.Fail("NOT_FOUND", "Loyalty program not found.");
 
             if (request.CardDesignId.HasValue)
             {
-                var design = await _unitOfWork.CardDesigns
-                    .FirstOrDefaultAsync(d => d.Id == request.CardDesignId.Value && d.BusinessId == business.Id);
-                if (design == null)
-                    return ApiResponse<StampCardResponse>.Fail("NOT_FOUND", "Card design not found.");
+                // Entitlement + tenant isolation are enforced in one place.
+                var check = await _cardDesignService.ValidateSelectionAsync(business.Id, request.CardDesignId);
+                if (!check.IsValid)
+                    return ApiResponse<StampCardResponse>.Fail(check.ErrorCode!, check.ErrorMessage!);
             }
 
             var card = new StampCard
@@ -176,10 +172,10 @@ public class StampCardService : IStampCardService
 
             if (request.CardDesignId.HasValue)
             {
-                var design = await _unitOfWork.CardDesigns
-                    .FirstOrDefaultAsync(d => d.Id == request.CardDesignId.Value && d.BusinessId == business.Id);
-                if (design == null)
-                    return ApiResponse<StampCardResponse>.Fail("NOT_FOUND", "Card design not found.");
+                // Entitlement + tenant isolation are enforced in one place.
+                var check = await _cardDesignService.ValidateSelectionAsync(business.Id, request.CardDesignId);
+                if (!check.IsValid)
+                    return ApiResponse<StampCardResponse>.Fail(check.ErrorCode!, check.ErrorMessage!);
                 card.CardDesignId = request.CardDesignId.Value;
             }
             else if (request.ClearCardDesign)
@@ -283,163 +279,5 @@ public class StampCardService : IStampCardService
         _unitOfWork.StampCards.Delete(card);
         await _unitOfWork.SaveChangesAsync();
         return ApiResponse<bool>.Ok(true);
-    }
-
-    public async Task<ApiResponse<List<CardDesignResponse>>> GetCardDesignsAsync(Guid ownerId)
-    {
-        var business = await ResolveBusinessAsync(ownerId);
-        if (business == null)
-            return ApiResponse<List<CardDesignResponse>>.Fail("NOT_FOUND", "No business found for this account.");
-
-        var designs = await _unitOfWork.CardDesigns.FindAsync(d => d.BusinessId == business.Id);
-        var result = designs.OrderBy(d => d.CreatedAt).Select(d => MapDesign(d)).ToList();
-
-        // Populate assigned card counts in one query.
-        var cards = await _unitOfWork.StampCards.FindAsync(c => c.BusinessId == business.Id && c.CardDesignId != null);
-        var counts = cards.GroupBy(c => c.CardDesignId!.Value).ToDictionary(g => g.Key, g => g.Count());
-        foreach (var design in result)
-            design.AssignedCards = counts.GetValueOrDefault(design.Id);
-
-        return ApiResponse<List<CardDesignResponse>>.Ok(result);
-    }
-
-    public async Task<ApiResponse<CardDesignResponse>> GetCardDesignAsync(Guid ownerId, Guid designId)
-    {
-        var business = await ResolveBusinessAsync(ownerId);
-        if (business == null)
-            return ApiResponse<CardDesignResponse>.Fail("NOT_FOUND", "No business found for this account.");
-
-        var design = await _unitOfWork.CardDesigns.FirstOrDefaultAsync(d => d.Id == designId && d.BusinessId == business.Id);
-        if (design == null)
-            return ApiResponse<CardDesignResponse>.Fail("NOT_FOUND", "Card design not found.");
-
-        var assigned = await _unitOfWork.StampCards.CountAsync(c => c.CardDesignId == designId);
-        return ApiResponse<CardDesignResponse>.Ok(MapDesign(design, assigned));
-    }
-
-    public async Task<ApiResponse<CardDesignResponse>> CreateCardDesignAsync(Guid ownerId, CreateCardDesignRequest request)
-    {
-        try
-        {
-            var business = await ResolveBusinessAsync(ownerId);
-            if (business == null)
-                return ApiResponse<CardDesignResponse>.Fail("NOT_FOUND", "No business found for this account.");
-
-            var design = new CardDesign
-            {
-                Id = Guid.NewGuid(),
-                BusinessId = business.Id,
-                Name = request.Name.Trim(),
-                HtmlTemplate = CardTemplateSanitizer.Sanitize(request.HtmlTemplate),
-                IsActive = true,
-                CreatedAt = DateTime.UtcNow
-            };
-
-            await _unitOfWork.CardDesigns.AddAsync(design);
-            await _unitOfWork.SaveChangesAsync();
-
-            return ApiResponse<CardDesignResponse>.Ok(MapDesign(design));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error creating card design for owner {OwnerId}", ownerId);
-            return ApiResponse<CardDesignResponse>.Fail("CREATE_FAILED", "Failed to create the card design.");
-        }
-    }
-
-    public async Task<ApiResponse<CardDesignResponse>> UpdateCardDesignAsync(Guid ownerId, Guid designId, UpdateCardDesignRequest request)
-    {
-        try
-        {
-            var business = await ResolveBusinessAsync(ownerId);
-            if (business == null)
-                return ApiResponse<CardDesignResponse>.Fail("NOT_FOUND", "No business found for this account.");
-
-            var design = await _unitOfWork.CardDesigns.FirstOrDefaultAsync(d => d.Id == designId && d.BusinessId == business.Id);
-            if (design == null)
-                return ApiResponse<CardDesignResponse>.Fail("NOT_FOUND", "Card design not found.");
-
-            if (request.Name != null) design.Name = request.Name.Trim();
-            if (request.HtmlTemplate != null) design.HtmlTemplate = CardTemplateSanitizer.Sanitize(request.HtmlTemplate);
-            if (request.IsActive.HasValue) design.IsActive = request.IsActive.Value;
-
-            _unitOfWork.CardDesigns.Update(design);
-            await _unitOfWork.SaveChangesAsync();
-
-            var assigned = await _unitOfWork.StampCards.CountAsync(c => c.CardDesignId == designId);
-            return ApiResponse<CardDesignResponse>.Ok(MapDesign(design, assigned));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error updating card design {DesignId}", designId);
-            return ApiResponse<CardDesignResponse>.Fail("UPDATE_FAILED", "Failed to update the card design.");
-        }
-    }
-
-    public async Task<ApiResponse<bool>> DeleteCardDesignAsync(Guid ownerId, Guid designId)
-    {
-        var business = await ResolveBusinessAsync(ownerId);
-        if (business == null)
-            return ApiResponse<bool>.Fail("NOT_FOUND", "No business found for this account.");
-
-        var design = await _unitOfWork.CardDesigns.FirstOrDefaultAsync(d => d.Id == designId && d.BusinessId == business.Id);
-        if (design == null)
-            return ApiResponse<bool>.Fail("NOT_FOUND", "Card design not found.");
-
-        var assigned = await _unitOfWork.StampCards.CountAsync(c => c.CardDesignId == designId);
-        if (assigned > 0)
-            return ApiResponse<bool>.Fail("IN_USE", $"This design is assigned to {assigned} stamp card(s). Unassign it first.");
-
-        _unitOfWork.CardDesigns.Delete(design);
-        await _unitOfWork.SaveChangesAsync();
-        return ApiResponse<bool>.Ok(true);
-    }
-
-    public async Task<ApiResponse<PreviewCardDesignResponse>> PreviewCardDesignAsync(Guid ownerId, PreviewCardDesignRequest request)
-    {
-        var business = await ResolveBusinessAsync(ownerId);
-        if (business == null)
-            return ApiResponse<PreviewCardDesignResponse>.Fail("NOT_FOUND", "No business found for this account.");
-
-        string sanitized;
-        if (request.CardDesignId.HasValue)
-        {
-            var design = await _unitOfWork.CardDesigns
-                .FirstOrDefaultAsync(d => d.Id == request.CardDesignId.Value && d.BusinessId == business.Id);
-            if (design == null)
-                return ApiResponse<PreviewCardDesignResponse>.Fail("NOT_FOUND", "Card design not found.");
-            sanitized = design.HtmlTemplate;
-        }
-        else
-        {
-            var (isValid, error) = CardTemplateSanitizer.Validate(request.HtmlTemplate);
-            if (!isValid)
-                return ApiResponse<PreviewCardDesignResponse>.Fail("INVALID_TEMPLATE", error ?? "Invalid template.");
-            sanitized = CardTemplateSanitizer.Sanitize(request.HtmlTemplate);
-        }
-
-        // Realistic sample data (overridable by the caller for their own brand).
-        var totalStamps = Math.Clamp(request.TotalStamps ?? 10, 1, 100);
-        var context = new CardTemplateRenderer.CardRenderContext
-        {
-            BusinessName = string.IsNullOrWhiteSpace(request.BusinessName) ? business.Name : request.BusinessName.Trim(),
-            BusinessLogoUrl = business.LogoUrl,
-            BusinessDescription = business.Description,
-            CustomerName = string.IsNullOrWhiteSpace(request.CustomerName) ? "Peter Maina" : request.CustomerName.Trim(),
-            CampaignName = "Coffee Rewards",
-            CardName = string.IsNullOrWhiteSpace(request.CardName) ? "Coffee Card" : request.CardName.Trim(),
-            RewardName = string.IsNullOrWhiteSpace(request.RewardName) ? "Buy 10 coffees, get 1 free" : request.RewardName.Trim(),
-            TotalStamps = totalStamps,
-            CompletedStamps = Math.Clamp(request.CompletedStamps ?? 4, 0, totalStamps)
-        };
-
-        var rendered = CardTemplateRenderer.Render(sanitized, context);
-
-        return ApiResponse<PreviewCardDesignResponse>.Ok(new PreviewCardDesignResponse
-        {
-            SanitizedTemplate = sanitized,
-            RenderedHtml = rendered,
-            Variables = CardTemplateRenderer.AvailableVariables.ToList()
-        });
     }
 }
