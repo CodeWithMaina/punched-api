@@ -50,9 +50,35 @@ public class CardDesign : BaseEntity
     /// </summary>
     public bool IsDefault { get; set; }
 
+    /// <summary>
+    /// Validated, structured presentation configuration
+    /// (<c>PunchedApi.Application.Design.CardDesignConfig</c>) serialised as JSON,
+    /// or null when the design is expressed purely through <see cref="HtmlTemplate"/>.
+    ///
+    /// Deliberately free-form storage so new visual properties can be introduced
+    /// without a database change; the *shape* is enforced by
+    /// <c>CardDesignConfigValidator</c> on every write.
+    /// </summary>
+    public string? ConfigJson { get; set; }
+
+    /// <summary>
+    /// Highest recorded <see cref="CardDesignVersion.VersionNumber"/>.
+    /// 0 means the design predates versioning and only <see cref="HtmlTemplate"/> exists.
+    /// </summary>
+    public int CurrentVersion { get; set; }
+
+    /// <summary>Last presentation mutation timestamp (null for never-updated rows).</summary>
+    public DateTime? UpdatedAt { get; set; }
+
     // ── Navigation ──────────────────────────────────────────
     /// <summary>Null for the platform-wide default design.</summary>
     public virtual Business? Business { get; set; }
     public virtual ICollection<StampCard> StampCards { get; set; } = new List<StampCard>();
     public virtual ICollection<LoyaltyProgram> LoyaltyPrograms { get; set; } = new List<LoyaltyProgram>();
+
+    /// <summary>
+    /// Immutable, append-only history of this design's presentation. Never
+    /// referenced by loyalty state; used for audit, rollback and reproducibility.
+    /// </summary>
+    public virtual ICollection<CardDesignVersion> Versions { get; set; } = new List<CardDesignVersion>();
 }

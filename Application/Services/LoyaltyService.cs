@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Loyalty;
 using PunchedApi.Application.Programs;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
@@ -449,7 +450,7 @@ public class LoyaltyService : ILoyaltyService
     }
 
     private static string ValidateProgramType(string? value) =>
-        ProgramTypes.IsKnown(value) ? value! : ProgramTypes.Stamp;
+        value is not null && ProgramTypes.IsKnown(value) ? value : ProgramTypes.Stamp;
 
     private static DateTime? NormalizeUtc(DateTime? value) =>
         value.HasValue ? value.Value.ToUniversalTime() : null;
@@ -613,6 +614,11 @@ public class LoyaltyService : ILoyaltyService
             var now = DateTime.UtcNow;
             var welcomeStamps = Math.Clamp(activeProgram.DefaultEnrollmentStamps, 0, 100);
 
+            // Freeze the business rules this customer is joining under (§36):
+            // later edits to the stamp card / program never rewrite this snapshot.
+            var boundStampCard = await LoyaltyCardSnapshot.ResolveDefaultStampCardAsync(
+                _unitOfWork, activeProgram.Id);
+
             var card = new LoyaltyCard
             {
                 Id = Guid.NewGuid(),
@@ -627,6 +633,7 @@ public class LoyaltyService : ILoyaltyService
                 CreatedAt = now
             };
 
+            LoyaltyCardSnapshot.Apply(card, activeProgram, boundStampCard, now);
                         await _unitOfWork.LoyaltyCards.AddAsync(card);
 
             // Record the welcome stamp ledger entries via StampService so the
@@ -750,6 +757,8 @@ public class LoyaltyService : ILoyaltyService
         EnrolledAt = c.EnrolledAt,
         RewardExpiresAt = c.RewardExpiresAt,
         LockedStamps = lockedStamps,
+        StampsRequired = CardRulesPolicy.ResolveEffectiveRequiredStamps(c, p, c.StampCard),
+        RewardDescription = CardRulesPolicy.ResolveEffectiveRewardDescription(c, p, c.StampCard),
         CardDesignId = design?.DesignId,
         CardDesignName = design?.DesignName,
         CardDesignIsDefault = design?.IsDefault ?? true,
@@ -759,16 +768,23 @@ public class LoyaltyService : ILoyaltyService
         Program = MapProgram(p)
     };
 
-    private static CardTemplateRenderer.CardRenderContext BuildCardContext(LoyaltyCard c, Business b, LoyaltyProgram p) => new()
+    private static CardTemplateRenderer.CardRenderContext BuildCardContext(LoyaltyCard c, Business b, LoyaltyProgram p)
     {
-        BusinessName = b.Name,
-        BusinessLogoUrl = b.LogoUrl,
-        BusinessDescription = b.Description,
-        CustomerName = c.Customer?.FullName ?? CardPreviewSampleData.CustomerName,
-        CampaignName = p.Name,
-        CardName = p.Name,
-        TotalStamps = p.StampsRequired,
-        CompletedStamps = c.TotalStamps,
-        RewardName = p.RewardDescription
-    };
+        // The card face always renders the CUSTOMER's effective rule (their
+        // enrollment snapshot), never the program's current configuration —
+        // otherwise a later program edit would visually rewrite their progress.
+        var required = CardRulesPolicy.ResolveEffectiveRequiredStamps(c, p, c.StampCard);
+        return new CardTemplateRenderer.CardRenderContext
+        {
+            BusinessName = b.Name,
+            BusinessLogoUrl = b.LogoUrl,
+            BusinessDescription = b.Description,
+            CustomerName = c.Customer?.FullName ?? CardPreviewSampleData.CustomerName,
+            CampaignName = p.Name,
+            CardName = p.Name,
+            TotalStamps = required,
+            CompletedStamps = CardRulesPolicy.ClampCompletedStamps(c.TotalStamps, required),
+            RewardName = CardRulesPolicy.ResolveEffectiveRewardDescription(c, p, c.StampCard)
+        };
+    }
 }

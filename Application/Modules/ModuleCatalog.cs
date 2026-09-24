@@ -134,6 +134,21 @@ public static class ModuleCatalog
             }),
 
 
+        new ModuleDefinition(
+            Key: "payments", Name: "Payments",
+            Description: "Direct-to-business payment collection (cash + M-PESA)",
+            Version: "1.0.0", Visibility: ModuleVisibility.Standard,
+            Dependencies: new[] { "appointments" },
+            RequiredRoles: new[] { "Business", "Staff", "Customer" },
+            Permissions: new[]
+            {
+                new PermissionDefinition("payments.view",        new[] { "Business", "Staff", "Customer" }),
+                new PermissionDefinition("payments.create",      new[] { "Business", "Staff", "Customer" }),
+                new PermissionDefinition("payments.confirm_cash", new[] { "Business", "Staff" }),
+                new PermissionDefinition("payments.configure",   new[] { "Business" }),
+                new PermissionDefinition("payments.reverse",     new[] { "Business" }),
+            }),
+
         // ── Premium ─────────────────────────────────────────────
         new ModuleDefinition(
             Key: "loyalty", Name: "Loyalty Programs",

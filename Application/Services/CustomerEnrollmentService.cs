@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Loyalty;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -147,6 +148,7 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
             };
             await _unitOfWork.CustomerStampCards.AddAsync(m);
             await _unitOfWork.SaveChangesAsync();
+            await TryBindFreshLoyaltyCardAsync(customerId, card);
             return ApiResponse<CustomerStampCardDto>.Ok(await MapStampCardWithTotalAsync(m, card));
         }
         catch (DbUpdateException ex) when (IsUniqueViolation(ex))
@@ -170,6 +172,30 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
         _unitOfWork.CustomerStampCards.Update(existing);
         await _unitOfWork.SaveChangesAsync();
         return ApiResponse<bool>.Ok(true);
+    }
+
+    /// <summary>
+    /// Binds a brand-new (zero-progress) loyalty card to the stamp card the
+    /// customer just joined, freezing that card's rules as their snapshot.
+    /// Cards with any progress (or another binding) are never re-bound — their
+    /// established rule stays exactly as they joined it (§36).
+    /// </summary>
+    private async Task TryBindFreshLoyaltyCardAsync(Guid customerId, StampCard stampCard)
+    {
+        var loyaltyCard = await _context.LoyaltyCards
+            .FirstOrDefaultAsync(l => l.CustomerId == customerId && l.BusinessId == stampCard.BusinessId);
+        if (loyaltyCard == null || loyaltyCard.StampCardId != null
+            || loyaltyCard.TotalStamps != 0 || loyaltyCard.LifetimeStamps != 0)
+            return;
+
+        var program = await _context.LoyaltyPrograms
+            .AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == loyaltyCard.ProgramId);
+        if (program == null) return;
+
+        LoyaltyCardSnapshot.Apply(loyaltyCard, program, stampCard, DateTime.UtcNow);
+        _context.LoyaltyCards.Update(loyaltyCard);
+        await _context.SaveChangesAsync();
     }
 
     private static string NormalizeSource(string? s)

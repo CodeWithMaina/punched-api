@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 
 namespace PunchedApi.Application.DTOs;
@@ -16,12 +17,19 @@ public class CreateStampCardRequest
     [JsonPropertyName("description")]
     public string? Description { get; set; }
 
+    /// <summary>
+    /// Required stamps for this card (1–100). Validated with ASP.NET model
+    /// binding AND again in the service via <c>CardRulesPolicy</c> — the server
+    /// never trusts this value just because it came through the DTO.
+    /// </summary>
+    [Range(1, 100)]
     [JsonPropertyName("stampsRequired")]
     public int StampsRequired { get; set; } = 10;
 
     [JsonPropertyName("rewardDescription")]
     public string RewardDescription { get; set; } = string.Empty;
 
+    [Range(0, 1_000_000)]
     [JsonPropertyName("rewardValue")]
     public decimal RewardValue { get; set; }
 
@@ -42,12 +50,15 @@ public class UpdateStampCardRequest
     [JsonPropertyName("description")]
     public string? Description { get; set; }
 
+    /// <summary>New required-stamp count (1–100). Omit to leave unchanged.</summary>
+    [Range(1, 100)]
     [JsonPropertyName("stampsRequired")]
     public int? StampsRequired { get; set; }
 
     [JsonPropertyName("rewardDescription")]
     public string? RewardDescription { get; set; }
 
+    [Range(0, 1_000_000)]
     [JsonPropertyName("rewardValue")]
     public decimal? RewardValue { get; set; }
 
@@ -57,6 +68,19 @@ public class UpdateStampCardRequest
 
     [JsonPropertyName("clearCardDesign")]
     public bool ClearCardDesign { get; set; }
+
+    /// <summary>
+    /// Explicit opt-in to push a rules change onto existing in-flight customer
+    /// cards. Requires <see cref="Reason"/>. Without this flag existing
+    /// enrollments keep the rules they joined under (never a silent rewrite).
+    /// </summary>
+    [JsonPropertyName("applyToExistingCards")]
+    public bool ApplyToExistingCards { get; set; }
+
+    /// <summary>Why the rules are changing. Required when applying to existing cards.</summary>
+    [MaxLength(500)]
+    [JsonPropertyName("reason")]
+    public string? Reason { get; set; }
 }
 
 /// <summary>PATCH /v1/stamp-cards/me/{id}/status request body.</summary>
@@ -103,6 +127,13 @@ public class StampCardResponse
 
     [JsonPropertyName("cardDesignName")]
     public string? CardDesignName { get; set; }
+
+    /// <summary>
+    /// Monotonic version of this card's *business rules*. Every audited rules
+    /// change bumps it; presentation (design) changes never do.
+    /// </summary>
+    [JsonPropertyName("rulesVersion")]
+    public int RulesVersion { get; set; }
 
     /// <summary>Basic usage info: customer cards enrolled in the parent loyalty program.</summary>
     [JsonPropertyName("enrolledCustomers")]

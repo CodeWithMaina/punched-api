@@ -12,10 +12,12 @@ using Microsoft.OpenApi.Models;
 using PunchedApi.API.Middleware;
 using PunchedApi.Application.Attendance;
 using PunchedApi.Application.Attendance.Verification;
+using PunchedApi.Application.Assets;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.Loyalty;
 using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Modules;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Application.Services;
 using PunchedApi.Application.Settings;
 using PunchedApi.Application.Validators;
@@ -23,9 +25,12 @@ using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
 using PunchedApi.Infrastructure.Data.Seeding;
+using PunchedApi.Infrastructure.Services.Payments;
 using PunchedApi.Infrastructure.Data.Seeding.Steps;
+using PunchedApi.Infrastructure.Notifications;
 using PunchedApi.Infrastructure.Repositories;
 using PunchedApi.Infrastructure.Services;
+using PunchedApi.Infrastructure.Services.Storage;
 using Serilog;
 
 // ═══════════════════════════════════════════════════════════════
@@ -160,9 +165,23 @@ try
     builder.Services.AddScoped<IStampCardService, StampCardService>();
     builder.Services.AddScoped<ICardDesignService, CardDesignService>();
     builder.Services.AddScoped<ICardDesignResolver, CardDesignResolver>();
+    // Card branding assets: local filesystem storage behind the ICardAssetStorage
+    // abstraction, so an object store can replace it without touching the service.
+    builder.Services.AddScoped<ICardAssetService, CardAssetService>();
+    builder.Services.AddSingleton<ICardAssetStorage, LocalCardAssetStorage>();
+    builder.Services.Configure<CardAssetSettings>(
+        builder.Configuration.GetSection(CardAssetSettings.SectionName));
     builder.Services.AddScoped<PunchedApi.Application.Programs.IProgramRuleEngine, PunchedApi.Application.Programs.ProgramRuleEngine>();
     builder.Services.AddScoped<IIdempotencyService, IdempotencyService>();
     builder.Services.AddScoped<INotificationsService, NotificationsService>();
+
+    // ── Notification module (Phase 1: registry, preferences, in-app inbox) ──
+    // Producers touch INotificationService.SendAsync only; providers, the outbox
+    // worker and each external channel stay behind INotificationChannel, registered
+    // one AddScoped line at a time (email = Phase 4, sms = Phase 6, push = Phase 7).
+    builder.Services.AddScoped<INotificationService, NotificationService>();
+    builder.Services.AddScoped<IPreferenceResolver, PreferenceResolver>();
+    builder.Services.AddScoped<NotificationOutboxStore>();
     builder.Services.AddScoped<IQrService, QrService>();
     builder.Services.AddScoped<ICustomerEnrollmentService, CustomerEnrollmentService>();
     builder.Services.AddScoped<IRedemptionService, RedemptionService>();
@@ -198,6 +217,27 @@ try
     builder.Services.AddScoped<ISubscriptionLifecycleService, SubscriptionLifecycleService>();
     builder.Services.AddScoped<SubscriptionExpiryService>();
     builder.Services.AddScoped<IBillingGateway, FakeMpesaStkGateway>();
+    // ── Payments module (direct-to-business payments) ───────
+    // Business-owned payment accounts; no platform fees, splits or pooled funds.
+    builder.Services.Configure<PaymentOptions>(builder.Configuration.GetSection(PaymentOptions.SectionName));
+    builder.Services.Configure<DarajaOptions>(builder.Configuration.GetSection(DarajaOptions.SectionName));
+    builder.Services.AddHttpClient<DarajaClient>();
+    builder.Services.AddScoped<FakeDarajaClient>();
+    builder.Services.AddScoped<IDarajaClient>(sp =>
+    {
+        var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<DarajaOptions>>().Value;
+        var env = sp.GetRequiredService<IHostEnvironment>();
+        // Fake only in development with no real credentials — never fake production success.
+        if (env.IsDevelopment() && opts.AllowMockClient && string.IsNullOrEmpty(opts.ConsumerKey))
+            return sp.GetRequiredService<FakeDarajaClient>();
+        return sp.GetRequiredService<DarajaClient>();
+    });
+    builder.Services.AddSingleton<PunchedApi.Application.Services.PaymentCredentialProtector>();
+    builder.Services.AddScoped<IPaymentProvider, CashPaymentProvider>();
+    builder.Services.AddScoped<IPaymentProvider, DarajaStkProvider>();
+    builder.Services.AddScoped<IPaymentService, PaymentService>();
+    builder.Services.AddScoped<IPaymentConfigService, PaymentConfigService>();
+    builder.Services.AddScoped<IPaymentCallbackService, PaymentCallbackService>();
 builder.Services.Configure<BillingOptions>(builder.Configuration.GetSection(BillingOptions.SectionName));
 builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisioningService>();
 
@@ -236,6 +276,8 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
 
     // Periodic cleanup of expired tokens, QR tokens, and stale verification codes
     builder.Services.AddHostedService<CleanupService>();
+    builder.Services.AddHostedService<NotificationDeliveryWorker>();
+    builder.Services.AddHostedService<PaymentExpiryWorker>();
     builder.Services.AddHostedService<PayoutWorker>();
     builder.Services.AddHostedService<AnalyticsWorker>();
     builder.Services.AddHostedService<SubscriptionExpiryWorker>();
@@ -276,6 +318,15 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     });
 
     // ── Rate Limiting (.NET 8 built-in) ─────────────────────
+    // Permit limits are configuration-driven (RateLimiting:<policy>:PermitLimit) with
+    // the production values below as defaults, so an environment can tune them without a
+    // code change. The Playwright E2E harness raises them because a browser-driven suite
+    // issues many auth calls from a single IP.
+    int RateLimit(string policy, int fallback) =>
+        int.TryParse(builder.Configuration[$"RateLimiting:{policy}:PermitLimit"], out var configured) && configured > 0
+            ? configured
+            : fallback;
+
     builder.Services.AddRateLimiter(options =>
     {
         // OTP / verification code requests: 3 per 15 minutes per IP
@@ -284,7 +335,7 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 3,
+                    PermitLimit = RateLimit("otp", 3),
                     Window = TimeSpan.FromMinutes(15),
                     QueueLimit = 0
                 }));
@@ -295,7 +346,7 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 5,
+                    PermitLimit = RateLimit("login", 5),
                     Window = TimeSpan.FromMinutes(30),
                     QueueLimit = 0
                 }));
@@ -306,7 +357,7 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 1000,
+                    PermitLimit = RateLimit("general", 1000),
                     Window = TimeSpan.FromHours(1),
                                         QueueLimit = 0
                 }));
@@ -320,7 +371,7 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 partitionKey,
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 5,
+                    PermitLimit = RateLimit("manual-lookup", 5),
                     Window = TimeSpan.FromHours(1),
                     QueueLimit = 0
                 });
@@ -335,7 +386,7 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 partitionKey,
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 20,
+                    PermitLimit = RateLimit("stamp-award", 20),
                     Window = TimeSpan.FromHours(1),
                     QueueLimit = 0
                 });
@@ -350,7 +401,7 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 partitionKey,
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 20,
+                    PermitLimit = RateLimit("stamp-enroll", 20),
                     Window = TimeSpan.FromHours(1),
                     QueueLimit = 0
                 });
@@ -366,7 +417,23 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 partitionKey,
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 60,
+                    PermitLimit = RateLimit("attendance-clock", 60),
+                    Window = TimeSpan.FromHours(1),
+                    QueueLimit = 0
+                });
+        });
+
+        // Card-asset uploads: 30 per hour per (IP + user). Bounds upload flooding
+        // and storage abuse independently of the general API bucket (§21).
+        options.AddPolicy("asset-upload", httpContext =>
+        {
+            var userId = httpContext.User?.FindFirst("userId")?.Value ?? "anon";
+            var partitionKey = $"{httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown"}:{userId}";
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey,
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = RateLimit("asset-upload", 30),
                     Window = TimeSpan.FromHours(1),
                     QueueLimit = 0
                 });

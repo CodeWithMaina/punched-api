@@ -75,3 +75,9 @@ appsettings.*.json.user
 *.p12
 *.crt
 *.cer
+
+# Local development credentials
+credentials.md
+
+# Transient EF/SQLite probe output
+phase*.sql

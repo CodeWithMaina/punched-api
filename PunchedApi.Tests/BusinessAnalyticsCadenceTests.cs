@@ -8,6 +8,15 @@ using Testcontainers.PostgreSql;
 
 namespace PunchedApi.Tests;
 
+/// <summary>
+/// Cadence analytics against a REAL PostgreSQL (Testcontainers) because the
+/// implementation uses set-based SQL that SQLite/InMemory cannot model.
+///
+/// These tests need a Docker daemon; on machines without one they are reported as
+/// SKIPPED (see <see cref="RequiresDockerFactAttribute"/>) rather than failing, and
+/// <see cref="InitializeAsync"/> returns before touching the container so nothing
+/// tries to start it. Force the behaviour with PUNCHED_DOCKER_TESTS=on|off.
+/// </summary>
 public sealed class BusinessAnalyticsCadenceTests : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder()
@@ -16,6 +25,9 @@ public sealed class BusinessAnalyticsCadenceTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
+        if (!DockerProbe.IsAvailable)
+            return;
+
         await _postgres.StartAsync();
         await using var context = CreateContext();
         await context.Database.ExecuteSqlRawAsync("""
@@ -36,10 +48,13 @@ public sealed class BusinessAnalyticsCadenceTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+        if (!DockerProbe.IsAvailable)
+            return;
+
         await _postgres.DisposeAsync();
     }
 
-    [Fact]
+    [RequiresDockerFact]
     public async Task VisitCadence_UsesPeriodPredecessorAndPreservesTenantIsolation()
     {
         await ResetAsync();
@@ -72,7 +87,7 @@ public sealed class BusinessAnalyticsCadenceTests : IAsyncLifetime
         Assert.Equal(2.12, cadence);
     }
 
-    [Fact]
+    [RequiresDockerFact]
     public async Task VisitCadence_ReturnsNullForEmptyAndSingleStampCards()
     {
         await ResetAsync();
@@ -89,7 +104,7 @@ public sealed class BusinessAnalyticsCadenceTests : IAsyncLifetime
         Assert.Null(await service.ComputeVisitCadenceAsync(Guid.NewGuid(), periodStart));
     }
 
-    [Fact]
+    [RequiresDockerFact]
     public async Task VisitCadence_HandlesTenThousandStampsSetBased()
     {
         await ResetAsync();

@@ -51,8 +51,24 @@ public class StampCard : BaseEntity
     /// </summary>
     public Guid? CardDesignId { get; set; }
 
+    /// <summary>
+    /// Monotonic version of this card's *business rules*. Incremented whenever
+    /// <see cref="StampsRequired"/>, <see cref="RewardDescription"/> or
+    /// <see cref="RewardValue"/> change, and recorded in
+    /// <see cref="StampCardRulesChange"/>. New enrolments snapshot both the rules
+    /// and this version, so a later edit can never silently reinterpret an
+    /// existing customer's progress.
+    /// </summary>
+    public int RulesVersion { get; set; } = 1;
+
+    /// <summary>Last rules mutation timestamp (null for never-updated rows).</summary>
+    public DateTime? UpdatedAt { get; set; }
+
     // ── Navigation ──────────────────────────────────────────
     public virtual LoyaltyProgram Program { get; set; } = null!;
     public virtual Business Business { get; set; } = null!;
     public virtual CardDesign? CardDesign { get; set; }
+
+    /// <summary>Customer enrolments bound to this card template.</summary>
+    public virtual ICollection<LoyaltyCard> LoyaltyCards { get; set; } = new List<LoyaltyCard>();
 }

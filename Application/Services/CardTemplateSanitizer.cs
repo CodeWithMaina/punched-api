@@ -59,6 +59,17 @@ public static partial class CardTemplateSanitizer
     [GeneratedRegex("^(?:https?:)?//[^\\s]+$|^#[\\w-]+$", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
     private static partial Regex SafeUrlRegex();
 
+    /// <summary>
+    /// Exactly one app-relative URL shape is accepted: the asset-content route for
+    /// a single GUID-identified asset. This is deliberately tighter than a generic
+    /// "relative path" rule so a template can never point at an internal API, an
+    /// admin surface, or traverse the filesystem (<c>..</c> is not in the charset).
+    /// </summary>
+    [GeneratedRegex(
+        "^/(?:v1/)?card-assets/(?:me/)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/content$",
+        RegexOptions.Compiled)]
+    private static partial Regex SafeAssetUrlRegex();
+
     [GeneratedRegex("^data:image/(?:png|jpe?g|gif|webp);base64,[a-zA-Z0-9+/=]+$", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
     private static partial Regex SafeDataImageRegex();
 
@@ -118,8 +129,14 @@ public static partial class CardTemplateSanitizer
         return sb.ToString();
     }
 
-    private static bool IsSafeUrl(string url) =>
-        SafeUrlRegex().IsMatch(url) || SafeDataImageRegex().IsMatch(url);
+    /// <summary>
+    /// True when <paramref name="url"/> is an allowed value for a template
+    /// <c>src</c>/<c>href</c>: an absolute http(s) URL, a same-page anchor, an
+    /// inline <c>data:image/*</c> payload, or this application's own
+    /// GUID-scoped asset-content route.
+    /// </summary>
+    public static bool IsSafeUrl(string url) =>
+        SafeUrlRegex().IsMatch(url) || SafeDataImageRegex().IsMatch(url) || SafeAssetUrlRegex().IsMatch(url);
 
     private static readonly HashSet<string> AllowedCssProperties = new(StringComparer.OrdinalIgnoreCase)
     {

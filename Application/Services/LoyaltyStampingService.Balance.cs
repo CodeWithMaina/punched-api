@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Loyalty;
 using PunchedApi.Domain.Entities;
 
 namespace PunchedApi.Application.Services;
@@ -91,7 +92,8 @@ public partial class LoyaltyStampingService
                     CustomerId = card.CustomerId,
                     Amount = signed,
                     TotalStamps = card.TotalStamps,
-                    StampsRequired = card.Program.StampsRequired,
+                    // The customer's snapshotted goal, never the program's mutable config.
+                    StampsRequired = CardRulesPolicy.ResolveEffectiveRequiredStamps(card, card.Program, card.StampCard),
                     Transaction = MapTransaction(entry, card.Program, card.Customer?.FullName, actorRole),
                     UnlockedReward = unlocked.FirstOrDefault()
                 });

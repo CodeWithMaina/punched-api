@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Loyalty;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -66,7 +67,7 @@ public class RedemptionService : IRedemptionService
                     if (lookup.Conflict)
                         return ApiResponse<RedemptionResponse>.Fail("IDEMPOTENCY_CONFLICT",
                             "Idempotency key already used with a different request body.");
-                    var replay = System.Text.Json.JsonSerializer.Deserialize<ApiResponse<RedemptionResponse>>(lookup.ResponseJson);
+                    var replay = System.Text.Json.JsonSerializer.Deserialize<ApiResponse<RedemptionResponse>>(lookup.ResponseJson ?? "{}");
                     if (replay != null) return replay;
                 }
             }
@@ -79,7 +80,10 @@ public class RedemptionService : IRedemptionService
             if (card == null)
                 return ApiResponse<RedemptionResponse>.Fail("NOT_FOUND", "Loyalty card not found.");
 
-            var stampsRequired = card.Program.StampsRequired;
+            // The customer's snapshotted rule wins over the program's current
+            // configuration (CardRulesPolicy) — a later program edit can never
+            // reinterpret this card's progress.
+            var stampsRequired = CardRulesPolicy.ResolveEffectiveRequiredStamps(card, card.Program, card.StampCard);
             if (card.TotalStamps < stampsRequired)
                 return ApiResponse<RedemptionResponse>.Fail(
                     "INSUFFICIENT_STAMPS",
@@ -133,7 +137,7 @@ public class RedemptionService : IRedemptionService
                 CardId = card.Id,
                 StampNumber = card.LifetimeStamps,
                 TotalStamps = 0,
-                StampsRequired = card.Program.StampsRequired,
+                StampsRequired = stampsRequired,
                 RewardReady = true,
                 StampedAt = now,
                 RedemptionId = redemption.Id,
@@ -376,7 +380,7 @@ public class RedemptionService : IRedemptionService
                 CardId = card.Id,
                 StampNumber = card.LifetimeStamps,
                 TotalStamps = card.TotalStamps,
-                StampsRequired = card.Program.StampsRequired,
+                StampsRequired = CardRulesPolicy.ResolveEffectiveRequiredStamps(card, card.Program, card.StampCard),
                 RewardReady = false,
                 StampedAt = now,
                 RedemptionId = redemption.Id,
@@ -475,7 +479,7 @@ public class RedemptionService : IRedemptionService
                 CardId = card.Id,
                 StampNumber = card.LifetimeStamps,
                 TotalStamps = card.TotalStamps,
-                StampsRequired = card.Program.StampsRequired,
+                StampsRequired = CardRulesPolicy.ResolveEffectiveRequiredStamps(card, card.Program, card.StampCard),
                 RewardReady = false,
                 StampedAt = now,
                 RedemptionId = redemption.Id,

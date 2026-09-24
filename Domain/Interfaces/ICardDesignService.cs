@@ -74,6 +74,29 @@ public interface ICardDesignService
     ///    must be active, and the business must hold the entitlement.
     /// </summary>
     Task<CardDesignSelectionCheck> ValidateSelectionAsync(Guid businessId, Guid? cardDesignId);
+
+    // ── Business (config-based authoring, §5/§6/§16) ────────────
+
+    /// <summary>The caller's business's own designs (never the default, never another tenant's).</summary>
+    Task<ApiResponse<List<CardDesignResponse>>> GetMyDesignsAsync(Guid ownerId);
+
+    /// <summary>
+    /// Creates a business-owned design from a validated structured config.
+    /// Module-gated (<c>customCardDesign</c>), owner-only, and every referenced
+    /// asset must belong to the caller's business.
+    /// </summary>
+    Task<ApiResponse<CardDesignResponse>> CreateBusinessDesignAsync(
+        Guid ownerId, CreateBusinessCardDesignRequest request);
+
+    /// <summary>Updates a business-owned design (append-only versioning on content change).</summary>
+    Task<ApiResponse<CardDesignResponse>> UpdateBusinessDesignAsync(
+        Guid ownerId, Guid designId, UpdateBusinessCardDesignRequest request);
+
+    /// <summary>Append-only presentation history for a business-owned design.</summary>
+    Task<ApiResponse<List<CardDesignVersionResponse>>> GetVersionsForBusinessAsync(Guid ownerId, Guid designId);
+
+    /// <summary>Append-only presentation history (admin path — any design).</summary>
+    Task<ApiResponse<List<CardDesignVersionResponse>>> GetVersionsForAdminAsync(Guid designId);
 }
 
 /// <summary>Outcome of a card-design selection validation.</summary>

@@ -30,6 +30,7 @@ public class UnitOfWork : IUnitOfWork
     private IRepository<ReferralLink>? _referralLinks;
     private IRepository<Referral>? _referrals;
     private IRepository<Notification>? _notifications;
+    private IRepository<NotificationPreference>? _notificationPreferences;
     private IRepository<StaffInvitation>? _staffInvitations;
     private IRepository<Appointment>? _appointments;
     private IRepository<AppointmentResource>? _appointmentResources;
@@ -41,10 +42,17 @@ public class UnitOfWork : IUnitOfWork
     private IRepository<CustomerBusinessEnrollment>? _enrollments;
     private IRepository<CustomerStampCard>? _customerStampCards;
     private IRepository<CardDesign>? _cardDesigns;
+    private IRepository<CardDesignVersion>? _cardDesignVersions;
+    private IRepository<CardAsset>? _cardAssets;
+    private IRepository<StampCardRulesChange>? _stampCardRulesChanges;
     private IRepository<LoyaltyEarningRule>? _loyaltyEarningRules;
     private IRepository<StampTransaction>? _stampTransactions;
     private IRepository<Reward>? _rewards;
     private IRepository<RewardEntitlement>? _rewardEntitlements;
+    private IRepository<Payment>? _payments;
+    private IRepository<PaymentAttempt>? _paymentAttempts;
+    private IRepository<PaymentCallback>? _paymentCallbacks;
+    private IRepository<BusinessPaymentConfig>? _businessPaymentConfigs;
 
     public UnitOfWork(ApplicationDbContext context)
     {
@@ -155,6 +163,18 @@ public class UnitOfWork : IUnitOfWork
         _cardDesigns ??= new Repository<CardDesign>(_context);
 
     /// <inheritdoc />
+    public IRepository<CardDesignVersion> CardDesignVersions =>
+        _cardDesignVersions ??= new Repository<CardDesignVersion>(_context);
+
+    /// <inheritdoc />
+    public IRepository<CardAsset> CardAssets =>
+        _cardAssets ??= new Repository<CardAsset>(_context);
+
+    /// <inheritdoc />
+    public IRepository<StampCardRulesChange> StampCardRulesChanges =>
+        _stampCardRulesChanges ??= new Repository<StampCardRulesChange>(_context);
+
+    /// <inheritdoc />
     public IRepository<LoyaltyEarningRule> LoyaltyEarningRules =>
         _loyaltyEarningRules ??= new Repository<LoyaltyEarningRule>(_context);
 
@@ -166,9 +186,29 @@ public class UnitOfWork : IUnitOfWork
     public IRepository<Reward> Rewards =>
         _rewards ??= new Repository<Reward>(_context);
 
-    /// <inheritdoc />
+        /// <inheritdoc />
     public IRepository<RewardEntitlement> RewardEntitlements =>
         _rewardEntitlements ??= new Repository<RewardEntitlement>(_context);
+
+    /// <inheritdoc />
+    public IRepository<Payment> Payments =>
+        _payments ??= new Repository<Payment>(_context);
+
+    /// <inheritdoc />
+    public IRepository<PaymentAttempt> PaymentAttempts =>
+        _paymentAttempts ??= new Repository<PaymentAttempt>(_context);
+
+    /// <inheritdoc />
+    public IRepository<PaymentCallback> PaymentCallbacks =>
+        _paymentCallbacks ??= new Repository<PaymentCallback>(_context);
+
+    /// <inheritdoc />
+    public IRepository<BusinessPaymentConfig> BusinessPaymentConfigs =>
+        _businessPaymentConfigs ??= new Repository<BusinessPaymentConfig>(_context);
+
+    /// <inheritdoc />
+    public IRepository<NotificationPreference> NotificationPreferences =>
+        _notificationPreferences ??= new Repository<NotificationPreference>(_context);
 
     /// <inheritdoc />
     public async Task<int> SaveChangesAsync()

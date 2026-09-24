@@ -495,6 +495,20 @@ public class LoyaltyCardResponse
     public DateTime? RewardExpiresAt { get; set; }
 
     /// <summary>
+    /// The effective required-stamp count for THIS customer's current cycle —
+    /// resolved server-side from their enrollment snapshot (CardRulesPolicy),
+    /// not from the program's mutable configuration. Additive to
+    /// <c>program.stampsRequired</c>, which remains the program-level
+    /// configuration view.
+    /// </summary>
+    [JsonPropertyName("stampsRequired")]
+    public int StampsRequired { get; set; }
+
+    /// <summary>The effective reward description for this customer's current cycle.</summary>
+    [JsonPropertyName("rewardDescription")]
+    public string RewardDescription { get; set; } = string.Empty;
+
+    /// <summary>
     /// Number of stamps on this card that are still LOCKED (pending verification) —
     /// welcome/default stamps granted on enrollment that have not yet been validated
     /// by a real business stamping action.

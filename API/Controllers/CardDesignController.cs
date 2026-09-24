@@ -55,7 +55,9 @@ public class CardDesignController : ControllerBase
     /// <summary>
     /// Renders a card preview with safe sample data through the production
     /// pipeline. Always available — a loyalty-only business can still preview
-    /// the default card. Raw HTML is sanitized before rendering.
+    /// the default card. Raw HTML is sanitized before rendering; an unsaved
+    /// structured <c>config</c> is validated + rendered identically (live
+    /// designer preview).
     /// </summary>
     [HttpPost("me/preview")]
     [ProducesResponseType(typeof(ApiResponse<PreviewCardDesignResponse>), StatusCodes.Status200OK)]
@@ -75,6 +77,79 @@ public class CardDesignController : ControllerBase
             _ => BadRequest(result)
         };
     }
+
+    // ── Business config-based design authoring (§5, §6, §16) ────
+
+    /// <summary>
+    /// The caller business's own custom designs (metadata + config). Reads stay
+    /// available even when the customCardDesign module is off — a downgrade must
+    /// never hide existing designs; writes are module-gated server-side.
+    /// </summary>
+    [HttpGet("me/designs")]
+    [ProducesResponseType(typeof(ApiResponse<List<CardDesignResponse>>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetMyDesigns()
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _cardDesignService.GetMyDesignsAsync(userId.Value);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// Creates a business-owned design from a validated structured config.
+    /// The server generates + sanitizes the template; raw HTML is never accepted
+    /// on this route.
+    /// </summary>
+    [HttpPost("me/designs")]
+    [ProducesResponseType(typeof(ApiResponse<CardDesignResponse>), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> CreateMyDesign([FromBody] CreateBusinessCardDesignRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _cardDesignService.CreateBusinessDesignAsync(userId.Value, request);
+        if (result.Success) return StatusCode(StatusCodes.Status201Created, result);
+        return MapFailure(result);
+    }
+
+    /// <summary>Updates one of the caller business's designs (append-only versioning).</summary>
+    [HttpPut("me/designs/{designId:guid}")]
+    [ProducesResponseType(typeof(ApiResponse<CardDesignResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> UpdateMyDesign(Guid designId, [FromBody] UpdateBusinessCardDesignRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _cardDesignService.UpdateBusinessDesignAsync(userId.Value, designId, request);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>Append-only presentation history of one of the caller business's designs.</summary>
+    [HttpGet("me/designs/{designId:guid}/versions")]
+    [ProducesResponseType(typeof(ApiResponse<List<CardDesignVersionResponse>>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetMyDesignVersions(Guid designId)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _cardDesignService.GetVersionsForBusinessAsync(userId.Value, designId);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>Stable failure mapping that never distinguishes tenants (§20).</summary>
+    private IActionResult MapFailure<T>(ApiResponse<T> result) => result.Error?.Code switch
+    {
+        "NOT_FOUND" => NotFound(result),
+        "MODULE_DISABLED" or "FORBIDDEN" => StatusCode(StatusCodes.Status403Forbidden, result),
+        "DESIGN_LIMIT_REACHED" => StatusCode(StatusCodes.Status429TooManyRequests, result),
+        "CONFLICT" => StatusCode(StatusCodes.Status409Conflict, result),
+        _ => BadRequest(result)
+    };
 
     private Guid? GetUserId()
     {

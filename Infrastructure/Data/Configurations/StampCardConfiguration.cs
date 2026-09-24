@@ -40,9 +40,19 @@ public class StampCardConfiguration : IEntityTypeConfiguration<StampCard>
         builder.Property(e => e.CardDesignId).HasColumnName("card_design_id");
         builder.Property(e => e.CreatedAt).HasColumnName("created_at");
 
+        // Rules versioning (see StampCardRulesChange / CardRulesPolicy).
+        builder.Property(e => e.RulesVersion)
+            .HasColumnName("rules_version")
+            .HasDefaultValue(1);
+        builder.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+
         builder.ToTable(t =>
         {
             t.HasCheckConstraint("chk_stamp_card_stamps_required_positive", "\"stamps_required\" > 0");
+            t.HasCheckConstraint("chk_stamp_card_rules_version_positive", "\"rules_version\" >= 1");
+            t.HasCheckConstraint(
+                "chk_stamp_card_reward_value_non_negative",
+                "\"reward_value\" >= 0");
         });
 
         builder.HasIndex(e => e.ProgramId);

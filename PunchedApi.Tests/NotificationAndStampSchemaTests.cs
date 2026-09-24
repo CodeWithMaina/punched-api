@@ -36,11 +36,28 @@ public class NotificationAndStampSchemaTests
         Assert.NotNull(t.GetProperty("StampsCount"));
         Assert.NotNull(t.GetProperty("IsRead"));
         Assert.NotNull(t.GetProperty("CreatedAt")); // inherited from BaseEntity
+        Assert.NotNull(t.GetProperty("PayloadJson"));
+        Assert.NotNull(t.GetProperty("ArchivedAt"));
+        Assert.Equal(typeof(string), t.GetProperty("PayloadJson")!.PropertyType);
+        Assert.Equal(typeof(DateTime?), t.GetProperty("ArchivedAt")!.PropertyType);
 
         Assert.Equal(typeof(Guid), t.GetProperty("UserId")!.PropertyType);
         Assert.Equal(typeof(Guid?), t.GetProperty("BusinessId")!.PropertyType);
         Assert.Equal(typeof(bool), t.GetProperty("IsRead")!.PropertyType);
         Assert.Equal(typeof(int), t.GetProperty("StampsCount")!.PropertyType);
+    }
+
+    [Fact]
+    public void NotificationPreference_Entity_HasSparseOverrideSchema()
+    {
+        var type = typeof(NotificationPreference);
+        Assert.NotNull(type.GetProperty("UserId"));
+        Assert.NotNull(type.GetProperty("BusinessId"));
+        Assert.NotNull(type.GetProperty("Category"));
+        Assert.NotNull(type.GetProperty("Channel"));
+        Assert.NotNull(type.GetProperty("Enabled"));
+        Assert.NotNull(type.GetProperty("CreatedAt"));
+        Assert.NotNull(type.GetProperty("UpdatedAt"));
     }
 
     [Fact]

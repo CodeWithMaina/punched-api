@@ -58,6 +58,24 @@ public static partial class CardTemplateRenderer
         /// <summary>Filled-class / empty-class CSS names configured by the template author.</summary>
         public string FilledClass { get; set; } = "filled";
         public string EmptyClass { get; set; } = "empty";
+
+        /// <summary>
+        /// Short glyph rendered inside an unearned stamp slot. Null/empty leaves
+        /// the slot blank (the historical behaviour).
+        /// </summary>
+        public string? StampEmptyGlyph { get; set; }
+
+        /// <summary>Short glyph rendered inside an earned stamp slot.</summary>
+        public string? StampCompletedGlyph { get; set; }
+
+        /// <summary>
+        /// App-relative URL of the unearned stamp icon (an uploaded
+        /// <see cref="Domain.Entities.CardAsset"/>), or null when none is configured.
+        /// </summary>
+        public string? StampEmptyIconUrl { get; set; }
+
+        /// <summary>App-relative URL of the earned stamp icon, or null.</summary>
+        public string? StampCompletedIconUrl { get; set; }
     }
 
     /// <summary>
@@ -83,7 +101,13 @@ public static partial class CardTemplateRenderer
                 sb.Append(body
                     .Replace("{{position}}", position.ToString())
                     .Replace("{{status}}", filled ? context.FilledClass : context.EmptyClass)
-                    .Replace("{{filled}}", filled ? "true" : "false"));
+                    .Replace("{{filled}}", filled ? "true" : "false")
+                    .Replace("{{glyph}}", WebUtility.HtmlEncode(
+                        (filled ? context.StampCompletedGlyph : context.StampEmptyGlyph) ?? string.Empty))
+                    .Replace("{{icon}}", WebUtility.HtmlEncode(
+                        (filled ? context.StampCompletedIconUrl : context.StampEmptyIconUrl) ?? string.Empty))
+                    .Replace("{{iconTag}}", BuildStampIconTag(
+                        filled ? context.StampCompletedIconUrl : context.StampEmptyIconUrl)));
             }
             return sb.ToString();
         });
@@ -129,5 +153,24 @@ public static partial class CardTemplateRenderer
               .Append("\"></span>");
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Builds the markup emitted by <c>{{iconTag}}</c> inside a
+    /// <c>{{#each stamps}}</c> block.
+    ///
+    /// The URL is application-controlled (derived from a validated
+    /// <see cref="Domain.Entities.CardAsset"/> id, never from an author string) and
+    /// is re-checked against <see cref="CardTemplateSanitizer.IsSafeUrl"/> before
+    /// being emitted, so this variable can never become an injection point. When no
+    /// icon is configured it resolves to the empty string and the author's glyph or
+    /// colour fallback is used instead.
+    /// </summary>
+    private static string BuildStampIconTag(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !CardTemplateSanitizer.IsSafeUrl(url))
+            return string.Empty;
+
+        return "<img src=\"" + WebUtility.HtmlEncode(url) + "\" alt=\"\" />";
     }
 }

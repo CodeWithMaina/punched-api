@@ -56,6 +56,9 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Repository for Notification entities.</summary>
     IRepository<Notification> Notifications { get; }
 
+    /// <summary>Repository for NotificationPreference entities.</summary>
+    IRepository<NotificationPreference> NotificationPreferences { get; }
+
     /// <summary>Repository for StaffInvitation entities.</summary>
     IRepository<StaffInvitation> StaffInvitations { get; }
 
@@ -89,6 +92,15 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Repository for CardDesign entities.</summary>
     IRepository<CardDesign> CardDesigns { get; }
 
+    /// <summary>Repository for the immutable card-design presentation history.</summary>
+    IRepository<CardDesignVersion> CardDesignVersions { get; }
+
+    /// <summary>Repository for uploaded card branding assets.</summary>
+    IRepository<CardAsset> CardAssets { get; }
+
+    /// <summary>Repository for the stamp-card business-rule change audit trail.</summary>
+    IRepository<StampCardRulesChange> StampCardRulesChanges { get; }
+
     /// <summary>Repository for LoyaltyEarningRule entities.</summary>
     IRepository<LoyaltyEarningRule> LoyaltyEarningRules { get; }
 
@@ -101,6 +113,14 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Repository for RewardEntitlement entities.</summary>
     IRepository<RewardEntitlement> RewardEntitlements { get; }
 
+    /// <summary>Repository for Payment entities.</summary>
+    IRepository<Payment> Payments { get; }
+    /// <summary>Repository for PaymentAttempt entities.</summary>
+    IRepository<PaymentAttempt> PaymentAttempts { get; }
+    /// <summary>Repository for PaymentCallback entities.</summary>
+    IRepository<PaymentCallback> PaymentCallbacks { get; }
+    /// <summary>Repository for BusinessPaymentConfig entities.</summary>
+    IRepository<BusinessPaymentConfig> BusinessPaymentConfigs { get; }
     /// <summary>
     /// Commits all pending changes to the database.
     /// </summary>

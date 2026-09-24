@@ -119,6 +119,17 @@ public class AdminCardDesignController : ControllerBase
         };
     }
 
+    /// <summary>Append-only presentation history of a design (audit / rollback support).</summary>
+    [HttpGet("v1/admin/card-designs/{designId:guid}/versions")]
+    [ProducesResponseType(typeof(ApiResponse<List<CardDesignVersionResponse>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetCardDesignVersions(Guid designId)
+    {
+        var result = await _cardDesignService.GetVersionsForAdminAsync(designId);
+        if (result.Success) return Ok(result);
+        return result.Error?.Code == "NOT_FOUND" ? NotFound(result) : BadRequest(result);
+    }
+
     /// <summary>
     /// Renders a design (raw HTML and/or a saved design) with safe sample data
     /// for the chosen business — **before** the row is persisted (plan §6, §8).

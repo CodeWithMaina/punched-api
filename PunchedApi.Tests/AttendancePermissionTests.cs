@@ -203,7 +203,7 @@ public class AttendancePermissionTests
     // ── §9.6 error-code → HTTP mapping (controller switch) ────
 
     [Fact]
-    public void Controller_ErrorSwitch_ProducesTheSection96Statuses()
+    public async Task Controller_ErrorSwitch_ProducesTheSection96Statuses()
     {
         var codes = new (string Code, int Status)[]
         {
@@ -223,7 +223,7 @@ public class AttendancePermissionTests
             controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
             controller.ControllerContext.HttpContext.User = ClaimsWithUserId(Guid.NewGuid());
 
-            var action = controller.ClockIn(new AttendanceClockRequest { Token = "punched:attendance:v1:x" }).Result;
+            var action = await controller.ClockIn(new AttendanceClockRequest { Token = "punched:attendance:v1:x" });
 
             Assert.Equal(status, action switch
             {
@@ -235,7 +235,7 @@ public class AttendancePermissionTests
     }
 
     [Fact]
-    public void Controller_Success_Returns200()
+    public async Task Controller_Success_Returns200()
     {
         var service = new StubAttendanceService(ApiResponse<AttendanceStatusResponse>.Ok(new AttendanceStatusResponse
         {
@@ -245,7 +245,7 @@ public class AttendancePermissionTests
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
         controller.ControllerContext.HttpContext.User = ClaimsWithUserId(Guid.NewGuid());
 
-        var action = controller.ClockIn(new AttendanceClockRequest { Token = "punched:attendance:v1:x" }).Result;
+        var action = await controller.ClockIn(new AttendanceClockRequest { Token = "punched:attendance:v1:x" });
         var ok = Assert.IsType<OkObjectResult>(action);
         Assert.True(((ApiResponse<AttendanceStatusResponse>)ok.Value!).Success);
     }

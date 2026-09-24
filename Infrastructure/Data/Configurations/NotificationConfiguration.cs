@@ -19,6 +19,14 @@ public class NotificationConfiguration : IEntityTypeConfiguration<Notification>
         builder.Property(x => x.IsRead).HasColumnName("is_read");
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
 
+        // Phase 1 additions: structured display payload + archive marker.
+        builder.Property(x => x.PayloadJson)
+            .HasColumnName("payload_json")
+            .HasColumnType("jsonb")
+            .HasDefaultValue("{}");
+
+        builder.Property(x => x.ArchivedAt).HasColumnName("archived_at");
+
         builder.HasOne<User>()
             .WithMany()
             .HasForeignKey(x => x.UserId)
@@ -31,5 +39,10 @@ public class NotificationConfiguration : IEntityTypeConfiguration<Notification>
 
         builder.HasIndex(x => new { x.UserId, x.IsRead });
         builder.HasIndex(x => new { x.UserId, x.CreatedAt });
+
+        // Unread badge + inbox list hot path (partial — only unread rows).
+        builder.HasIndex(x => new { x.UserId, x.IsRead, x.CreatedAt })
+            .HasDatabaseName("ix_notification_inbox_user_unread")
+            .HasFilter("\"is_read\" = FALSE");
     }
 }

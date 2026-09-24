@@ -20,4 +20,24 @@ public interface INotificationsService
     /// deep-link to the affected appointment (reschedule requests/decisions).
     /// </summary>
     Task CreateAsync(Guid userId, Guid? businessId, string type, Guid appointmentId, int stampsCount = 0);
+
+    // ── Inbox read model (Phase 1 of the notification module) ────────────────
+    // These are additive: the creation methods above stay byte-for-byte
+    // compatible and now delegate to INotificationService.SendAsync.
+
+    /// <summary>
+    /// Unread count for the caller's inbox — a badge no longer needs to fetch up
+    /// to 50 rows to compute it.
+    /// </summary>
+    Task<int> GetUnreadCountAsync(Guid userId);
+
+    /// <summary>
+    /// Marks one notification read. Returns <c>false</c> when the row does not
+    /// exist or belongs to another user, so the caller can answer 404 instead of
+    /// leaking existence.
+    /// </summary>
+    Task<bool> MarkReadByIdAsync(Guid userId, Guid notificationId);
+
+    /// <summary>Marks every unread notification of the caller read; returns how many changed.</summary>
+    Task<int> MarkAllReadAsync(Guid userId);
 }

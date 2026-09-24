@@ -30,4 +30,17 @@ public class Notification : BaseEntity
 
     /// <summary>Whether the user has dismissed/read this notification.</summary>
     public bool IsRead { get; set; } = false;
+
+    /// <summary>
+    /// Display payload (<c>jsonb</c>, defaults to <c>{}</c>) so the row renders
+    /// without a join — e.g. <c>{businessName, appointmentId, stamps}</c>.
+    /// Populated by <c>INotificationService.SendAsync</c> from the request data.
+    /// </summary>
+    public string PayloadJson { get; set; } = "{}";
+
+    /// <summary>
+    /// Set when the user archives the row. Archived rows leave the default
+    /// inbox list without a status enum.
+    /// </summary>
+    public DateTime? ArchivedAt { get; set; }
 }

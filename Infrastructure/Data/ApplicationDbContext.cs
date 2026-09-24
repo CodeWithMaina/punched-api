@@ -41,6 +41,10 @@ public class ApplicationDbContext : DbContext
     public DbSet<ServiceCatalogItem> ServiceCatalogItems => Set<ServiceCatalogItem>();
     public DbSet<StaffServiceAssignment> StaffServiceAssignments => Set<StaffServiceAssignment>();
     public DbSet<Notification> Notifications => Set<Notification>();
+
+    /// <summary>Sparse preference overrides (business kill-switches + user overrides).</summary>
+    public DbSet<NotificationPreference> NotificationPreferences => Set<NotificationPreference>();
+
     public DbSet<RescheduleRequest> RescheduleRequests => Set<RescheduleRequest>();
     public DbSet<StaffInvitation> StaffInvitations => Set<StaffInvitation>();
     public DbSet<Module> Modules => Set<Module>();
@@ -53,8 +57,18 @@ public class ApplicationDbContext : DbContext
     public DbSet<SubscriptionAuditLog> SubscriptionAuditLogs => Set<SubscriptionAuditLog>();
     public DbSet<StampCard> StampCards => Set<StampCard>();
     public DbSet<CardDesign> CardDesigns => Set<CardDesign>();
+    public DbSet<CardDesignVersion> CardDesignVersions => Set<CardDesignVersion>();
+    public DbSet<CardAsset> CardAssets => Set<CardAsset>();
+    public DbSet<StampCardRulesChange> StampCardRulesChanges => Set<StampCardRulesChange>();
     public DbSet<CustomerBusinessEnrollment> CustomerBusinessEnrollments => Set<CustomerBusinessEnrollment>();
     public DbSet<CustomerStampCard> CustomerStampCards => Set<CustomerStampCard>();
+
+
+    // ── Payments module (direct-to-business payments) ──────
+    public DbSet<Payment> Payments => Set<Payment>();
+    public DbSet<PaymentAttempt> PaymentAttempts => Set<PaymentAttempt>();
+    public DbSet<PaymentCallback> PaymentCallbacks => Set<PaymentCallback>();
+    public DbSet<BusinessPaymentConfig> BusinessPaymentConfigs => Set<BusinessPaymentConfig>();
 
     // ── Attendance module ─────────────────────────────────────
     public DbSet<AttendancePolicy> AttendancePolicies => Set<AttendancePolicy>();

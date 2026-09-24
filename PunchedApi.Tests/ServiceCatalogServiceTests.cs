@@ -120,7 +120,9 @@ public class ServiceCatalogServiceTests
         var pub = await env.Service.GetServicesForBusinessAsync(env.Business.Id);
         Assert.True(pub.Success, pub.Error?.Message);
         Assert.Single(pub.Data!);
-        Assert.Equal(active.Data!.Id, pub.Data[0].Id);
+        Assert.NotNull(active.Data);
+        Assert.NotNull(pub.Data);
+        Assert.Equal(active.Data.Id, pub.Data[0].Id);
 
         var mine = await env.Service.GetMyServicesAsync(env.Owner.Id);
         Assert.True(mine.Success, mine.Error?.Message);

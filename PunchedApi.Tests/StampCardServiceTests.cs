@@ -12,7 +12,7 @@ namespace PunchedApi.Tests;
 /// Integration-style tests for stamp card + card design management using an
 /// in-memory SQLite database (same provider family as production).
 /// </summary>
-public class StampCardServiceTests
+public class StampCardServiceTests : IDisposable
 {
     private readonly Guid _ownerId = Guid.NewGuid();
     private readonly Guid _businessId = Guid.NewGuid();
@@ -208,7 +208,7 @@ public class StampCardServiceTests
         Assert.False(result.Success);
     }
 
-    public void Dispose()
+    void IDisposable.Dispose()
     {
         _context.Database.CloseConnection();
         _context.Dispose();

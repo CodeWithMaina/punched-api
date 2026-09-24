@@ -6,7 +6,32 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>PunchedApi</RootNamespace>
     <UserSecretsId>punched-api-secrets</UserSecretsId>
+
+    <!--
+      PERFORMANCE/RECURSION FIX: the test project lives inside this project's
+      directory. Without this, every default item glob (Compile, Content, None,
+      EmbeddedResource, ...) enumerates PunchedApi.Tests\bin\** — a self-amplifying
+      copy loop grew that tree to 45k+ files / 1.9 GB / depth 396, and every MSBuild
+      evaluation (build, restore, design-time, watch) traversed it.
+      seed-report.json is a runtime-generated report (Seed.ReportPath); excluding it
+      prevents a dotnet-watch rebuild loop when seeding is enabled.
+    -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);PunchedApi.Tests\**;seed-report.json</DefaultItemExcludes>
   </PropertyGroup>
+
+  <!--
+    Belt-and-braces: the Web SDK's JSON content glob may not honor
+    DefaultItemExcludes; Remove after Include guarantees no test-project file
+    (especially PunchedApi.Tests\bin\**\*.json) is ever copied into this
+    project's output with a preserved relative path.
+  -->
+  <ItemGroup>
+    <Compile Remove="PunchedApi.Tests\**" />
+    <Content Remove="PunchedApi.Tests\**" />
+    <EmbeddedResource Remove="PunchedApi.Tests\**" />
+    <None Remove="PunchedApi.Tests\**" />
+    <Folder Remove="PunchedApi.Tests\**" />
+  </ItemGroup>
 
   <!-- Entity Framework Core + PostgreSQL -->
   <ItemGroup>
@@ -20,12 +45,6 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-  </ItemGroup>
-  
-  <ItemGroup>
-    <Compile Remove="PunchedApi.Tests\**" />
-    <EmbeddedResource Remove="PunchedApi.Tests\**" />
-    <None Remove="PunchedApi.Tests\**" />
   </ItemGroup>
 
   <!-- Authentication & Security -->

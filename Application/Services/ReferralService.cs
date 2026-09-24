@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Loyalty;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -261,6 +262,12 @@ public partial class ReferralService : IReferralService
                     EnrolledAt = now,
                     CreatedAt = now
                 };
+                // Same enrollment snapshot rule as LoyaltyService.EnrollAsync (§36).
+                LoyaltyCardSnapshot.Apply(
+                    card,
+                    activeProgram,
+                    await LoyaltyCardSnapshot.ResolveDefaultStampCardAsync(_unitOfWork, activeProgram.Id),
+                    now);
                 await _unitOfWork.LoyaltyCards.AddAsync(card);
                 enrolled = true;
 
