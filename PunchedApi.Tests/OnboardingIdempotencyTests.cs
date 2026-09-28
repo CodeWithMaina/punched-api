@@ -63,7 +63,12 @@ public class OnboardingIdempotencyTests
             emailMock.Object,
             CreateMapper(),
             TestHelpers.CreateLogger<AuthService>(),
-            new SubscriptionProvisioningService(context, TestHelpers.CreateLogger<SubscriptionProvisioningService>()));
+            new SubscriptionProvisioningService(context, TestHelpers.CreateLogger<SubscriptionProvisioningService>()),
+            new BusinessSlugGenerator(context),
+            // Tenant-aware auth: real membership view over Owner/Staff/Enrollment;
+            // host resolution is never exercised without a businessSlug here.
+            new BusinessMembershipResolver(context),
+            new Mock<ITenantHostResolver>().Object);
     }
 
     private static InvitationService CreateInvitationService(ApplicationDbContext context)

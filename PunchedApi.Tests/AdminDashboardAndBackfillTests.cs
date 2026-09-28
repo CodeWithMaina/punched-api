@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Moq;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Programs;
 using PunchedApi.Application.Services;
+using PunchedApi.Application.Settings;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -45,6 +47,9 @@ public class AdminDashboardAndBackfillTests
             new SegmentationService(context, TestHelpers.CreateLogger<SegmentationService>()),
             new LoyaltyService(new UnitOfWork(context), context, new Mock<IStampService>().Object, new ProgramRuleEngine(),
                 new Mock<ICardDesignService>().Object, new Mock<ICardDesignResolver>().Object, TestHelpers.CreateLogger<LoyaltyService>()),
+            // Projections build Slug/TenantUrl through the real URL builder so
+            // admin Business URL assertions see production-shaped values.
+            new TenantUrlBuilder(Options.Create(new PublicAppSettings { BaseUrl = "http://localhost:3000" })),
             TestHelpers.CreateLogger<AdminService>());
 [Fact]
     public async Task AdminDashboardAsync_IncludesChurnedBusinessesCount()
