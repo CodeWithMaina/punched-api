@@ -18,6 +18,9 @@ public class ApplicationDbContext : DbContext
     public DbSet<User> Users => Set<User>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<Business> Businesses => Set<Business>();
+
+    /// <summary>Superseded subdomain slugs — old URLs resolve through this table.</summary>
+    public DbSet<BusinessSlugHistory> BusinessSlugHistories => Set<BusinessSlugHistory>();
     public DbSet<LoyaltyProgram> LoyaltyPrograms => Set<LoyaltyProgram>();
     public DbSet<LoyaltyCard> LoyaltyCards => Set<LoyaltyCard>();
     public DbSet<QrToken> QrTokens => Set<QrToken>();
@@ -59,6 +62,11 @@ public class ApplicationDbContext : DbContext
     public DbSet<CardDesign> CardDesigns => Set<CardDesign>();
     public DbSet<CardDesignVersion> CardDesignVersions => Set<CardDesignVersion>();
     public DbSet<CardAsset> CardAssets => Set<CardAsset>();
+    public DbSet<Media> Media => Set<Media>();
+    public DbSet<BusinessMedia> BusinessMedia => Set<BusinessMedia>();
+    public DbSet<ServiceMedia> ServiceMedia => Set<ServiceMedia>();
+    public DbSet<LoyaltyProgramMedia> LoyaltyProgramMedia => Set<LoyaltyProgramMedia>();
+    public DbSet<ReviewMedia> ReviewMedia => Set<ReviewMedia>();
     public DbSet<StampCardRulesChange> StampCardRulesChanges => Set<StampCardRulesChange>();
     public DbSet<CustomerBusinessEnrollment> CustomerBusinessEnrollments => Set<CustomerBusinessEnrollment>();
     public DbSet<CustomerStampCard> CustomerStampCards => Set<CustomerStampCard>();
@@ -93,5 +101,11 @@ public class ApplicationDbContext : DbContext
         // Global filters ensure soft-deleted records are excluded from normal app flows.
         modelBuilder.Entity<User>().HasQueryFilter(u => !u.IsDeleted);
         modelBuilder.Entity<Business>().HasQueryFilter(b => !b.IsDeleted);
+
+        modelBuilder.Entity<BusinessMedia>()
+            .HasIndex(x => x.BusinessId)
+            .IsUnique()
+            .HasFilter("\"is_featured\" = true")
+            .HasDatabaseName("ux_business_media_one_featured");
     }
 }

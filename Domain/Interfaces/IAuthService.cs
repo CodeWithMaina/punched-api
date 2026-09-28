@@ -37,7 +37,14 @@ public interface IAuthService
     /// Rotates refresh token — issues new access + refresh tokens.
     /// Revokes the old refresh token.
     /// </summary>
-    Task<ApiResponse<TokenResponse>> RefreshTokenAsync(string refreshToken);
+    /// <param name="refreshToken">The refresh token value being rotated.</param>
+    /// <param name="businessSlug">
+    /// Optional tenant context for the origin the refresh came from: the server
+    /// re-resolves it and re-verifies membership before re-issuing
+    /// <c>biz</c>/<c>bizRole</c>, so tenant context is reconstructed (never
+    /// blindly carried) and cannot outlive a membership change.
+    /// </param>
+    Task<ApiResponse<TokenResponse>> RefreshTokenAsync(string refreshToken, string? businessSlug = null);
 
     /// <summary>
     /// Logs out by revoking all refresh tokens for the user.

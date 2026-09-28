@@ -156,6 +156,22 @@ public class AdminBusinessSummary
     [JsonPropertyName("programCount")]
     public int ProgramCount { get; set; }
 
+    /// <summary>
+    /// Canonical subdomain label (\"java-house\" → java-house.punched.app).
+    /// Null only for a legacy row the slug backfill has not provisioned yet —
+    /// the admin Business URL surface treats null as \"URL pending\" and never
+    /// fabricates an address.
+    /// </summary>
+    [JsonPropertyName("slug")]
+    public string? Slug { get; set; }
+
+    /// <summary>
+    /// Canonical absolute tenant URL (https://{slug}.{root}). Null when
+    /// <see cref="Slug"/> is missing/invalid — callers must not fabricate one.
+    /// </summary>
+    [JsonPropertyName("tenantUrl")]
+    public string? TenantUrl { get; set; }
+
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
 

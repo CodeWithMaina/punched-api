@@ -7,6 +7,22 @@ public interface IBusinessService
     Task<ApiResponse<BusinessResponse>> CreateBusinessAsync(Guid ownerId, CreateBusinessRequest request);
     Task<ApiResponse<BusinessResponse>> GetMyBusinessAsync(Guid ownerId);
     Task<ApiResponse<BusinessResponse>> UpdateMyBusinessAsync(Guid ownerId, UpdateBusinessRequest request);
+
+    /// <summary>
+    /// Changes the owner's business subdomain slug (settings → Business URL).
+    /// Validates format/reserved/availability server-side and archives the
+    /// previous slug so old URLs redirect. Error codes: SLUG_INVALID,
+    /// SLUG_RESERVED, SLUG_TAKEN, NOT_FOUND.
+    /// </summary>
+    Task<ApiResponse<BusinessResponse>> UpdateMyBusinessSlugAsync(Guid ownerId, UpdateBusinessSlugRequest request);
+
+    /// <summary>
+    /// Resolves a subdomain address to its business — the server-side source
+    /// of truth for host → tenant mapping. Reports moved=true + the canonical
+    /// slug when the address is a superseded slug that should redirect.
+    /// </summary>
+    Task<ApiResponse<TenantResolutionResponse>> ResolveBySlugAsync(string slug);
+
     Task<ApiResponse<BusinessResponse>> GetBusinessByIdAsync(Guid businessId);
     Task<ApiResponse<PublicBusinessProfileResponse>> GetPublicProfileAsync(Guid businessId);
     Task<ApiResponse<PaginatedResponse<BusinessResponse>>> ListBusinessesAsync(string? category, string? search, int page, int pageSize);

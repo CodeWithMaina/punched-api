@@ -35,6 +35,7 @@ public class User : BaseEntity
     /// </summary>
     [MaxLength(500)]
     public string? AvatarUrl { get; set; }
+    public Guid? AvatarMediaId { get; set; }
 
     /// <summary>
     /// Optional date of birth. Stored as UTC date only.

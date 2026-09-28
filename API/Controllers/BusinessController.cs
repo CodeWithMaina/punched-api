@@ -44,9 +44,12 @@ public partial class BusinessController : ControllerBase
     }
 
     /// <summary>
-    /// List all businesses (public, paginated, optional category + search filter).
+    /// List all businesses (directory). Paginated directory projection —
+    /// same sanitized shape as the public profile, so directory reads never
+    /// expose private business information.
     /// </summary>
     [HttpGet]
+    [AllowAnonymous]
     [ProducesResponseType(typeof(ApiResponse<List<BusinessResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> ListBusinesses(
         [FromQuery] string? category,
@@ -61,9 +64,14 @@ public partial class BusinessController : ControllerBase
     }
 
     /// <summary>
-    /// Get a business by ID (public).
+    /// Legacy business-by-ID read. Authenticated-only: returns the full
+    /// <see cref="BusinessResponse"/> (contact + operational fields) for
+    /// signed-in callers. Anonymous storefront callers must use
+    /// GET public/{businessId}, which returns the sanitized allow-listed
+    /// <see cref="PublicBusinessProfileResponse"/> instead.
     /// </summary>
     [HttpGet("{businessId:guid}")]
+    [Authorize]
     [ProducesResponseType(typeof(ApiResponse<BusinessResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetBusiness(Guid businessId)
@@ -142,6 +150,45 @@ public partial class BusinessController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// Change the authenticated owner's business subdomain slug (settings →
+    /// Business URL). Validates format/reserved/availability server-side;
+    /// previous slugs are archived and keep redirecting to the new address.
+    /// </summary>
+    [HttpPut("me/slug")]
+    [Authorize(Roles = "Business")]
+    [ProducesResponseType(typeof(ApiResponse<BusinessResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> UpdateMyBusinessSlug([FromBody] UpdateBusinessSlugRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _businessService.UpdateMyBusinessSlugAsync(userId.Value, request);
+        if (!result.Success) return MapFailure(result);
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// Resolve a subdomain address to its business — the host → tenant
+    /// mapping used by the frontend. Matches current slugs first, then
+    /// superseded slugs (moved=true + canonical slug → redirect). Public:
+    /// only exposes the business id, canonical slug and name, which the
+    /// public business directory already lists.
+    /// </summary>
+    [HttpGet("by-slug/{slug}")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<TenantResolutionResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> ResolveBySlug(string slug)
+    {
+        var result = await _businessService.ResolveBySlugAsync(slug);
+        if (!result.Success) return NotFound(result);
+        return Ok(result);
+    }
+
 
 
 
@@ -216,7 +263,9 @@ public partial class BusinessController : ControllerBase
         {
             "NOT_FOUND" or "SERVICE_NOT_FOUND" or "STAFF_NOT_FOUND" or "CUSTOMER_NOT_FOUND" => NotFound(result),
             "FORBIDDEN" or "MODULE_DISABLED" => StatusCode(StatusCodes.Status403Forbidden, result),
-            "OVERBOOKING" or "SLOT_UNAVAILABLE" or "INVALID_STATUS_TRANSITION" => Conflict(result),
+            "OVERBOOKING" or "SLOT_UNAVAILABLE" or "INVALID_STATUS_TRANSITION" or
+            // Slug change lost the unique-index race (another owner claimed it).
+            "SLUG_TAKEN" => Conflict(result),
             // Attendance owner surface (§9.6): state/availability conflicts map to 409 so the
             // declarative client (one primary action, §5.4) can explain them, not retry them.
             "ALREADY_CLOCKED_IN" or "NOT_CLOCKED_IN" or "ATTENDANCE_DISABLED" or

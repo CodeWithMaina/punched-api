@@ -53,6 +53,8 @@ public class Business : BaseEntity
     /// </summary>
     [MaxLength(500)]
     public string? LogoUrl { get; set; }
+    public Guid? LogoMediaId { get; set; }
+    public Guid? CoverMediaId { get; set; }
 
     /// <summary>
     /// M-Pesa paybill or till number for reward payouts.
@@ -60,6 +62,21 @@ public class Business : BaseEntity
     [Required]
     [MaxLength(20)]
     public string MpesaNumber { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Unique, URL-safe address label used for the business subdomain
+    /// (e.g. "java-house" → java-house.punched.app). Lowercase letters,
+    /// numbers and hyphens only; no leading/trailing hyphen; max 63
+    /// characters (DNS label limit). Null only for legacy rows until the
+    /// startup backfill (<c>IBusinessSlugBackfill</c>) assigns one — every
+    /// business created after this feature ships gets a slug at creation.
+    /// The column stays nullable at the database level (unique-indexed) so
+    /// an older app version can still insert rows during a rolling deploy;
+    /// the backfill fills those on the next boot. Application code treats
+    /// the slug as required for every active business.
+    /// </summary>
+    [MaxLength(63)]
+    public string? Slug { get; set; }
 
     /// <summary>
     /// FK to the User who owns/manages this business.

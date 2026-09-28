@@ -34,6 +34,7 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(e => e.AvatarUrl)
             .HasMaxLength(500)
             .HasColumnName("avatar_url");
+        builder.Property(e => e.AvatarMediaId).HasColumnName("avatar_media_id");
 
         builder.Property(e => e.SourceProvider)
             .HasMaxLength(30)
@@ -64,6 +65,12 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.HasIndex(e => new { e.FullName, e.Email });
         builder.HasIndex(e => e.StaffBusinessId);
         builder.HasIndex(e => e.IsDeleted);
+        builder.HasIndex(e => e.AvatarMediaId);
+
+        builder.HasOne<Media>()
+            .WithMany()
+            .HasForeignKey(e => e.AvatarMediaId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         // 1:1 with UserAuth via email
         builder.HasOne(e => e.Auth)

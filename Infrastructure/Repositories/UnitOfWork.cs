@@ -44,6 +44,11 @@ public class UnitOfWork : IUnitOfWork
     private IRepository<CardDesign>? _cardDesigns;
     private IRepository<CardDesignVersion>? _cardDesignVersions;
     private IRepository<CardAsset>? _cardAssets;
+    private IRepository<Media>? _media;
+    private IRepository<BusinessMedia>? _businessMedia;
+    private IRepository<ServiceMedia>? _serviceMedia;
+    private IRepository<LoyaltyProgramMedia>? _loyaltyProgramMedia;
+    private IRepository<ReviewMedia>? _reviewMedia;
     private IRepository<StampCardRulesChange>? _stampCardRulesChanges;
     private IRepository<LoyaltyEarningRule>? _loyaltyEarningRules;
     private IRepository<StampTransaction>? _stampTransactions;
@@ -169,6 +174,12 @@ public class UnitOfWork : IUnitOfWork
     /// <inheritdoc />
     public IRepository<CardAsset> CardAssets =>
         _cardAssets ??= new Repository<CardAsset>(_context);
+
+    public IRepository<Media> Media => _media ??= new Repository<Media>(_context);
+    public IRepository<BusinessMedia> BusinessMedia => _businessMedia ??= new Repository<BusinessMedia>(_context);
+    public IRepository<ServiceMedia> ServiceMedia => _serviceMedia ??= new Repository<ServiceMedia>(_context);
+    public IRepository<LoyaltyProgramMedia> LoyaltyProgramMedia => _loyaltyProgramMedia ??= new Repository<LoyaltyProgramMedia>(_context);
+    public IRepository<ReviewMedia> ReviewMedia => _reviewMedia ??= new Repository<ReviewMedia>(_context);
 
     /// <inheritdoc />
     public IRepository<StampCardRulesChange> StampCardRulesChanges =>

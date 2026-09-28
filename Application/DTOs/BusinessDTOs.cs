@@ -62,6 +62,37 @@ public class UpdateBusinessRequest
     public string? MpesaNumber { get; set; }
 }
 
+/// <summary>
+/// Owner-driven subdomain slug change (PUT /v1/businesses/me/slug).
+/// </summary>
+public class UpdateBusinessSlugRequest
+{
+    [JsonPropertyName("slug")]
+    public string Slug { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Host → tenant resolution result (GET /v1/businesses/by-slug/{slug}).
+/// <see cref="Moved"/> means the address is a superseded slug: the frontend
+/// should redirect the visitor to the canonical <see cref="Slug"/> URL.
+/// </summary>
+public class TenantResolutionResponse
+{
+    [JsonPropertyName("businessId")]
+    public Guid BusinessId { get; set; }
+
+    /// <summary>The business's canonical (current) slug.</summary>
+    [JsonPropertyName("slug")]
+    public string Slug { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>True when the requested address only redirects here.</summary>
+    [JsonPropertyName("moved")]
+    public bool Moved { get; set; }
+}
+
 /// <summary>Sets the business-level default daily goal for staff.</summary>
 public class UpdateBusinessDailyGoalRequest
 {
@@ -92,6 +123,14 @@ public class BusinessResponse
 {
     [JsonPropertyName("id")]
     public Guid Id { get; set; }
+
+    /// <summary>
+    /// Subdomain address label ("java-house" → java-house.punched.app).
+    /// Null only for a legacy row that the startup backfill has not yet
+    /// provisioned; every active business has one.
+    /// </summary>
+    [JsonPropertyName("slug")]
+    public string? Slug { get; set; }
 
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
@@ -560,6 +599,10 @@ public class PublicBusinessProfileResponse
 {
     [JsonPropertyName("id")]
     public Guid Id { get; set; }
+
+    /// <summary>Subdomain address label (null only pre-backfill for legacy rows).</summary>
+    [JsonPropertyName("slug")]
+    public string? Slug { get; set; }
 
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;

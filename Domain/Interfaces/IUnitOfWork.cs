@@ -98,6 +98,12 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Repository for uploaded card branding assets.</summary>
     IRepository<CardAsset> CardAssets { get; }
 
+    IRepository<Media> Media { get; }
+    IRepository<BusinessMedia> BusinessMedia { get; }
+    IRepository<ServiceMedia> ServiceMedia { get; }
+    IRepository<LoyaltyProgramMedia> LoyaltyProgramMedia { get; }
+    IRepository<ReviewMedia> ReviewMedia { get; }
+
     /// <summary>Repository for the stamp-card business-rule change audit trail.</summary>
     IRepository<StampCardRulesChange> StampCardRulesChanges { get; }
 
