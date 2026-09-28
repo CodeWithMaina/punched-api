@@ -13,15 +13,23 @@ public class NotificationsService : INotificationsService
     private readonly ApplicationDbContext _context;
     private readonly ILogger<NotificationsService> _logger;
 
+    /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
+    private readonly ITenantContext? _tenant;
+
     public NotificationsService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
-        ILogger<NotificationsService> logger)
+        ILogger<NotificationsService> logger,
+        ITenantContext? tenant = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
         _logger = logger;
+        _tenant = tenant;
     }
+
+    /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
+    private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
 
     public async Task CreateGoalReachedAsync(Guid userId, Guid? businessId, int stampsCount)
     {
@@ -101,18 +109,26 @@ public class NotificationsService : INotificationsService
     }
 
     /// <inheritdoc />
-    public Task<int> GetUnreadCountAsync(Guid userId) =>
-        _context.Notifications
-            .Where(n => n.UserId == userId && !n.IsRead && n.ArchivedAt == null)
-            .CountAsync();
+    public Task<int> GetUnreadCountAsync(Guid userId)
+    {
+        var query = _context.Notifications
+            .Where(n => n.UserId == userId && !n.IsRead && n.ArchivedAt == null);
+        if (TenantBusinessId is Guid tenantId)
+            query = query.Where(n => n.BusinessId == null || n.BusinessId == tenantId);
+        return query.CountAsync();
+    }
 
     /// <inheritdoc />
     public async Task<bool> MarkReadByIdAsync(Guid userId, Guid notificationId)
     {
         // The user filter is the authorization check: another user's row is
         // indistinguishable from a missing one.
-        var notification = await _context.Notifications
-            .FirstOrDefaultAsync(n => n.Id == notificationId && n.UserId == userId);
+        var notifQuery = _context.Notifications
+            .Where(n => n.Id == notificationId && n.UserId == userId);
+        if (TenantBusinessId is Guid tenantId)
+            notifQuery = notifQuery.Where(n => n.BusinessId == null || n.BusinessId == tenantId);
+
+        var notification = await notifQuery.FirstOrDefaultAsync();
 
         if (notification == null) return false;
 
@@ -149,6 +165,8 @@ public class NotificationsService : INotificationsService
             .Where(n => n.UserId == userId)
             .Where(n => n.ArchivedAt == null) // archived rows leave the default list
             .AsNoTracking();
+        if (TenantBusinessId is Guid tenantId)
+            query = query.Where(n => n.BusinessId == null || n.BusinessId == tenantId);
 
         if (unreadOnly)
             query = query.Where(n => !n.IsRead);

@@ -24,6 +24,9 @@ public class AppointmentService : IAppointmentService
     private readonly INotificationsService _notifications;
     private readonly ILogger<AppointmentService> _logger;
 
+    /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
+    private readonly ITenantContext? _tenant;
+
     public AppointmentService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
@@ -31,7 +34,8 @@ public class AppointmentService : IAppointmentService
         IMapper mapper,
         IPermissionService permissionService,
         INotificationsService notifications,
-        ILogger<AppointmentService> logger)
+        ILogger<AppointmentService> logger,
+        ITenantContext? tenant = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
@@ -40,7 +44,11 @@ public class AppointmentService : IAppointmentService
         _permissionService = permissionService;
         _notifications = notifications;
         _logger = logger;
+        _tenant = tenant;
     }
+
+    /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
+    private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
 
     /// <summary>
     /// Fine-grained permission gate (G6): staff members do NOT hold
@@ -83,6 +91,10 @@ public class AppointmentService : IAppointmentService
     public async Task<ApiResponse<AppointmentResponse>> CreateAppointmentAsync(
         Guid callerUserId, string role, CreateAppointmentRequest request)
     {
+        // Tenant narrowing: on a tenant host the request body must target the active tenant.
+        if (TenantBusinessId is Guid activeTenantId && request.BusinessId != activeTenantId)
+            return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "This business is not available on this site.");
+
         // Resolve the caller's tenant business id.
         Guid businessId;
         if (IsRole(role, "Business"))
@@ -149,6 +161,10 @@ public class AppointmentService : IAppointmentService
     public async Task<ApiResponse<AppointmentResponse>> CreateAppointmentOnBehalfAsync(
         Guid callerUserId, string role, CreateAppointmentOnBehalfRequest request)
     {
+        // Tenant narrowing: on a tenant host the request body must target the active tenant.
+        if (TenantBusinessId is Guid activeTenantId && request.BusinessId != activeTenantId)
+            return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "This business is not available on this site.");
+
         Guid businessId;
         if (IsRole(role, "Business"))
         {
@@ -599,6 +615,8 @@ public class AppointmentService : IAppointmentService
             .AsNoTracking()
             .Include(a => a.Resources)
             .Where(a => a.CustomerId == customerId);
+        if (TenantBusinessId is Guid tenantId)
+            query = query.Where(a => a.BusinessId == tenantId);
 
         if (request.BusinessId.HasValue)
             query = query.Where(a => a.BusinessId == request.BusinessId.Value);
@@ -657,9 +675,13 @@ public class AppointmentService : IAppointmentService
     /// </summary>
     public async Task<ApiResponse<CustomerAppointmentFiltersResponse>> GetCustomerAppointmentFiltersAsync(Guid customerId)
     {
-        var appointments = await _context.Appointments
+        var filterQuery = _context.Appointments
             .AsNoTracking()
-            .Where(a => a.CustomerId == customerId)
+            .Where(a => a.CustomerId == customerId);
+        if (TenantBusinessId is Guid tenantId)
+            filterQuery = filterQuery.Where(a => a.BusinessId == tenantId);
+
+        var appointments = await filterQuery
             .Select(a => new { a.BusinessId, a.StaffUserId, a.Id })
             .ToListAsync();
 
@@ -1153,8 +1175,14 @@ public class AppointmentService : IAppointmentService
         return null;
     }
 
-    private Task<Appointment?> LoadAsync(Guid id) =>
-        _context.Appointments.Include(a => a.Resources).FirstOrDefaultAsync(a => a.Id == id);
+    private async Task<Appointment?> LoadAsync(Guid id)
+    {
+        // Tenant narrowing: an appointment outside the active tenant is indistinguishable from a missing one.
+        var query = _context.Appointments.Include(a => a.Resources).Where(a => a.Id == id);
+        if (TenantBusinessId is Guid tenantId)
+            query = query.Where(a => a.BusinessId == tenantId);
+        return await query.FirstOrDefaultAsync();
+    }
 
     /// <summary>
     /// Maps an appointment to its response, deriving updatedAt from the most recent

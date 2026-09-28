@@ -51,12 +51,28 @@ public class JwtTokenService
     /// <param name="userAuth">The authenticated UserAuth entity.</param>
     /// <param name="user">The User profile entity.</param>
     /// <returns>Signed JWT access token string.</returns>
-    public string GenerateAccessToken(UserAuth userAuth, User user)
+    public string GenerateAccessToken(UserAuth userAuth, User user) =>
+        GenerateAccessToken(userAuth, user, null, null);
+
+    /// <summary>
+    /// Generates a JWT access token, optionally carrying the tenant context the
+    /// caller was authenticated in (Phase 4 — tenant JWT claims).
+    ///
+    /// <para><c>biz</c> (business id) and <c>bizRole</c> (Owner/Staff/Customer)
+    /// are <b>optional, additive</b> claims: they let the frontend keep the
+    /// session consistent with the host it is on and let the API detect a
+    /// host↔token mismatch. Legacy tokens without them stay valid forever, so
+    /// this is not a breaking token migration.</para>
+    ///
+    /// The claims are minted only after the server has verified the membership
+    /// (see <c>IBusinessMembershipResolver</c>) — never from client input.
+    /// </summary>
+    public string GenerateAccessToken(UserAuth userAuth, User user, Guid? businessId, string? bizRole)
     {
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_settings.Secret));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
-        var claims = new[]
+        var claims = new List<Claim>
         {
             new Claim(JwtRegisteredClaimNames.Sub, userAuth.Id.ToString()),
             new Claim(JwtRegisteredClaimNames.Email, userAuth.Email),
@@ -65,6 +81,13 @@ public class JwtTokenService
             new Claim("userId", user.Id.ToString()),
             new Claim(ClaimTypes.Role, user.Role.ToString())
         };
+
+        if (businessId.HasValue && businessId.Value != Guid.Empty)
+        {
+            claims.Add(new Claim(TenantClaimNames.BusinessId, businessId.Value.ToString()));
+            if (!string.IsNullOrWhiteSpace(bizRole))
+                claims.Add(new Claim(TenantClaimNames.BusinessRole, bizRole));
+        }
 
         var token = new JwtSecurityToken(
             issuer: _settings.Issuer,

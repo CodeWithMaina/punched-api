@@ -19,6 +19,9 @@ public class LoyaltyService : ILoyaltyService
     private readonly ICardDesignResolver _cardDesignResolver;
     private readonly ILogger<LoyaltyService> _logger;
 
+    /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
+    private readonly ITenantContext? _tenant;
+
     public LoyaltyService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
@@ -26,7 +29,8 @@ public class LoyaltyService : ILoyaltyService
         IProgramRuleEngine ruleEngine,
         ICardDesignService cardDesignService,
         ICardDesignResolver cardDesignResolver,
-        ILogger<LoyaltyService> logger)
+        ILogger<LoyaltyService> logger,
+        ITenantContext? tenant = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
@@ -35,7 +39,11 @@ public class LoyaltyService : ILoyaltyService
         _cardDesignService = cardDesignService;
         _cardDesignResolver = cardDesignResolver;
         _logger = logger;
+        _tenant = tenant;
     }
+
+    /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
+    private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
 
     public async Task<ApiResponse<LoyaltyProgramResponse>> UpsertProgramAsync(Guid ownerId, UpsertLoyaltyProgramRequest request)
     {
@@ -489,6 +497,9 @@ public class LoyaltyService : ILoyaltyService
 
     public async Task<ApiResponse<LoyaltyProgramResponse>> GetProgramAsync(Guid businessId)
     {
+        // Tenant narrowing: programs outside the active tenant are not exposed on this site.
+        if (TenantBusinessId is Guid activeTenantId && businessId != activeTenantId)
+            return ApiResponse<LoyaltyProgramResponse>.Fail("NOT_FOUND", "Business not found.");
         var program = await _unitOfWork.LoyaltyPrograms
             .FirstOrDefaultAsync(p => p.BusinessId == businessId);
 
@@ -506,6 +517,9 @@ public class LoyaltyService : ILoyaltyService
     /// </summary>
     public async Task<ApiResponse<PaginatedResponse<CustomerProgramResponse>>> GetBusinessProgramsAsync(Guid businessId, Guid? customerId, int page, int pageSize)
     {
+        // Tenant narrowing: programs outside the active tenant are not exposed on this site.
+        if (TenantBusinessId is Guid activeTenantId && businessId != activeTenantId)
+            return ApiResponse<PaginatedResponse<CustomerProgramResponse>>.Fail("NOT_FOUND", "Business not found.");
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 50);
         var now = DateTime.UtcNow;
@@ -566,6 +580,9 @@ public class LoyaltyService : ILoyaltyService
 
     public async Task<ApiResponse<LoyaltyCardResponse>> EnrollAsync(Guid customerId, EnrollCardRequest request)
     {
+        // Tenant narrowing: on a tenant host enrolment may only target the active tenant.
+        if (TenantBusinessId is Guid activeTenantId && request.BusinessId != activeTenantId)
+            return ApiResponse<LoyaltyCardResponse>.Fail("FORBIDDEN", "This business is not available on this site.");
         try
         {
             var business = await _context.Businesses
@@ -659,10 +676,14 @@ public class LoyaltyService : ILoyaltyService
 
     public async Task<ApiResponse<List<LoyaltyCardResponse>>> GetMyCardsAsync(Guid customerId)
     {
-        var cards = await _context.LoyaltyCards
+        var cardQuery = _context.LoyaltyCards
             .Include(c => c.Business)
             .Include(c => c.Program)
-            .Where(c => c.CustomerId == customerId)
+            .Where(c => c.CustomerId == customerId);
+        if (TenantBusinessId is Guid tenantId)
+            cardQuery = cardQuery.Where(c => c.BusinessId == tenantId);
+
+        var cards = await cardQuery
             .OrderByDescending(c => c.LastStampAt ?? c.EnrolledAt)
             .ToListAsync();
 
@@ -682,10 +703,14 @@ public class LoyaltyService : ILoyaltyService
 
     public async Task<ApiResponse<LoyaltyCardResponse>> GetCardByIdAsync(Guid customerId, Guid cardId)
     {
-        var card = await _context.LoyaltyCards
+        var cardQuery = _context.LoyaltyCards
             .Include(c => c.Business)
             .Include(c => c.Program)
-            .FirstOrDefaultAsync(c => c.Id == cardId && c.CustomerId == customerId);
+            .Where(c => c.Id == cardId && c.CustomerId == customerId);
+        if (TenantBusinessId is Guid tenantId)
+            cardQuery = cardQuery.Where(c => c.BusinessId == tenantId);
+
+        var card = await cardQuery.FirstOrDefaultAsync();
 
         if (card == null)
             return ApiResponse<LoyaltyCardResponse>.Fail("NOT_FOUND", "Loyalty card not found.");

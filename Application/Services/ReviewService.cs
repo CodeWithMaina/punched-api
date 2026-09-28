@@ -14,16 +14,23 @@ public sealed class ReviewService : IReviewService
     private readonly ApplicationDbContext _context;
     private readonly TimeProvider _timeProvider;
 
-    public ReviewService(ApplicationDbContext context, TimeProvider timeProvider)
+    /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
+    private readonly ITenantContext? _tenant;
+
+    /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
+    private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
+
+    public ReviewService(ApplicationDbContext context, TimeProvider timeProvider, ITenantContext? tenant = null)
     {
         _context = context;
         _timeProvider = timeProvider;
+        _tenant = tenant;
     }
 
     public async Task<ApiResponse<ReviewResponse>> CreateAsync(Guid customerId, CreateReviewRequest request)
     {
         var appointment = await _context.Appointments.AsNoTracking().FirstOrDefaultAsync(a => a.Id == request.AppointmentId);
-        if (appointment == null || appointment.CustomerId != customerId || appointment.Status != "completed")
+        if (appointment == null || appointment.CustomerId != customerId || appointment.Status != "completed" || (TenantBusinessId is Guid activeTenantId && appointment.BusinessId != activeTenantId))
             return NotEligible<ReviewResponse>();
         var completedAt = await CompletionTimeAsync(appointment.Id);
         if (completedAt == null || _timeProvider.GetUtcNow().UtcDateTime > completedAt.Value.Add(SubmissionWindow))
@@ -49,7 +56,7 @@ public sealed class ReviewService : IReviewService
     public async Task<ApiResponse<ReviewEligibilityResponse>> GetAppointmentStateAsync(Guid customerId, Guid appointmentId)
     {
         var appointment = await _context.Appointments.AsNoTracking().FirstOrDefaultAsync(a => a.Id == appointmentId);
-        if (appointment == null || appointment.CustomerId != customerId)
+        if (appointment == null || appointment.CustomerId != customerId || (TenantBusinessId is Guid activeTenantId && appointment.BusinessId != activeTenantId))
             return NotEligible<ReviewEligibilityResponse>();
         var completedAt = await CompletionTimeAsync(appointmentId);
         var review = await _context.Reviews.AsNoTracking().FirstOrDefaultAsync(r => r.CustomerId == customerId && r.AppointmentId == appointmentId);
@@ -67,7 +74,7 @@ public sealed class ReviewService : IReviewService
     }
 
     public Task<ApiResponse<PaginatedResponse<ReviewResponse>>> GetCustomerReviewsAsync(Guid customerId, int page, int pageSize) =>
-        PageAsync(_context.Reviews.AsNoTracking().Where(r => r.CustomerId == customerId), page, pageSize,
+        PageAsync(TenantScoped(_context.Reviews.AsNoTracking().Where(r => r.CustomerId == customerId)), page, pageSize,
             rows => Task.FromResult(rows.Select(MapCustomer).ToList()));
 
     public async Task<ApiResponse<PaginatedResponse<PublicReviewResponse>>> GetBusinessReviewsAsync(Guid businessId, int page, int pageSize)
@@ -92,6 +99,8 @@ public sealed class ReviewService : IReviewService
     {
         var review = await _context.Reviews.FirstOrDefaultAsync(r => r.Id == reviewId && r.CustomerId == customerId);
         if (review == null) return ApiResponse<ReviewResponse>.Fail("NOT_FOUND", "Review not found.");
+        if (TenantBusinessId is Guid activeTenantId && review.BusinessId != activeTenantId)
+            return ApiResponse<ReviewResponse>.Fail("NOT_FOUND", "Review not found.");
         if (_timeProvider.GetUtcNow().UtcDateTime > review.CreatedAt.Add(EditWindow))
             return ApiResponse<ReviewResponse>.Fail("REVIEW_EDIT_WINDOW_EXPIRED", "The review edit window has expired.");
         review.Rating = request.Rating;
@@ -137,6 +146,10 @@ public sealed class ReviewService : IReviewService
         .MaxAsync(h => (DateTime?)h.ChangedAt);
 
     private Task<bool> ActiveBusinessExistsAsync(Guid id) => _context.Businesses.AsNoTracking().AnyAsync(b => b.Id == id);
+
+    /// <summary>Narrows a review query to the active tenant (no-op on the platform root).</summary>
+    private IQueryable<Review> TenantScoped(IQueryable<Review> query) =>
+        TenantBusinessId is Guid tenantId ? query.Where(r => r.BusinessId == tenantId) : query;
     private async Task<Dictionary<Guid, (string Name, string? Avatar)>> DisplayNamesAsync(List<Review> rows)
     {
         var ids = rows.Select(r => r.CustomerId).Distinct().ToList();
