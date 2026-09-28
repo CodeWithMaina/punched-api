@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using PunchedApi.Infrastructure.Data;
@@ -11,9 +12,11 @@ using PunchedApi.Infrastructure.Data;
 namespace PunchedApi.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260925064400_AddCentralizedMedia")]
+    partial class AddCentralizedMedia
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -672,11 +675,6 @@ namespace PunchedApi.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("phone_number");
 
-                    b.Property<string>("Slug")
-                        .HasMaxLength(63)
-                        .HasColumnType("character varying(63)")
-                        .HasColumnName("slug");
-
                     b.Property<string>("TimeZoneId")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -694,9 +692,6 @@ namespace PunchedApi.Migrations
                     b.HasIndex("LogoMediaId");
 
                     b.HasIndex("OwnerId");
-
-                    b.HasIndex("Slug")
-                        .IsUnique();
 
                     b.HasIndex("Name", "Location");
 
@@ -921,37 +916,6 @@ namespace PunchedApi.Migrations
                     b.HasIndex("MpesaShortCode");
 
                     b.ToTable("business_payment_configs", (string)null);
-                });
-
-            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessSlugHistory", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<Guid>("BusinessId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("business_id");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<string>("Slug")
-                        .IsRequired()
-                        .HasMaxLength(63)
-                        .HasColumnType("character varying(63)")
-                        .HasColumnName("slug");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("BusinessId");
-
-                    b.HasIndex("Slug")
-                        .IsUnique();
-
-                    b.ToTable("business_slug_history", (string)null);
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessSubscription", b =>
@@ -4636,17 +4600,6 @@ namespace PunchedApi.Migrations
                         .WithMany()
                         .HasForeignKey("BusinessId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Business");
-                });
-
-            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessSlugHistory", b =>
-                {
-                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
-                        .WithMany()
-                        .HasForeignKey("BusinessId")
-                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Business");

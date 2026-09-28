@@ -37,6 +37,26 @@
       }
     }
   },
+  "MediaStorage": {
+    "Provider": "r2",
+    "AccountId": "",
+    "AccessKeyId": "",
+    "SecretAccessKey": "",
+    "PrivateBucket": "punched-media-originals",
+    "PublicBucket": "punched-media-delivery",
+    "PublicBaseUrl": "https://media.example.invalid",
+    "ServiceUrl": "https://ACCOUNT_ID.r2.cloudflarestorage.com",
+    "Region": "auto",
+    "PresignMinutes": 5,
+    "PendingRowExpirationMinutes": 15,
+    "PendingObjectLifecycleHours": 24,
+    "Processing": { "LeaseMinutes": 5, "LeaseHeartbeatMinutes": 1, "MaxAttempts": 3 },
+    "Retention": { "DeletedGraceHours": 0, "FailedUploadHours": 0, "QuarantineHours": 0 },
+    "Limits": {
+      "SupportedInputMimeTypes": [ "image/jpeg", "image/png", "image/webp" ],
+      "Purposes": {}
+    }
+  },
   "Email": {
     "Host": "smtp.gmail.com",
     "Port": 587,
