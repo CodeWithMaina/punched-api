@@ -156,6 +156,28 @@ public partial class AttendanceLocationService
     }
 
     /// <summary>
+    /// Parses a SCREAMING_SNAKE event filter ("CLOCK_IN" / "CLOCK_OUT") to its
+    /// enum. Returns null when the input is empty (no filter) — callers
+    /// distinguish "absent" from "unparseable" with
+    /// <see cref="IsValidEventFilter"/>.
+    /// </summary>
+    private static AttendanceEventType? ParseEventFilter(string? wire)
+    {
+        if (string.IsNullOrWhiteSpace(wire)) return null;
+        foreach (AttendanceEventType value in Enum.GetValues<AttendanceEventType>())
+        {
+            if (string.Equals(AttendanceVerification.WireValue(value), wire.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+                return value;
+        }
+        return null;
+    }
+
+    /// <summary>True when the filter is empty or names a known event type.</summary>
+    private static bool IsValidEventFilter(string? wire) =>
+        string.IsNullOrWhiteSpace(wire) || ParseEventFilter(wire).HasValue;
+
+    /// <summary>
     /// Manager "who is in right now" overview (plan §13.3). "Today" is
     /// business-local wall-clock via <see cref="Business.TimeZoneId"/>.
     /// </summary>
@@ -181,7 +203,7 @@ public partial class AttendanceLocationService
 
         var staff = await _context.Users.AsNoTracking()
             .Where(u => u.StaffBusinessId == businessId.Value && !u.IsDeleted)
-            .Select(u => new { u.Id, u.FullName }).ToListAsync();
+            .Select(u => new { u.Id, u.FullName, u.AvatarUrl }).ToListAsync();
 
         var staffIds = staff.Select(s => s.Id).ToList();
         var openSessions = await _context.AttendanceSessions.AsNoTracking()
@@ -197,7 +219,9 @@ public partial class AttendanceLocationService
             .ToListAsync();
 
         var locationIds = openSessions.Values
-            .Select(s => s.OpeningLocationId).Where(id => id.HasValue)
+            .Select(s => s.OpeningLocationId)
+            .Concat(todaysClosed.Select(s => s.OpeningLocationId))
+            .Where(id => id.HasValue)
             .Select(id => id!.Value).Distinct().ToList();
         var locationNames = locationIds.Count == 0
             ? new Dictionary<Guid, string>()
@@ -205,43 +229,61 @@ public partial class AttendanceLocationService
                 .Where(l => locationIds.Contains(l.Id))
                 .ToDictionaryAsync(l => l.Id, l => l.Name);
 
-        var overview = new AttendanceOverviewResponse { Date = day };
+        var overview = new AttendanceOverviewResponse
+        {
+            Date = day,
+            TotalStaffCount = staff.Count,
+        };
         var totalWorked = 0;
 
         foreach (var member in staff)
         {
             if (openSessions.TryGetValue(member.Id, out var open))
             {
+                var openMinutes = OverlapMinutes(open.OpenedAt, null, dayStartUtc, dayEndUtc);
                 overview.Staff.Add(new AttendanceOverviewStaffItem
                 {
                     StaffUserId = member.Id,
                     FullName = member.FullName,
-                    State = "CLOCKED_IN",
+                    AvatarUrl = member.AvatarUrl,
+                    State = "clocked_in",
                     OpenedAt = open.OpenedAt,
-                    WorkedMinutes = OverlapMinutes(open.OpenedAt, null, dayStartUtc, dayEndUtc),
+                    WorkedMinutes = openMinutes,
                     LocationName = open.OpeningLocationId.HasValue
                         && locationNames.TryGetValue(open.OpeningLocationId.Value, out var loc) ? loc : null,
                 });
                 overview.ClockedInCount++;
+                totalWorked += openMinutes;
             }
             else
             {
                 var memberClosed = todaysClosed.Where(s => s.StaffUserId == member.Id).ToList();
                 var minutes = (int)memberClosed.Sum(s =>
                     s.WorkedMinutes ?? OverlapMinutes(s.OpenedAt, s.ClosedAt, dayStartUtc, dayEndUtc));
+                // Latest finished session of the day carries the clock-in/out times.
+                var last = memberClosed
+                    .OrderByDescending(s => s.ClosedAt ?? s.OpenedAt)
+                    .FirstOrDefault();
+                var finished = last != null && last.ClosedAt.HasValue;
                 overview.Staff.Add(new AttendanceOverviewStaffItem
                 {
                     StaffUserId = member.Id,
                     FullName = member.FullName,
-                    State = memberClosed.Count > 0 ? "CLOCKED_OUT" : "NOT_CLOCKED_IN",
+                    AvatarUrl = member.AvatarUrl,
+                    State = finished ? "clocked_out" : "not_clocked_in",
+                    OpenedAt = last?.OpenedAt,
+                    ClosedAt = finished ? last!.ClosedAt : null,
                     WorkedMinutes = minutes > 0 ? minutes : null,
+                    LocationName = last?.OpeningLocationId.HasValue == true
+                        && locationNames.TryGetValue(last.OpeningLocationId.Value, out var loc) ? loc : null,
                 });
                 totalWorked += minutes;
-                overview.NotClockedInCount++;
+                if (finished) overview.CompletedShiftCount++;
+                else overview.NotClockedInCount++;
             }
         }
 
-                overview.TotalWorkedMinutes = totalWorked;
+        overview.TotalWorkedMinutes = totalWorked;
         return ApiResponse<AttendanceOverviewResponse>.Ok(overview);
     }
 
@@ -271,11 +313,18 @@ public partial class AttendanceLocationService
             return ApiResponse<PaginatedResponse<AttendanceHistoryItem>>.Fail(
                 "INVALID_DATE_RANGE", "from must not be after to.");
 
+        if (!IsValidEventFilter(query.EventType))
+            return ApiResponse<PaginatedResponse<AttendanceHistoryItem>>.Fail(
+                "INVALID_EVENT_TYPE", "eventType must be CLOCK_IN or CLOCK_OUT.");
+        var eventFilter = ParseEventFilter(query.EventType);
+
         var baseQuery = _context.AttendanceEvents.AsNoTracking()
             .Where(e => e.BusinessId == businessId.Value && e.StaffUserId == staffUserId);
 
         if (query.LocationId.HasValue)
             baseQuery = baseQuery.Where(e => e.AttendanceLocationId == query.LocationId.Value);
+        if (eventFilter.HasValue)
+            baseQuery = baseQuery.Where(e => e.EventType == eventFilter.Value);
         if (query.From.HasValue)
             baseQuery = baseQuery.Where(e => e.OccurredAt >= query.From.Value.ToDateTime(TimeOnly.MinValue));
         if (query.To.HasValue)
@@ -325,6 +374,136 @@ public partial class AttendanceLocationService
             Page = page,
             PageSize = pageSize,
         });
+    }
+
+    /// <summary>
+    /// BUSINESS-wide attendance ledger: every clock event across the team,
+    /// newest first, carrying the staff identity and — for manual entries —
+    /// the person who recorded it. Filters compose (date window, one staff
+    /// member, one event direction) and paging is DB-first. A staff id from
+    /// another business answers STAFF_NOT_FOUND (never an enumeration leak).
+    /// </summary>
+    public async Task<ApiResponse<PaginatedResponse<BusinessAttendanceRecord>>> GetRecordsAsync(
+        Guid ownerUserId, BusinessAttendanceRecordsQuery? query)
+    {
+        var businessId = await ResolveBusinessIdAsync(ownerUserId);
+        if (businessId == null)
+            return ApiResponse<PaginatedResponse<BusinessAttendanceRecord>>.Fail(
+                "NOT_FOUND", "Business not found.");
+
+        query ??= new BusinessAttendanceRecordsQuery();
+        var page = Math.Max(1, query.Page);
+        var pageSize = Math.Clamp(query.PageSize, 1, 100);
+
+        if (query.From.HasValue && query.To.HasValue && query.From.Value > query.To.Value)
+            return ApiResponse<PaginatedResponse<BusinessAttendanceRecord>>.Fail(
+                "INVALID_DATE_RANGE", "from must not be after to.");
+
+        if (!IsValidEventFilter(query.EventType))
+            return ApiResponse<PaginatedResponse<BusinessAttendanceRecord>>.Fail(
+                "INVALID_EVENT_TYPE", "eventType must be CLOCK_IN or CLOCK_OUT.");
+        var eventFilter = ParseEventFilter(query.EventType);
+
+        if (query.StaffUserId.HasValue)
+        {
+            var linked = await _context.Users.AsNoTracking()
+                .AnyAsync(u => u.Id == query.StaffUserId.Value
+                               && u.StaffBusinessId == businessId.Value && !u.IsDeleted);
+            if (!linked)
+                return ApiResponse<PaginatedResponse<BusinessAttendanceRecord>>.Fail(
+                    "STAFF_NOT_FOUND", "Staff member not found.");
+        }
+
+        var baseQuery = _context.AttendanceEvents.AsNoTracking()
+            .Where(e => e.BusinessId == businessId.Value);
+
+        if (query.StaffUserId.HasValue)
+            baseQuery = baseQuery.Where(e => e.StaffUserId == query.StaffUserId.Value);
+        if (eventFilter.HasValue)
+            baseQuery = baseQuery.Where(e => e.EventType == eventFilter.Value);
+        if (query.From.HasValue)
+            baseQuery = baseQuery.Where(e => e.OccurredAt >= query.From.Value.ToDateTime(TimeOnly.MinValue));
+        if (query.To.HasValue)
+            baseQuery = baseQuery.Where(e => e.OccurredAt < query.To.Value.AddDays(1).ToDateTime(TimeOnly.MinValue));
+
+        var total = await baseQuery.LongCountAsync();
+        var events = await baseQuery.OrderByDescending(e => e.OccurredAt)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+
+        var staffIds = events.Select(e => e.StaffUserId).Distinct().ToList();
+        var staffById = new Dictionary<Guid, (string FullName, string? AvatarUrl)>();
+        if (staffIds.Count > 0)
+        {
+            var staffRows = await _context.Users.AsNoTracking()
+                .Where(u => staffIds.Contains(u.Id))
+                .Select(u => new { u.Id, u.FullName, u.AvatarUrl })
+                .ToListAsync();
+            foreach (var row in staffRows) staffById[row.Id] = (row.FullName, row.AvatarUrl);
+        }
+
+        var sessionIds = events.Where(e => e.AttendanceSessionId.HasValue)
+            .Select(e => e.AttendanceSessionId!.Value).Distinct().ToList();
+        var sessions = sessionIds.Count == 0
+            ? new Dictionary<Guid, AttendanceSession>()
+            : await _context.AttendanceSessions.AsNoTracking()
+                .Where(s => sessionIds.Contains(s.Id)).ToDictionaryAsync(s => s.Id);
+
+        var locationIds = events.Where(e => e.AttendanceLocationId.HasValue)
+            .Select(e => e.AttendanceLocationId!.Value).Distinct().ToList();
+        var locations = locationIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _context.AttendanceLocations.AsNoTracking()
+                .Where(l => locationIds.Contains(l.Id))
+                .ToDictionaryAsync(l => l.Id, l => l.Name);
+
+        var recorderIds = events.Where(e => e.Source == AttendanceEventSource.Manual)
+            .Select(e => e.CreatedByUserId).Distinct().ToList();
+        var recorderNames = new Dictionary<Guid, string>();
+        if (recorderIds.Count > 0)
+        {
+            var recorders = await _context.Users.AsNoTracking()
+                .Where(u => recorderIds.Contains(u.Id))
+                .Select(u => new { u.Id, u.FullName })
+                .ToListAsync();
+            foreach (var row in recorders) recorderNames[row.Id] = row.FullName;
+        }
+
+        var items = events.Select(e =>
+        {
+            sessions.TryGetValue(e.AttendanceSessionId ?? Guid.Empty, out var session);
+            locations.TryGetValue(e.AttendanceLocationId ?? Guid.Empty, out var locationName);
+            staffById.TryGetValue(e.StaffUserId, out var staff);
+            var open = session != null && session.ClosedAt == null;
+            var manual = e.Source == AttendanceEventSource.Manual;
+            return new BusinessAttendanceRecord
+            {
+                Id = e.Id,
+                StaffUserId = e.StaffUserId,
+                FullName = staff.FullName ?? string.Empty,
+                AvatarUrl = staff.AvatarUrl,
+                EventType = AttendanceVerification.WireValue(e.EventType),
+                OccurredAt = e.OccurredAt,
+                LocationId = e.AttendanceLocationId,
+                LocationName = locationName,
+                SessionId = e.AttendanceSessionId,
+                WorkedMinutes = session == null || open ? null : session.WorkedMinutes,
+                InProgress = open,
+                Source = manual ? "manual" : "standard",
+                RecordedByName = manual
+                    && recorderNames.TryGetValue(e.CreatedByUserId, out var recorder)
+                        ? recorder
+                        : null,
+            };
+        }).ToList();
+
+        return ApiResponse<PaginatedResponse<BusinessAttendanceRecord>>.Ok(
+            new PaginatedResponse<BusinessAttendanceRecord>
+            {
+                Items = items,
+                TotalCount = (int)total,
+                Page = page,
+                PageSize = pageSize,
+            });
     }
 }
 

@@ -33,6 +33,16 @@ public sealed class ReviewController : ControllerBase
     public async Task<IActionResult> GetMine([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     { var id = UserId(); return id == null ? Unauthorized() : Map(await _reviews.GetCustomerReviewsAsync(id.Value, page, pageSize)); }
 
+    /// <summary>
+    /// Staff: reviews left about the authenticated staff member's own work.
+    /// The staff id is the token's userId — never a route/query parameter — so a
+    /// staff member can only ever read reviews attributed to themselves.
+    /// </summary>
+    [HttpGet("staff/me/reviews")]
+    [Authorize(Roles = "Staff")]
+    public async Task<IActionResult> GetStaffMine([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    { var id = UserId(); return id == null ? Unauthorized() : Map(await _reviews.GetStaffReviewsAsync(id.Value, page, pageSize)); }
+
     [HttpPut("reviews/{reviewId:guid}")]
     [Authorize(Roles = "Customer")]
     public async Task<IActionResult> Update(Guid reviewId, [FromBody] UpdateReviewRequest request)
@@ -49,10 +59,17 @@ public sealed class ReviewController : ControllerBase
 
     [HttpGet("businesses/me/reviews")]
     [Authorize(Roles = "Business")]
-    public async Task<IActionResult> GetOwner([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    public async Task<IActionResult> GetOwner(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] int? rating = null,
+        [FromQuery] DateTime? from = null,
+        [FromQuery] DateTime? to = null)
     {
         var businessId = await _businessContext.GetBusinessIdAsync();
-        return businessId == null ? Unauthorized() : Map(await _reviews.GetOwnerReviewsAsync(businessId.Value, page, pageSize));
+        return businessId == null
+            ? Unauthorized()
+            : Map(await _reviews.GetOwnerReviewsAsync(businessId.Value, page, pageSize, rating, from, to));
     }
 
     private IActionResult Map<T>(ApiResponse<T> result) => result.Success ? Ok(result) : result.Error?.Code switch

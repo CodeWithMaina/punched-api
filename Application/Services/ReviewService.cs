@@ -89,13 +89,49 @@ public sealed class ReviewService : IReviewService
         });
     }
 
-    public Task<ApiResponse<PaginatedResponse<BusinessReviewResponse>>> GetOwnerReviewsAsync(Guid businessId, int page, int pageSize) =>
-        PageAsync(_context.Reviews.AsNoTracking().Where(r => r.BusinessId == businessId), page, pageSize, async rows =>
+    public Task<ApiResponse<PaginatedResponse<BusinessReviewResponse>>> GetOwnerReviewsAsync(
+        Guid businessId, int page, int pageSize,
+        int? rating = null, DateTime? from = null, DateTime? to = null)
+    {
+        var query = _context.Reviews.AsNoTracking().Where(r => r.BusinessId == businessId);
+        if (rating is >= 1 and <= 5) query = query.Where(r => r.Rating == rating);
+        if (from.HasValue) query = query.Where(r => r.CreatedAt >= from.Value);
+        if (to.HasValue) query = query.Where(r => r.CreatedAt <= to.Value);
+
+        return PageAsync(query, page, pageSize, async rows =>
         {
             var customers = await DisplayNamesAsync(rows);
             var images = await ReviewImagesAsync(rows);
             return rows.Select(r => MapBusiness(r, customers[r.CustomerId], images.GetValueOrDefault(r.Id) ?? [])).ToList();
         });
+    }
+
+    public async Task<ApiResponse<PaginatedResponse<PublicReviewResponse>>> GetStaffReviewsAsync(Guid staffUserId, int page, int pageSize)
+    {
+        // Resolve the staff member's own business server-side — never trusted
+        // from the client. A staff member with no linked business gets an empty
+        // page so the dashboard renders its empty state rather than an error.
+        var businessId = await _context.Users.AsNoTracking()
+            .Where(u => u.Id == staffUserId && !u.IsDeleted)
+            .Select(u => u.StaffBusinessId)
+            .FirstOrDefaultAsync();
+
+        if (businessId == null)
+            return ApiResponse<PaginatedResponse<PublicReviewResponse>>.Ok(
+                new PaginatedResponse<PublicReviewResponse> { Items = [], TotalCount = 0, Page = 1, PageSize = pageSize });
+
+        var query = TenantScoped(_context.Reviews.AsNoTracking()
+            .Where(r => r.BusinessId == businessId.Value
+                        && r.StaffUserId == staffUserId
+                        && r.Status == ReviewStatuses.Published));
+
+        return await PageAsync(query, page, pageSize, async rows =>
+        {
+            var customers = await DisplayNamesAsync(rows);
+            var images = await ReviewImagesAsync(rows);
+            return rows.Select(r => MapPublic(r, customers[r.CustomerId], images.GetValueOrDefault(r.Id) ?? [])).ToList();
+        });
+    }
 
     public async Task<ApiResponse<ReviewResponse>> UpdateAsync(Guid customerId, Guid reviewId, UpdateReviewRequest request)
     {

@@ -178,6 +178,71 @@ public partial class BusinessController
             userId.Value, staffUserId, query ?? new AttendanceHistoryQuery());
         return result.Success ? Ok(result) : MapFailure(result);
     }
+
+    /// <summary>
+    /// GET v1/businesses/me/attendance/records — business-wide attendance
+    /// ledger with date / staff / event filters and pagination. Server-scoped
+    /// business only; a foreign staff id answers STAFF_NOT_FOUND.
+    /// </summary>
+    [HttpGet("me/attendance/records")]
+    [Authorize(Roles = "Business")]
+    [RequireModule("attendance")]
+    [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<BusinessAttendanceRecord>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetAttendanceRecords([FromQuery] BusinessAttendanceRecordsQuery query)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+        var result = await _attendanceLocationService.GetRecordsAsync(
+            userId.Value, query ?? new BusinessAttendanceRecordsQuery());
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    // ── MANUAL CLOCK (owner records a staff member's shift) ─────────────
+    /// <summary>
+    /// POST v1/businesses/me/attendance/staff/{id}/clock-in — record a shift
+    /// manually when a staff member forgot to scan. Business-scoped: the staff
+    /// id is validated against the owner's business (STAFF_NOT_FOUND otherwise).
+    /// </summary>
+    [HttpPost("me/attendance/staff/{staffUserId:guid}/clock-in")]
+    [Authorize(Roles = "Business")]
+    [RequireModule("attendance")]
+    [ProducesResponseType(typeof(ApiResponse<OwnerAttendanceClockResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> ManualClockInStaff(Guid staffUserId, [FromBody] OwnerAttendanceClockRequest? request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+        var result = await _attendanceLocationService.OwnerClockInAsync(
+            userId.Value, staffUserId, request ?? new OwnerAttendanceClockRequest());
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// POST v1/businesses/me/attendance/staff/{id}/clock-out — close a staff
+    /// member's open shift manually (someone left without scanning out). No open
+    /// session ⇒ 409 NOT_CLOCKED_IN.
+    /// </summary>
+    [HttpPost("me/attendance/staff/{staffUserId:guid}/clock-out")]
+    [Authorize(Roles = "Business")]
+    [RequireModule("attendance")]
+    [ProducesResponseType(typeof(ApiResponse<OwnerAttendanceClockResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> ManualClockOutStaff(Guid staffUserId, [FromBody] OwnerAttendanceClockRequest? request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+        var result = await _attendanceLocationService.OwnerClockOutAsync(
+            userId.Value, staffUserId, request ?? new OwnerAttendanceClockRequest());
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
 }
 
 

@@ -154,4 +154,6 @@ internal static class AttendanceAuditActions
     public const string QrRegenerated = "QR_REGENERATED";
     public const string QrRevoked = "QR_REVOKED";
     public const string SettingsUpdated = "ATTENDANCE_SETTINGS_UPDATED";
+    public const string ManualClockIn = "ATTENDANCE_MANUAL_CLOCK_IN";
+    public const string ManualClockOut = "ATTENDANCE_MANUAL_CLOCK_OUT";
 }
