@@ -637,6 +637,27 @@ public class PublicBusinessProfileResponse
     [JsonPropertyName("hasReferralProgram")]
     public bool HasReferralProgram { get; set; }
 
+    /// <summary>
+    /// The capabilities this business currently exposes TO CUSTOMERS
+    /// (<see cref="PunchedApi.Application.Modules.CustomerCapabilityCatalog"/>).
+    ///
+    /// <para>This is the customer-facing projection of the business's EFFECTIVE
+    /// module entitlements: plan grants, purchases, trials, admin-granted
+    /// access and promotions all resolve into it. It deliberately carries no
+    /// subscription, billing, plan or invoice information — the customer app
+    /// only ever needs "can this customer use this?", never "what bought it?".
+    /// </para>
+    ///
+    /// <para>Business/internal modules (attendance, analytics, staff,
+    /// settings, customer management, card-design authoring, programs) are
+    /// never represented here, so an internal module cannot leak into the
+    /// customer experience. The dictionary ALWAYS contains every known
+    /// capability key (false when unavailable) so the client can render from a
+    /// fixed shape.</para>
+    /// </summary>
+    [JsonPropertyName("capabilities")]
+    public Dictionary<string, bool> Capabilities { get; set; } = new();
+
     /// <summary>Active loyalty program summary (null when loyalty is disabled/no active program).</summary>
     [JsonPropertyName("loyaltyProgram")]
     public PublicLoyaltyProgramSummary? LoyaltyProgram { get; set; }

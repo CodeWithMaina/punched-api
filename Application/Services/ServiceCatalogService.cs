@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
@@ -7,28 +8,84 @@ using PunchedApi.Domain.Interfaces;
 namespace PunchedApi.Application.Services;
 
 /// <summary>
-/// Backs the ServiceCatalog endpoints and the public per-business service list.
+/// Backs the ServiceCatalog endpoints and the public per-business active list.
 /// Owner-scoped methods resolve the business from the ownerUserId and assert ownership.
 /// </summary>
 public class ServiceCatalogService : IServiceCatalogService
 {
+    /// <summary>
+    /// Module key the whole controller is gated on. Repeated here (rather than
+    /// referenced through a constant) so the PUBLIC path below can enforce the
+    /// same gate <c>[RequireModule]</c> enforces on the owner paths — see
+    /// <see cref="GetServicesForBusinessAsync"/>.
+    /// </summary>
+    private const string ModuleKey = "serviceCatalog";
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<ServiceCatalogService> _logger;
+    private readonly IModuleEntitlementService _moduleEntitlementService;
 
-    public ServiceCatalogService(IUnitOfWork unitOfWork, ILogger<ServiceCatalogService> logger)
+    /// <summary>Active tenant (null on the platform root) — scoping only, never a grant.</summary>
+    private readonly ITenantContext? _tenant;
+
+    public ServiceCatalogService(
+        IUnitOfWork unitOfWork,
+        ILogger<ServiceCatalogService> logger,
+        IModuleEntitlementService moduleEntitlementService,
+        ITenantContext? tenant = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _moduleEntitlementService = moduleEntitlementService;
+        _tenant = tenant;
     }
+
+    /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
+    private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
 
     public async Task<ApiResponse<List<ServiceCatalogItemResponse>>> GetServicesForBusinessAsync(Guid businessId)
     {
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Id == businessId);
+        // Tenant narrowing: on a tenant host only the active tenant's catalogue
+        // is public, exactly as GetPublicProfileAsync already does. Without it a
+        // tenant subdomain could enumerate every business id on the platform.
+        if (TenantBusinessId is Guid activeTenantId && businessId != activeTenantId)
+            return ApiResponse<List<ServiceCatalogItemResponse>>.Fail("NOT_FOUND", "Business not found.");
+
+        var business = await _unitOfWork.Businesses
+            .FirstOrDefaultAsync(b => b.Id == businessId && !b.IsDeleted);
         if (business == null)
             return ApiResponse<List<ServiceCatalogItemResponse>>.Fail("NOT_FOUND", "Business not found.");
 
+        /* Module entitlement, enforced on the PUBLIC path too.
+
+           [RequireModule] deliberately skips any endpoint marked
+           [AllowAnonymous] — it resolves the caller's business from the token,
+           which an anonymous visitor does not have — so this endpoint would
+           otherwise serve a catalogue for a business that never bought the
+           serviceCatalog module. It is the same effective-entitlement lookup
+           the owner paths are gated by, applied to the business the request
+           NAMED rather than the one the caller belongs to; that difference is
+           the only reason the gate cannot simply be left to the filter.
+
+           MODULE_DISABLED (not NOT_FOUND) so the storefront can tell "this
+           business does not offer services" from "this business does not
+           exist", and hide the tab instead of rendering a dead link. */
+        if (!await _moduleEntitlementService.IsModuleEnabledAsync(businessId, ModuleKey))
+        {
+            _logger.LogInformation(
+                "Public catalogue request for business {BusinessId} refused: module '{ModuleKey}' is not enabled.",
+                businessId, ModuleKey);
+
+            return ApiResponse<List<ServiceCatalogItemResponse>>.Fail(
+                "MODULE_DISABLED",
+                $"The '{ModuleKey}' module is not enabled for this business.");
+        }
+
+        // Active AND showcased — the two independent switches the owner
+        // controls. Filtered HERE rather than client-side so a storefront
+        // cannot learn about an unadvertised service by reading the response.
         var services = await _unitOfWork.ServiceCatalogItems
-            .FindAsync(s => s.BusinessId == businessId && s.IsActive);
+            .FindAsync(s => s.BusinessId == businessId && s.IsActive && s.Showcase);
 
         return ApiResponse<List<ServiceCatalogItemResponse>>.Ok(
             services.OrderBy(s => s.CreatedAt).Select(Map).ToList());
@@ -77,6 +134,7 @@ public class ServiceCatalogService : IServiceCatalogService
             DurationMinutes = request.DurationMinutes,
             Price = request.Price,
             IsActive = true,
+            Showcase = request.Showcase ?? true,
             CreatedAt = DateTime.UtcNow
         };
 
@@ -108,6 +166,8 @@ public class ServiceCatalogService : IServiceCatalogService
             service.Price = request.Price.Value;
         if (request.IsActive.HasValue)
             service.IsActive = request.IsActive.Value;
+        if (request.Showcase.HasValue)
+            service.Showcase = request.Showcase.Value;
 
         _unitOfWork.ServiceCatalogItems.Update(service);
         await _unitOfWork.SaveChangesAsync();
@@ -189,6 +249,7 @@ public class ServiceCatalogService : IServiceCatalogService
         DurationMinutes = s.DurationMinutes,
         Price = s.Price ?? 0,
         IsActive = s.IsActive,
+        Showcase = s.Showcase,
         CreatedAt = s.CreatedAt
     };
 }

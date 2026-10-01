@@ -32,6 +32,14 @@ public class ServiceCatalogItemResponse
     [JsonPropertyName("isActive")]
     public bool IsActive { get; set; }
 
+    /// <summary>
+    /// Whether the service is surfaced on public surfaces. Owned by the
+    /// business — clients may set it, but the PUBLIC endpoint still decides
+    /// what it returns (see ServiceCatalogService.GetServicesForBusinessAsync).
+    /// </summary>
+    [JsonPropertyName("showcase")]
+    public bool Showcase { get; set; } = true;
+
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
 }
@@ -67,6 +75,13 @@ public class CreateServiceRequest
 
     [JsonPropertyName("price")]
     public decimal Price { get; set; }
+
+    /// <summary>
+    /// Optional public-showcase flag. Omitted means true (published), so an
+    /// older client that never sends it creates a visible service.
+    /// </summary>
+    [JsonPropertyName("showcase")]
+    public bool? Showcase { get; set; }
 }
 
 /// <summary>
@@ -88,4 +103,11 @@ public class UpdateServiceRequest
 
     [JsonPropertyName("isActive")]
     public bool? IsActive { get; set; }
+
+    /// <summary>
+    /// Partial update of the public-showcase flag. Null leaves it unchanged,
+    /// so the owner toggle works without a full-object write.
+    /// </summary>
+    [JsonPropertyName("showcase")]
+    public bool? Showcase { get; set; }
 }

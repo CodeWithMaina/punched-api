@@ -55,8 +55,27 @@ internal static class BookingTestBase
     public static AppointmentAvailabilityService CreateAvailabilityService(ApplicationDbContext context)
         => new(context, TestHelpers.CreateLogger<AppointmentAvailabilityService>());
 
-    public static ServiceCatalogService CreateCatalogService(ApplicationDbContext context)
-        => new(new UnitOfWork(context), TestHelpers.CreateLogger<ServiceCatalogService>());
+    /// <summary>
+    /// Builds a <see cref="ServiceCatalogService"/> over the test context.
+    ///
+    /// The public-catalogue path enforces the serviceCatalog module gate
+    /// itself (the [RequireModule] attribute cannot, because that endpoint is
+    /// [AllowAnonymous] and therefore has no caller business to resolve). The
+    /// default stub therefore ENABLES serviceCatalog: a business that has rows
+    /// in the catalogue is, by definition, a business that sells services, and
+    /// every pre-existing test here is asserting catalogue behaviour rather
+    /// than gate behaviour.
+    ///
+    /// Pass <paramref name="entitlements"/> to assert the gate itself (an empty
+    /// stub models a business that never bought the module).
+    /// </summary>
+    public static ServiceCatalogService CreateCatalogService(
+        ApplicationDbContext context,
+        StubModuleEntitlements? entitlements = null)
+        => new(
+            new UnitOfWork(context),
+            TestHelpers.CreateLogger<ServiceCatalogService>(),
+            entitlements ?? new StubModuleEntitlements("serviceCatalog"));
 
     /// <summary>Adds and saves the given entities in one commit.</summary>
     public static async Task SeedAsync(ApplicationDbContext context, params object[] entities)

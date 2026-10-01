@@ -139,6 +139,10 @@ public class ServiceCatalogController : ControllerBase
         {
             "NOT_FOUND" or "SERVICE_NOT_FOUND" or "STAFF_NOT_FOUND" or "CUSTOMER_NOT_FOUND" => NotFound(result),
             "FORBIDDEN" => StatusCode(StatusCodes.Status403Forbidden, result),
+            // The public catalogue path enforces the module gate itself (the
+            // attribute cannot: see ServiceCatalogService). Surfaced as 403 so
+            // the storefront reads it the same way as any other blocked module.
+            "MODULE_DISABLED" => StatusCode(StatusCodes.Status403Forbidden, result),
             "OVERBOOKING" or "SLOT_UNAVAILABLE" or "INVALID_STATUS_TRANSITION" => Conflict(result),
             _ => BadRequest(result)   // STAFF_NOT_AVAILABLE, VALIDATION_ERROR, BUSINESS_NOT_FOUND, fallback
         };

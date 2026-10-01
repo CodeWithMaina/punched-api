@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Npgsql;
 using PunchedApi.Application.Analytics;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Modules;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -77,6 +78,17 @@ public partial class BusinessService : IBusinessService
                 .OrderByDescending(p => p.CreatedAt)
                 .FirstOrDefault();
 
+            var hasActiveReferralProgram = business.ReferralProgram is { IsActive: true };
+
+            // Customer-facing projection of the SAME effective entitlements used
+            // by [RequireModule]. Computed from data already in hand (no extra
+            // query), so the customer app learns its capabilities from the one
+            // business-profile request it already makes.
+            var capabilities = CustomerCapabilityCatalog.Resolve(
+                moduleKeys,
+                hasActiveLoyaltyProgram: activeProgram != null,
+                hasActiveReferralProgram: hasActiveReferralProgram);
+
             return ApiResponse<PublicBusinessProfileResponse>.Ok(new PublicBusinessProfileResponse
             {
                 Id = business.Id,
@@ -88,9 +100,13 @@ public partial class BusinessService : IBusinessService
                 LogoUrl = business.LogoUrl,
                 PhoneNumber = business.PhoneNumber,
                 Email = business.Email,
-                HasAppointments = moduleKeys.Contains("appointments"),
-                HasLoyalty = moduleKeys.Contains("loyalty") && activeProgram != null,
-                HasReferralProgram = business.ReferralProgram is { IsActive: true },
+                // Kept for existing consumers (storefront shell); both now read
+                // from the same capability resolution.
+                HasAppointments = capabilities[CustomerCapabilityCatalog.Appointments],
+                HasLoyalty = capabilities[CustomerCapabilityCatalog.Loyalty],
+                HasReferralProgram = hasActiveReferralProgram,
+                Capabilities = capabilities.ToDictionary(
+                    entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase),
                 LoyaltyProgram = activeProgram == null ? null : new PublicLoyaltyProgramSummary
                 {
                     Name = activeProgram.Name,

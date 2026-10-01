@@ -9,8 +9,22 @@ public enum ModuleVisibility { Core, Standard, Premium, Enterprise, Internal }
 
 /// <summary>
 /// A module's static definition: identity, dependencies, the roles that can
-/// see it, and the fine-grained permissions it grants per role.
+/// see it, the CUSTOMER capability it powers (if any), and the fine-grained
+/// permissions it grants per role.
 /// </summary>
+/// <param name="CustomerCapability">
+/// The customer-facing capability this module powers
+/// (see <see cref="CustomerCapabilityCatalog"/>), or <c>null</c> when the
+/// module is business/internal ONLY.
+///
+/// <para>This is deliberately a SECOND, explicit axis alongside
+/// <see cref="RequiredRoles"/> — a module may be reachable by a Customer role
+/// (e.g. "stamps" grants <c>stamps.view</c> to Customers) without being a
+/// customer-facing capability in the customer app (the customer's stamp
+/// surface is the "loyalty" capability, rendered on the loyalty card). Stating
+/// it per module is what stops an internal module leaking into the customer
+/// experience merely because a role happens to be listed.</para>
+/// </param>
 public sealed record ModuleDefinition(
     string Key,
     string Name,
@@ -19,6 +33,7 @@ public sealed record ModuleDefinition(
     ModuleVisibility Visibility,
     IReadOnlyList<string> Dependencies,
     IReadOnlyList<string> RequiredRoles,
+    string? CustomerCapability,
     IReadOnlyList<PermissionDefinition> Permissions
 );
 
@@ -45,6 +60,8 @@ public static class ModuleCatalog
             Version: "1.0.0", Visibility: ModuleVisibility.Core,
             Dependencies: Array.Empty<string>(),
             RequiredRoles: new[] { "Business", "Staff" },
+            // Business-internal: customer records are managed BY the business.
+            CustomerCapability: null,
             Permissions: new[]
             {
                 new PermissionDefinition("customers.view",   new[] { "Business", "Staff" }),
@@ -56,6 +73,8 @@ public static class ModuleCatalog
             Version: "1.0.0", Visibility: ModuleVisibility.Core,
             Dependencies: Array.Empty<string>(),
             RequiredRoles: new[] { "Business", "Staff" },
+            // Business-internal: rota/invitations are owner/staff surfaces.
+            CustomerCapability: null,
             Permissions: new[]
             {
                 new PermissionDefinition("staff.view",   new[] { "Business", "Staff" }),
@@ -67,6 +86,9 @@ public static class ModuleCatalog
             Version: "1.0.0", Visibility: ModuleVisibility.Core,
             Dependencies: Array.Empty<string>(),
             RequiredRoles: new[] { "Business" },
+            // Business-internal. The customer's own Settings tab is a core
+            // customer route, never this module.
+            CustomerCapability: null,
             Permissions: new[]
             {
                 new PermissionDefinition("settings.view",   new[] { "Business" }),
@@ -80,6 +102,7 @@ public static class ModuleCatalog
             Version: "1.0.0", Visibility: ModuleVisibility.Standard,
             Dependencies: new[] { "customers", "staff" },
             RequiredRoles: new[] { "Business", "Staff", "Customer" },
+            CustomerCapability: "appointments",
             Permissions: new[]
             {
                 new PermissionDefinition("appointments.view",   new[] { "Business", "Staff", "Customer" }),
@@ -92,6 +115,11 @@ public static class ModuleCatalog
             Version: "1.0.0", Visibility: ModuleVisibility.Standard,
             Dependencies: new[] { "customers" },
             RequiredRoles: new[] { "Business", "Staff", "Customer" },
+            // The customer's stamp surface IS the loyalty card: QrController is
+            // [Authorize(Roles = "Customer")] + [RequireModule("stamps")], and
+            // the card renders the stamps. There is deliberately no separate
+            // "Stamps" customer capability — it maps on to "loyalty".
+            CustomerCapability: "loyalty",
             Permissions: new[]
             {
                                 new PermissionDefinition("stamps.view",  new[] { "Business", "Staff", "Customer" }),
@@ -104,6 +132,7 @@ public static class ModuleCatalog
             Version: "1.0.0", Visibility: ModuleVisibility.Standard,
             Dependencies: new[] { "customers", "staff" },
             RequiredRoles: new[] { "Business", "Staff", "Customer" },
+            CustomerCapability: "notifications",
             Permissions: new[]
             {
                 new PermissionDefinition("notifications.view",   new[] { "Business", "Staff", "Customer" }),
@@ -115,6 +144,7 @@ public static class ModuleCatalog
             Version: "1.0.0", Visibility: ModuleVisibility.Standard,
             Dependencies: Array.Empty<string>(),
             RequiredRoles: new[] { "Business", "Customer" },
+            CustomerCapability: "services",
             Permissions: new[]
             {
                 new PermissionDefinition("serviceCatalog.view",   new[] { "Business", "Customer" }),
@@ -126,6 +156,9 @@ public static class ModuleCatalog
             Version: "1.0.0", Visibility: ModuleVisibility.Standard,
             Dependencies: new[] { "staff" },
             RequiredRoles: new[] { "Business", "Staff" },
+            // Business-internal: a business may have Attendance enabled while
+            // its customers have no attendance surface at all.
+            CustomerCapability: null,
             Permissions: new[]
             {
                 new PermissionDefinition("attendance.view",   new[] { "Business", "Staff" }),
@@ -138,8 +171,11 @@ public static class ModuleCatalog
             Key: "payments", Name: "Payments",
             Description: "Direct-to-business payment collection (cash + M-PESA)",
             Version: "1.0.0", Visibility: ModuleVisibility.Standard,
+            // Payments is a customer-facing capability: the customer sees
+            // payment requests for this business.
             Dependencies: new[] { "appointments" },
             RequiredRoles: new[] { "Business", "Staff", "Customer" },
+            CustomerCapability: "payments",
             Permissions: new[]
             {
                 new PermissionDefinition("payments.view",        new[] { "Business", "Staff", "Customer" }),
@@ -156,6 +192,7 @@ public static class ModuleCatalog
             Version: "1.0.0", Visibility: ModuleVisibility.Premium,
             Dependencies: new[] { "customers", "stamps" },
             RequiredRoles: new[] { "Business", "Customer" },
+            CustomerCapability: "loyalty",
             Permissions: new[]
             {
                 new PermissionDefinition("loyalty.view",   new[] { "Business", "Customer" }),
@@ -169,6 +206,7 @@ public static class ModuleCatalog
             Version: "1.0.0", Visibility: ModuleVisibility.Premium,
             Dependencies: new[] { "loyalty", "stamps" },
             RequiredRoles: new[] { "Business", "Customer" },
+            CustomerCapability: "rewards",
             Permissions: new[]
             {
                                 new PermissionDefinition("rewards.view",   new[] { "Business", "Customer" }),
@@ -184,6 +222,8 @@ public static class ModuleCatalog
             // ModuleCatalogSyncTests.
             Dependencies: new[] { "customers", "stamps", "loyalty" },
             RequiredRoles: new[] { "Business" },
+            // Business-internal: analytics is the owner's reporting surface.
+            CustomerCapability: null,
             Permissions: new[]
             {
                 new PermissionDefinition("analytics.view", new[] { "Business" }),
@@ -194,6 +234,9 @@ public static class ModuleCatalog
             Version: "1.0.0", Visibility: ModuleVisibility.Premium,
             Dependencies: new[] { "loyalty" },
             RequiredRoles: new[] { "Business" },
+            // Business-internal: program authoring is an owner tool. Customers
+            // experience the resulting program through "loyalty"/"rewards".
+            CustomerCapability: null,
             Permissions: new[]
             {
                 new PermissionDefinition("programs.view",   new[] { "Business" }),
@@ -205,6 +248,7 @@ public static class ModuleCatalog
             Version: "1.0.0", Visibility: ModuleVisibility.Premium,
             Dependencies: new[] { "loyalty", "stamps" },
             RequiredRoles: new[] { "Business", "Customer" },
+            CustomerCapability: "referrals",
             Permissions: new[]
             {
                 new PermissionDefinition("referral.view",   new[] { "Business", "Customer" }),
@@ -220,6 +264,8 @@ public static class ModuleCatalog
             // card design ships with loyalty, custom designs are an enhancement.
             Dependencies: new[] { "loyalty" },
             RequiredRoles: new[] { "Business" },
+            // Business-internal: authoring HTML card templates is an owner tool.
+            CustomerCapability: null,
             Permissions: new[]
             {
                 new PermissionDefinition("cardDesigns.view",   new[] { "Business" }),
