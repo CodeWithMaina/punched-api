@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
@@ -30,83 +31,6 @@ public class NotificationsService : INotificationsService
 
     /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
     private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
-
-    public async Task CreateGoalReachedAsync(Guid userId, Guid? businessId, int stampsCount)
-    {
-        await _unitOfWork.Notifications.AddAsync(new Notification
-        {
-            Id = Guid.NewGuid(),
-            UserId = userId,
-            BusinessId = businessId,
-            Type = "GoalReached",
-            StampsCount = stampsCount,
-            IsRead = false,
-            CreatedAt = DateTime.UtcNow
-        });
-        await _unitOfWork.SaveChangesAsync();
-    }
-
-        public async Task CreateRewardReadyAsync(Guid userId, Guid? businessId)
-    {
-        await _unitOfWork.Notifications.AddAsync(new Notification
-        {
-            Id = Guid.NewGuid(),
-            UserId = userId,
-            BusinessId = businessId,
-            Type = "RewardReady",
-            StampsCount = 1,
-            IsRead = false,
-            CreatedAt = DateTime.UtcNow
-        });
-        await _unitOfWork.SaveChangesAsync();
-    }
-
-    public async Task CreateAsync(Guid userId, Guid? businessId, string type, int stampsCount = 0)
-    {
-        await _unitOfWork.Notifications.AddAsync(new Notification
-        {
-            Id = Guid.NewGuid(),
-            UserId = userId,
-            BusinessId = businessId,
-            Type = type,
-            StampsCount = stampsCount,
-            IsRead = false,
-            CreatedAt = DateTime.UtcNow
-        });
-        await _unitOfWork.SaveChangesAsync();
-    }
-
-    public async Task CreateAsync(Guid userId, Guid? businessId, string type, Guid appointmentId, int stampsCount = 0)
-    {
-        await _unitOfWork.Notifications.AddAsync(new Notification
-        {
-            Id = Guid.NewGuid(),
-            UserId = userId,
-            BusinessId = businessId,
-            Type = type,
-            AppointmentId = appointmentId,
-            StampsCount = stampsCount,
-            IsRead = false,
-            CreatedAt = DateTime.UtcNow
-        });
-        await _unitOfWork.SaveChangesAsync();
-    }
-
-    public async Task MarkReadAsync(Guid userId, Guid? notificationId = null)
-    {
-        var query = _context.Notifications.Where(n => n.UserId == userId);
-        if (notificationId.HasValue)
-            query = query.Where(n => n.Id == notificationId.Value);
-
-        var toUpdate = await query.Where(n => !n.IsRead).ToListAsync();
-        foreach (var n in toUpdate)
-        {
-            n.IsRead = true;
-        }
-
-        if (toUpdate.Count > 0)
-            await _unitOfWork.SaveChangesAsync();
-    }
 
     /// <inheritdoc />
     public Task<int> GetUnreadCountAsync(Guid userId)
@@ -171,19 +95,35 @@ public class NotificationsService : INotificationsService
         if (unreadOnly)
             query = query.Where(n => !n.IsRead);
 
-        return await query
+        var notifications = await query
             .OrderByDescending(n => n.CreatedAt)
             .Take(limit)
-            .Select(n => new NotificationDto
-            {
-                Id = n.Id,
-                Type = n.Type,
-                BusinessId = n.BusinessId,
-                AppointmentId = n.AppointmentId,
-                StampsCount = n.StampsCount,
-                IsRead = n.IsRead,
-                CreatedAt = n.CreatedAt
-            })
             .ToListAsync();
+
+        return notifications.Select(notification => new NotificationDto
+            {
+                Id = notification.Id,
+                Type = notification.Type,
+                BusinessId = notification.BusinessId,
+                AppointmentId = notification.AppointmentId,
+                StampsCount = notification.StampsCount,
+                IsRead = notification.IsRead,
+                CreatedAt = notification.CreatedAt,
+                Payload = ParsePayload(notification.PayloadJson)
+            })
+            .ToList();
+    }
+
+    private static Dictionary<string, object?> ParsePayload(string? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload)) return new();
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, object?>>(payload) ?? new();
+        }
+        catch (JsonException)
+        {
+            return new();
+        }
     }
 }

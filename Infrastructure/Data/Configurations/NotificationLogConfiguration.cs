@@ -27,6 +27,9 @@ public class NotificationLogConfiguration : IEntityTypeConfiguration<Notificatio
             .HasColumnName("payload_json")
             .HasColumnType("jsonb")
             .HasDefaultValue("{}");
+        builder.Property(x => x.DeliveryAttemptsJson)
+            .HasColumnName("delivery_attempts_json")
+            .HasColumnType("jsonb");
         builder.Property(x => x.Attempts)
             .HasColumnName("attempts")
             .HasDefaultValue(0);
@@ -60,5 +63,10 @@ public class NotificationLogConfiguration : IEntityTypeConfiguration<Notificatio
         builder.HasIndex(x => new { x.Status, x.NextAttemptAt, x.CreatedAt })
             .HasDatabaseName("ix_notifications_outbox_claim")
             .HasFilter("status = 'pending'");
+        builder.HasIndex(x => x.UpdatedAt)
+            .HasDatabaseName("ix_notifications_updated_at");
+        builder.HasIndex(x => new { x.Status, x.UpdatedAt, x.Id })
+            .HasDatabaseName("ix_notifications_failed_updated_id")
+            .HasFilter("status = 'failed'");
     }
 }

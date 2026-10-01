@@ -10,4 +10,7 @@ public class EmailSettings
     public string Password { get; set; } = string.Empty;
     public string FromAddress { get; set; } = string.Empty;
     public string FromName { get; set; } = "Punched";
+    public bool Enabled { get; set; }
+    public int TimeoutSeconds { get; set; } = 30;
+    public int MaxRetries { get; set; } = 3;
 }

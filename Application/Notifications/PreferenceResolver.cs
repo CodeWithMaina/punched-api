@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Settings;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 
@@ -34,15 +36,26 @@ public sealed class PreferenceResolver : IPreferenceResolver
     private readonly IUnitOfWork _unitOfWork;
     private readonly IMemoryCache _cache;
     private readonly IReadOnlyList<INotificationChannel> _channels;
+    private readonly EmailSettings _emailSettings;
+    private readonly SmsSettings _smsSettings;
+    private readonly VapidSettings _vapidSettings;
+    private readonly bool _hasConfiguredSettings;
 
     public PreferenceResolver(
         IUnitOfWork unitOfWork,
         IMemoryCache cache,
-        IEnumerable<INotificationChannel> channels)
+        IEnumerable<INotificationChannel> channels,
+        IOptions<EmailSettings>? emailSettings = null,
+        IOptions<SmsSettings>? smsSettings = null,
+        IOptions<VapidSettings>? vapidSettings = null)
     {
         _unitOfWork = unitOfWork;
         _cache = cache;
         _channels = channels.ToList();
+        _emailSettings = emailSettings?.Value ?? new EmailSettings();
+        _smsSettings = smsSettings?.Value ?? new SmsSettings();
+        _vapidSettings = vapidSettings?.Value ?? new VapidSettings();
+        _hasConfiguredSettings = emailSettings is not null || smsSettings is not null || vapidSettings is not null;
     }
 
     /// <inheritdoc />
@@ -58,11 +71,13 @@ public sealed class PreferenceResolver : IPreferenceResolver
             throw new ArgumentException($"Unknown notification category '{category}'.", nameof(category));
 
         var rows = await LoadOverridesAsync(userId, businessId, ct);
+        var available = await AvailableChannelsAsync(userId, ct);
 
         var surviving = new List<string>();
         foreach (var channel in candidates)
         {
             if (surviving.Contains(channel)) continue;
+            if (!available.Contains(channel)) continue;
             if (IsEnabled(rows, category, channel)) surviving.Add(channel);
         }
 
@@ -76,7 +91,7 @@ public sealed class PreferenceResolver : IPreferenceResolver
         CancellationToken ct = default)
     {
         var rows = await LoadOverridesAsync(userId, businessId, ct);
-        var available = AvailableChannels();
+        var available = await AvailableChannelsAsync(userId, ct);
 
         var resolved = new List<ResolvedPreferenceDto>(
             NotificationDefaults.AllCategories.Count * NotificationDefaults.AllChannels.Count);
@@ -260,11 +275,42 @@ public sealed class PreferenceResolver : IPreferenceResolver
     /// The DI registration *is* the phase gate, so shipping a channel needs no edit
     /// here (email = Phase 4, sms = Phase 6, push = Phase 7).
     /// </summary>
-    private HashSet<string> AvailableChannels()
+    private async Task<HashSet<string>> AvailableChannelsAsync(Guid userId, CancellationToken ct)
     {
         var available = new HashSet<string>(StringComparer.Ordinal) { NotificationChannel.InApp };
-        foreach (var channel in _channels) available.Add(channel.Name);
+        if (!_hasConfiguredSettings && _channels.Count == 0)
+        {
+            available.UnionWith(NotificationDefaults.AllChannels.Where(channel => channel != NotificationChannel.InApp));
+            return available;
+        }
+
+        if ((_emailSettings.Enabled && !string.IsNullOrWhiteSpace(_emailSettings.Host)
+            && !string.IsNullOrWhiteSpace(_emailSettings.FromAddress)
+            && await HasVerifiedEmailAsync(userId))
+            || (!_hasConfiguredSettings && _channels.Any(channel => channel.Name == NotificationChannel.Email)))
+            available.Add(NotificationChannel.Email);
+        if ((_smsSettings.Enabled && await HasPhoneNumberAsync(userId))
+            || (!_hasConfiguredSettings && _channels.Any(channel => channel.Name == NotificationChannel.Sms)))
+            available.Add(NotificationChannel.Sms);
+        if ((_vapidSettings.Enabled && !string.IsNullOrWhiteSpace(_vapidSettings.PublicKey)
+            && !string.IsNullOrWhiteSpace(_vapidSettings.PrivateKey))
+            || (!_hasConfiguredSettings && _channels.Any(channel => channel.Name == NotificationChannel.Push)))
+            available.Add(NotificationChannel.Push);
         return available;
+    }
+
+    private async Task<bool> HasVerifiedEmailAsync(Guid userId)
+    {
+        var user = await _unitOfWork.Users.FirstOrDefaultAsync(item => item.Id == userId);
+        if (user is null) return false;
+        var auth = await _unitOfWork.UserAuths.FirstOrDefaultAsync(item => item.Email == user.Email);
+        return auth?.IsVerified == true;
+    }
+
+    private async Task<bool> HasPhoneNumberAsync(Guid userId)
+    {
+        var user = await _unitOfWork.Users.FirstOrDefaultAsync(item => item.Id == userId);
+        return !string.IsNullOrWhiteSpace(user?.PhoneNumber);
     }
 
     private static void Validate(NotificationPreferenceItem item)

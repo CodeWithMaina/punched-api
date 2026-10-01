@@ -33,6 +33,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<StaffDailyAnalytics> StaffDailyAnalytics => Set<StaffDailyAnalytics>();
     public DbSet<StaffShift> StaffShifts => Set<StaffShift>();
     public DbSet<NotificationLog> NotificationLogs => Set<NotificationLog>();
+    public DbSet<PushDevice> PushDevices => Set<PushDevice>();
     public DbSet<Review> Reviews => Set<Review>();
     public DbSet<ApiEventLog> ApiEventLogs => Set<ApiEventLog>();
     public DbSet<LoyaltyProgramHistory> LoyaltyProgramHistory => Set<LoyaltyProgramHistory>();
@@ -107,5 +108,21 @@ public class ApplicationDbContext : DbContext
             .IsUnique()
             .HasFilter("\"is_featured\" = true")
             .HasDatabaseName("ux_business_media_one_featured");
+
+        modelBuilder.Entity<PushDevice>()
+            .ToTable("push_devices")
+            .Property(x => x.Id).HasColumnName("id");
+        modelBuilder.Entity<PushDevice>().Property(x => x.UserId).HasColumnName("user_id");
+        modelBuilder.Entity<PushDevice>().Property(x => x.Endpoint).HasColumnName("endpoint");
+        modelBuilder.Entity<PushDevice>().Property(x => x.P256dh).HasColumnName("p256dh");
+        modelBuilder.Entity<PushDevice>().Property(x => x.Auth).HasColumnName("auth");
+        modelBuilder.Entity<PushDevice>().Property(x => x.UserAgent).HasColumnName("user_agent");
+        modelBuilder.Entity<PushDevice>().Property(x => x.IsActive).HasColumnName("is_active");
+        modelBuilder.Entity<PushDevice>().Property(x => x.LastSeenAt).HasColumnName("last_seen_at");
+        modelBuilder.Entity<PushDevice>().Property(x => x.CreatedAt).HasColumnName("created_at");
+        modelBuilder.Entity<PushDevice>()
+            .HasIndex(x => x.Endpoint)
+            .IsUnique()
+            .HasDatabaseName("ux_push_devices_endpoint");
     }
 }

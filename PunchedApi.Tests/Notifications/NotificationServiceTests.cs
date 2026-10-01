@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Moq;
 using PunchedApi.Application.Notifications;
+using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
 using PunchedApi.Infrastructure.Repositories;
@@ -41,6 +42,58 @@ public class NotificationServiceTests
         Assert.NotNull(result.InboxId);
         Assert.Single(await fixture.Context.Notifications.ToListAsync());
         Assert.Single(await fixture.Context.NotificationLogs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Staff_member_cannot_be_notified_in_another_business_context()
+    {
+        await using var fixture = new Fixture(new[] { NotificationChannel.InApp });
+        var firstBusinessId = Guid.NewGuid();
+        var secondBusinessId = Guid.NewGuid();
+        var firstOwnerId = Guid.NewGuid();
+        var secondOwnerId = Guid.NewGuid();
+        var staffId = Guid.NewGuid();
+
+        fixture.Context.Users.AddRange(
+            new User { Id = firstOwnerId, Email = "owner-a@test.com", FullName = "Owner A", Role = UserRole.Business },
+            new User { Id = secondOwnerId, Email = "owner-b@test.com", FullName = "Owner B", Role = UserRole.Business },
+            new User
+            {
+                Id = staffId,
+                Email = "staff-a@test.com",
+                FullName = "Staff A",
+                Role = UserRole.Staff,
+                StaffBusinessId = firstBusinessId
+            });
+        fixture.Context.Businesses.AddRange(
+            new Business
+            {
+                Id = firstBusinessId,
+                OwnerId = firstOwnerId,
+                Name = "Business A",
+                Category = "Cafe",
+                Location = "Nairobi",
+                MpesaNumber = "254700000001"
+            },
+            new Business
+            {
+                Id = secondBusinessId,
+                OwnerId = secondOwnerId,
+                Name = "Business B",
+                Category = "Cafe",
+                Location = "Nairobi",
+                MpesaNumber = "254700000002"
+            });
+        await fixture.Context.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Service.SendAsync(new NotificationRequest(
+            "loyalty.goal_reached",
+            staffId,
+            secondBusinessId,
+            new Dictionary<string, object?> { ["businessName"] = "Business B" })));
+
+        Assert.Empty(await fixture.Context.Notifications.ToListAsync());
+        Assert.Empty(await fixture.Context.NotificationLogs.ToListAsync());
     }
 
     private sealed class Fixture : IAsyncDisposable

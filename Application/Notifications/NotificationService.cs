@@ -64,6 +64,7 @@ public sealed class NotificationService : INotificationService
 
         if (surviving.Count == 0)
         {
+            NotificationMetrics.RecordSuppressed(definition.Category, SuppressedByPreferences);
             _logger.LogInformation(
                 "notification suppressed {NotificationType} to user {RecipientUserId} for business {BusinessId} reason {SuppressReason}",
                 request.Type,
@@ -82,7 +83,11 @@ public sealed class NotificationService : INotificationService
             inboxId = await WriteInboxRowAsync(request, ct);
 
         var accepted = new List<string>();
-        if (inboxId.HasValue) accepted.Add(NotificationChannel.InApp);
+        if (inboxId.HasValue)
+        {
+            accepted.Add(NotificationChannel.InApp);
+            NotificationMetrics.RecordSent(NotificationChannel.InApp);
+        }
 
         foreach (var channel in surviving.Where(channel => channel != NotificationChannel.InApp))
         {
@@ -106,11 +111,22 @@ public sealed class NotificationService : INotificationService
     }
 
     /// <summary>Writes the inbox row plus its same-UoW ledger row and returns the inbox id.</summary>
-    private async Task<Guid> WriteInboxRowAsync(NotificationRequest request, CancellationToken ct)
+    private async Task<Guid?> WriteInboxRowAsync(NotificationRequest request, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var now = DateTime.UtcNow;
+        var idempotencyKey = CreateIdempotencyKey(request, NotificationChannel.InApp, now);
+        var alreadyWritten = await _context.NotificationLogs
+            .AsNoTracking()
+            .AnyAsync(log => log.IdempotencyKey == idempotencyKey && log.Channel == NotificationChannel.InApp, ct);
+        if (alreadyWritten)
+            return null;
+
         var inboxId = Guid.NewGuid();
+        var inAppHistory = NotificationDeliveryAttemptHistory.ForNewRecord();
+        var inAppAttempt = inAppHistory.Start(now);
+        inAppAttempt.CompletedAtUtc = now;
+        inAppAttempt.Outcome = "sent";
 
         await _unitOfWork.Notifications.AddAsync(new Notification
         {
@@ -135,7 +151,9 @@ public sealed class NotificationService : INotificationService
             Channel = NotificationChannel.InApp,
             TemplateType = request.Type,
             Status = "sent",
+            IdempotencyKey = idempotencyKey,
             SentAt = now,
+            DeliveryAttemptsJson = inAppHistory.Serialize(),
             CreatedAt = now
         });
 
@@ -168,6 +186,7 @@ public sealed class NotificationService : INotificationService
             Status = "pending",
             PayloadJson = payload,
             Attempts = 0,
+            DeliveryAttemptsJson = NotificationDeliveryAttemptHistory.ForNewRecord().Serialize(),
             NextAttemptAt = now,
             IdempotencyKey = key,
             UpdatedAt = now,
@@ -201,7 +220,9 @@ public sealed class NotificationService : INotificationService
         DateTime utcNow)
     {
         if (!string.IsNullOrWhiteSpace(request.IdempotencyKey))
-            return request.IdempotencyKey.Trim();
+            return channel == NotificationChannel.Email
+                ? request.IdempotencyKey.Trim()
+                : $"{request.IdempotencyKey.Trim()}:{channel}";
 
         var natural = string.Join('|',
             request.Type,

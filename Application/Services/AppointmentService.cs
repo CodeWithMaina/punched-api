@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -21,7 +22,7 @@ public class AppointmentService : IAppointmentService
     private readonly AppointmentAvailabilityService _availability;
     private readonly IMapper _mapper;
     private readonly IPermissionService _permissionService;
-    private readonly INotificationsService _notifications;
+    private readonly INotificationService _notifications;
     private readonly ILogger<AppointmentService> _logger;
 
     /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
@@ -33,7 +34,7 @@ public class AppointmentService : IAppointmentService
         AppointmentAvailabilityService availability,
         IMapper mapper,
         IPermissionService permissionService,
-        INotificationsService notifications,
+        INotificationService notifications,
         ILogger<AppointmentService> logger,
         ITenantContext? tenant = null)
     {
@@ -49,6 +50,25 @@ public class AppointmentService : IAppointmentService
 
     /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
     private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
+
+    private Task<string> GetBusinessNameAsync(Guid businessId) => _context.Businesses
+        .AsNoTracking()
+        .Where(business => business.Id == businessId)
+        .Select(business => business.Name)
+        .FirstOrDefaultAsync()!;
+
+    private async Task SendNotificationSafelyAsync(NotificationRequest request)
+    {
+        try
+        {
+            await _notifications.SendAsync(request);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Notification {NotificationType} could not be queued for recipient {RecipientUserId}.",
+                request.Type, request.RecipientUserId);
+        }
+    }
 
     /// <summary>
     /// Fine-grained permission gate (G6): staff members do NOT hold
@@ -431,8 +451,17 @@ public class AppointmentService : IAppointmentService
             .FirstOrDefaultAsync();
         if (ownerId != Guid.Empty && ownerId != null)
         {
-            await _notifications.CreateAsync(
-                ownerId.Value, appointment.BusinessId, "RescheduleRequested", appointment.Id);
+            await SendNotificationSafelyAsync(new NotificationRequest(
+                "appointment.reschedule_requested",
+                ownerId.Value,
+                appointment.BusinessId,
+                new Dictionary<string, object?>
+                {
+                    ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+                    ["scheduledAt"] = rescheduleRequest.ProposedScheduledAt.ToString("O"),
+                    ["appointmentId"] = appointment.Id
+                },
+                $"appt:{rescheduleRequest.Id}:reschedule-requested"));
         }
 
         return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
@@ -501,8 +530,17 @@ public class AppointmentService : IAppointmentService
 
         await _unitOfWork.SaveChangesAsync();
 
-        await _notifications.CreateAsync(
-            appointment.CustomerId, appointment.BusinessId, "RescheduleApproved", appointment.Id);
+        await SendNotificationSafelyAsync(new NotificationRequest(
+            "appointment.reschedule_approved",
+            appointment.CustomerId,
+            appointment.BusinessId,
+            new Dictionary<string, object?>
+            {
+                ["businessName"] = business.Name,
+                ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+                ["appointmentId"] = appointment.Id
+            },
+            $"appt:{rescheduleRequest.Id}:reschedule-approved"));
 
         var updated = await LoadAsync(appointmentId);
         return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(updated!));
@@ -532,8 +570,17 @@ public class AppointmentService : IAppointmentService
         rescheduleRequest.ResolvedByUserId = callerUserId;
         await _unitOfWork.SaveChangesAsync();
 
-        await _notifications.CreateAsync(
-            appointment.CustomerId, appointment.BusinessId, "RescheduleRejected", appointment.Id);
+        await SendNotificationSafelyAsync(new NotificationRequest(
+            "appointment.reschedule_rejected",
+            appointment.CustomerId,
+            appointment.BusinessId,
+            new Dictionary<string, object?>
+            {
+                ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+                ["scheduledAt"] = rescheduleRequest.ProposedScheduledAt.ToString("O"),
+                ["appointmentId"] = appointment.Id
+            },
+            $"appt:{rescheduleRequest.Id}:reschedule-rejected"));
 
         return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
     }

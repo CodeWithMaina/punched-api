@@ -203,12 +203,23 @@ try
     // one AddScoped line at a time (email = Phase 4, sms = Phase 6, push = Phase 7).
     builder.Services.AddScoped<INotificationService, NotificationService>();
     builder.Services.AddScoped<IPreferenceResolver, PreferenceResolver>();
+    builder.Services.Configure<NotificationWorkerOptions>(
+        builder.Configuration.GetSection(NotificationWorkerOptions.SectionName));
+    builder.Services.Configure<SmsSettings>(builder.Configuration.GetSection(SmsSettings.SectionName));
+    builder.Services.Configure<VapidSettings>(builder.Configuration.GetSection(VapidSettings.SectionName));
     builder.Services.AddScoped<NotificationOutboxStore>();
+    builder.Services.AddScoped<ITemplateRenderer, TemplateRenderer>();
+    builder.Services.AddScoped<INotificationSmtpDelivery, MailKitNotificationSmtpDelivery>();
+    builder.Services.AddScoped<INotificationChannel, EmailChannel>();
+    builder.Services.AddHttpClient<AfricaTalkingClient>();
+    builder.Services.AddScoped<INotificationChannel, SmsChannel>();
+    builder.Services.AddScoped<INotificationChannel, PushChannel>();
     builder.Services.AddScoped<IQrService, QrService>();
     builder.Services.AddScoped<ICustomerEnrollmentService, CustomerEnrollmentService>();
     builder.Services.AddScoped<IRedemptionService, RedemptionService>();
     builder.Services.AddScoped<IReferralService, ReferralService>();
     builder.Services.AddScoped<IAdminService, AdminService>();
+    builder.Services.AddScoped<AdminNotificationOperationsService>();
     builder.Services.AddScoped<IAnalyticsAggregationService, AnalyticsAggregationService>();
     builder.Services.AddScoped<ISegmentationService, SegmentationService>();
     builder.Services.AddScoped<IInsightService, InsightService>();

@@ -1,6 +1,8 @@
 using AutoMapper;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Services;
 using PunchedApi.Domain.Entities;
@@ -39,6 +41,17 @@ internal static class BookingTestBase
     public static IMapper CreateMapper()
         => new MapperConfiguration(cfg => cfg.AddProfile<AppointmentMappingProfile>()).CreateMapper();
 
+    public static NotificationService CreateNotificationService(ApplicationDbContext context)
+    {
+        var unitOfWork = new UnitOfWork(context);
+        var preferences = new PreferenceResolver(
+            unitOfWork,
+            new MemoryCache(new MemoryCacheOptions()),
+            Array.Empty<INotificationChannel>());
+        return new NotificationService(
+            unitOfWork, context, preferences, TestHelpers.CreateLogger<NotificationService>());
+    }
+
     public static AppointmentService CreateAppointmentService(ApplicationDbContext context)
         => new(
             new UnitOfWork(context),
@@ -46,10 +59,7 @@ internal static class BookingTestBase
             new AppointmentAvailabilityService(context, TestHelpers.CreateLogger<AppointmentAvailabilityService>()),
             CreateMapper(),
             new PunchedApi.Application.Authorization.PermissionService(),
-            new PunchedApi.Application.Services.NotificationsService(
-                new UnitOfWork(context),
-                context,
-                TestHelpers.CreateLogger<PunchedApi.Application.Services.NotificationsService>()),
+            CreateNotificationService(context),
             TestHelpers.CreateLogger<AppointmentService>());
 
     public static AppointmentAvailabilityService CreateAvailabilityService(ApplicationDbContext context)

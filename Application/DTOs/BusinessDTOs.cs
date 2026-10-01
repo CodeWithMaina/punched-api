@@ -187,6 +187,7 @@ public class BusinessResponse
 
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
+
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1161,6 +1162,9 @@ public class NotificationDto
 
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
+
+    [JsonPropertyName("payload")]
+    public Dictionary<string, object?> Payload { get; set; } = new();
 }
 
 /// <summary>

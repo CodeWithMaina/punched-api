@@ -54,10 +54,83 @@ public sealed class NotificationOutboxStore
         return claimed;
     }
 
+    /// <summary>
+    /// Reclaims rows left in a stale processing state so a crashed worker does not strand work forever.
+    /// </summary>
+    public async Task<int> ReclaimStaleProcessingAsync(
+        TimeSpan? age = null,
+        CancellationToken ct = default)
+    {
+        var threshold = DateTime.UtcNow.Subtract(age ?? TimeSpan.FromMinutes(5));
+
+        if (_context.Database.ProviderName == "Microsoft.EntityFrameworkCore.InMemory")
+        {
+            var stale = await _context.NotificationLogs
+                .Where(row => row.Status == "processing" && row.UpdatedAt <= threshold)
+                .ToListAsync(ct);
+
+            foreach (var row in stale)
+            {
+                row.Status = "pending";
+                row.UpdatedAt = DateTime.UtcNow;
+                row.NextAttemptAt = row.NextAttemptAt <= DateTime.UtcNow ? row.NextAttemptAt : DateTime.UtcNow;
+            }
+
+            if (stale.Count > 0) await _context.SaveChangesAsync(ct);
+            return stale.Count;
+        }
+
+        return await _context.NotificationLogs
+            .Where(row => row.Status == "processing" && row.UpdatedAt <= threshold)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(row => row.Status, "pending")
+                .SetProperty(row => row.UpdatedAt, DateTime.UtcNow)
+                .SetProperty(row => row.NextAttemptAt, DateTime.UtcNow), ct);
+    }
+
+    /// <summary>
+    /// Safely requeues reviewed transient failures after the operator confirms the provider outcome.
+    /// </summary>
+    public async Task<int> RequeueTransientFailureAsync(
+        Guid notificationId,
+        CancellationToken ct = default)
+    {
+        var now = DateTime.UtcNow;
+
+        if (_context.Database.ProviderName == "Microsoft.EntityFrameworkCore.InMemory")
+        {
+            var row = await _context.NotificationLogs
+                .SingleOrDefaultAsync(item => item.Id == notificationId && item.Status == "failed", ct);
+            if (row is null || string.IsNullOrWhiteSpace(row.Error) || !row.Error.StartsWith("retry_exhausted:"))
+                return 0;
+
+            row.Status = "pending";
+            row.Error = null;
+            row.Attempts = 0;
+            row.NextAttemptAt = now;
+            row.UpdatedAt = now;
+            await _context.SaveChangesAsync(ct);
+            return 1;
+        }
+
+        return await _context.NotificationLogs
+            .Where(row => row.Id == notificationId
+                && row.Status == "failed"
+                && row.Error != null
+                && row.Error.StartsWith("retry_exhausted:"))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(row => row.Status, "pending")
+                .SetProperty(row => row.Attempts, 0)
+                .SetProperty(row => row.Error, (string?)null)
+                .SetProperty(row => row.NextAttemptAt, now)
+                .SetProperty(row => row.UpdatedAt, now), ct);
+    }
+
     private async Task<List<Guid>> ClaimPostgresIdsAsync(int take, CancellationToken ct)
     {
         var connection = _context.Database.GetDbConnection();
-        await connection.OpenAsync(ct);
+        if (connection.State != System.Data.ConnectionState.Open)
+            await connection.OpenAsync(ct);
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT id

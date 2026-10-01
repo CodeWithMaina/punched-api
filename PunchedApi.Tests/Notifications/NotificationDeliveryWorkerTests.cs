@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -46,6 +47,20 @@ public class NotificationDeliveryWorkerTests
     }
 
     [Fact]
+    public async Task Permanent_channel_failure_is_terminal_without_retrying()
+    {
+        await using var fixture = await Fixture.CreateAsync(new TestNotificationChannel { PermanentFailure = true });
+        await fixture.AddPendingAsync();
+
+        await fixture.Worker.ProcessBatchAsync();
+
+        var row = await fixture.Context.NotificationLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("failed", row.Status);
+        Assert.Equal(0, row.Attempts);
+        Assert.Equal("permanent:Permanent test failure.", row.Error);
+    }
+
+    [Fact]
     public async Task Third_attempt_failure_is_terminal_and_truncated()
     {
         var channel = new TestNotificationChannel { ThrowOnSend = true };
@@ -57,7 +72,34 @@ public class NotificationDeliveryWorkerTests
         var row = await fixture.Context.NotificationLogs.AsNoTracking().SingleAsync();
         Assert.Equal("failed", row.Status);
         Assert.Equal(3, row.Attempts);
+        Assert.StartsWith("retry_exhausted:", row.Error);
         Assert.Equal(500, row.Error!.Length);
+    }
+
+    [Fact]
+    public async Task Delivery_attempt_history_is_bounded_and_marks_truncated_history_incomplete()
+    {
+        var channel = new TestNotificationChannel { ThrowOnSend = true };
+        await using var fixture = await Fixture.CreateAsync(channel);
+        var history = JsonSerializer.Serialize(new
+        {
+            version = 1,
+            complete = true,
+            attempts = Enumerable.Range(0, 50).Select(index => new
+            {
+                startedAtUtc = DateTime.UtcNow.AddMinutes(-index),
+                completedAtUtc = DateTime.UtcNow.AddMinutes(-index),
+                outcome = "retryable_failure"
+            })
+        });
+        await fixture.AddPendingAsync(attempts: 2, deliveryAttemptsJson: history);
+
+        await fixture.Worker.ProcessBatchAsync();
+
+        var row = await fixture.Context.NotificationLogs.AsNoTracking().SingleAsync();
+        using var document = JsonDocument.Parse(row.DeliveryAttemptsJson!);
+        Assert.Equal(50, document.RootElement.GetProperty("attempts").GetArrayLength());
+        Assert.False(document.RootElement.GetProperty("complete").GetBoolean());
     }
 
     [Fact]
@@ -69,7 +111,7 @@ public class NotificationDeliveryWorkerTests
         await fixture.Worker.ProcessBatchAsync();
         var failed = await fixture.Context.NotificationLogs.AsNoTracking().SingleAsync();
         Assert.Equal("failed", failed.Status);
-        Assert.Equal("no_channel_registered", failed.Error);
+        Assert.Equal("permanent:no_channel_registered", failed.Error);
 
         await fixture.Worker.ProcessBatchAsync();
         Assert.Equal(1, await fixture.Context.NotificationLogs.CountAsync());
@@ -145,6 +187,7 @@ public class NotificationDeliveryWorkerTests
             services.AddLogging();
             services.AddDbContext<ApplicationDbContext>(options => options.UseInMemoryDatabase(database));
             services.AddScoped<NotificationOutboxStore>();
+            services.AddScoped<ITemplateRenderer, TemplateRenderer>();
             services.AddSingleton<INotificationChannel>(channel);
             var provider = services.BuildServiceProvider();
             var context = provider.GetRequiredService<ApplicationDbContext>();
@@ -160,12 +203,14 @@ public class NotificationDeliveryWorkerTests
             int attempts = 0,
             string channel = NotificationChannel.Email,
             DateTime? createdAt = null,
-            Guid? id = null)
+            Guid? id = null,
+            string? deliveryAttemptsJson = null)
         {
             Context.NotificationLogs.Add(new NotificationLog
             {
                 Id = id ?? Guid.NewGuid(), UserId = Guid.NewGuid(), Channel = channel,
                 TemplateType = "appointment.booked", Status = "pending", PayloadJson = payload,
+                DeliveryAttemptsJson = deliveryAttemptsJson,
                 Attempts = attempts, NextAttemptAt = DateTime.UtcNow.AddMinutes(-1),
                 IdempotencyKey = Guid.NewGuid().ToString("N"), UpdatedAt = DateTime.UtcNow,
                 CreatedAt = createdAt ?? DateTime.UtcNow

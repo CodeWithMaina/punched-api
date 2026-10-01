@@ -15,14 +15,15 @@ namespace PunchedApi.Tests;
 public class NotificationAndStampSchemaTests
 {
     [Fact]
-    public void INotificationsService_ExposesFullContract()
+    public void INotificationsService_ExposesOnlyInboxReadContract()
     {
         var iface = typeof(PunchedApi.Domain.Interfaces.INotificationsService);
 
-        Assert.NotNull(iface.GetMethod("CreateGoalReachedAsync"));
-        Assert.NotNull(iface.GetMethod("CreateRewardReadyAsync"));
-        Assert.NotNull(iface.GetMethod("MarkReadAsync"));
         Assert.NotNull(iface.GetMethod("GetAsync"));
+        Assert.NotNull(iface.GetMethod("GetUnreadCountAsync"));
+        Assert.NotNull(iface.GetMethod("MarkReadByIdAsync"));
+        Assert.NotNull(iface.GetMethod("MarkAllReadAsync"));
+        Assert.DoesNotContain(iface.GetMethods(), method => method.Name.StartsWith("Create", StringComparison.Ordinal));
     }
 
     [Fact]

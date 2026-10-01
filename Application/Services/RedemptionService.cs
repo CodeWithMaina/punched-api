@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Loyalty;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -24,7 +25,7 @@ public class RedemptionService : IRedemptionService
     private readonly IAnalyticsAggregationService _analyticsAggregationService;
     private readonly IBusinessScopeResolver _businessScopeResolver;
     private readonly IPermissionService _permissionService;
-    private readonly INotificationsService _notificationsService;
+    private readonly INotificationService _notificationService;
     private readonly ISseService _sseService;
     private readonly IIdempotencyService _idempotencyService;
     private readonly ILogger<RedemptionService> _logger;
@@ -35,7 +36,7 @@ public class RedemptionService : IRedemptionService
         IAnalyticsAggregationService analyticsAggregationService,
         IBusinessScopeResolver businessScopeResolver,
         IPermissionService permissionService,
-        INotificationsService notificationsService,
+        INotificationService notificationService,
         ISseService sseService,
         IIdempotencyService idempotencyService,
         ILogger<RedemptionService> logger)
@@ -45,7 +46,7 @@ public class RedemptionService : IRedemptionService
         _analyticsAggregationService = analyticsAggregationService;
         _businessScopeResolver = businessScopeResolver;
         _permissionService = permissionService;
-        _notificationsService = notificationsService;
+        _notificationService = notificationService;
         _sseService = sseService;
         _idempotencyService = idempotencyService;
         _logger = logger;
@@ -387,7 +388,16 @@ public class RedemptionService : IRedemptionService
                 Message = "Enjoy your reward!"
             });
 
-            await _notificationsService.CreateAsync(card.CustomerId, scopedBusinessId, "RewardFulfilled");
+            await SendNotificationSafelyAsync(new NotificationRequest(
+                "loyalty.reward_fulfilled",
+                card.CustomerId,
+                scopedBusinessId,
+                new Dictionary<string, object?>
+                {
+                    ["businessName"] = card.Business.Name,
+                    ["rewardName"] = card.Program.RewardDescription
+                },
+                $"redemption:{redemption.Id}:fulfilled"));
 
             return ApiResponse<FulfillRedemptionResponse>.Ok(new FulfillRedemptionResponse
             {
@@ -486,7 +496,16 @@ public class RedemptionService : IRedemptionService
                 Message = $"Your redemption was cancelled. {redemption.StampsConsumed} stamp(s) restored."
             });
 
-            await _notificationsService.CreateAsync(card.CustomerId, businessId.Value, "RewardCancelled");
+            await SendNotificationSafelyAsync(new NotificationRequest(
+                "loyalty.reward_cancelled",
+                card.CustomerId,
+                businessId.Value,
+                new Dictionary<string, object?>
+                {
+                    ["businessName"] = card.Business.Name,
+                    ["rewardName"] = card.Program.RewardDescription
+                },
+                $"redemption:{redemption.Id}:cancelled"));
 
             return ApiResponse<CancelRedemptionResponse>.Ok(new CancelRedemptionResponse
             {
@@ -503,6 +522,19 @@ public class RedemptionService : IRedemptionService
         {
             _logger.LogError(ex, "Error cancelling redemption {RedemptionId}", redemptionId);
             return ApiResponse<CancelRedemptionResponse>.Fail("CANCEL_FAILED", "Failed to cancel redemption.");
+        }
+    }
+
+    private async Task SendNotificationSafelyAsync(NotificationRequest request)
+    {
+        try
+        {
+            await _notificationService.SendAsync(request);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Notification {NotificationType} could not be queued for recipient {RecipientUserId}.",
+                request.Type, request.RecipientUserId);
         }
     }
 

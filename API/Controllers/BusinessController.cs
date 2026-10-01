@@ -249,7 +249,10 @@ public partial class BusinessController : ControllerBase
         var userId = GetUserId();
         if (userId == null) return Unauthorized();
 
-        await _notificationsService.MarkReadAsync(userId.Value, request?.NotificationId);
+        if (request?.NotificationId is Guid notificationId)
+            await _notificationsService.MarkReadByIdAsync(userId.Value, notificationId);
+        else
+            await _notificationsService.MarkAllReadAsync(userId.Value);
         return Ok(ApiResponse<MessageResponse>.Ok(new MessageResponse { Message = "Notifications marked as read." }));
     }
 

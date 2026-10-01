@@ -31,6 +31,9 @@ public class NotificationLog : BaseEntity
     /// <summary>Number of failed delivery attempts made so far.</summary>
     public int Attempts { get; set; }
 
+    /// <summary>Timestamped channel attempt outcomes; null means legacy attempts are not fully observable.</summary>
+    public string? DeliveryAttemptsJson { get; set; }
+
     /// <summary>Earliest UTC time at which a pending row may be claimed.</summary>
     public DateTime NextAttemptAt { get; set; } = DateTime.UtcNow;
 
