@@ -266,6 +266,9 @@ public class UserProfileResponse
     [JsonPropertyName("avatarUrl")]
     public string? AvatarUrl { get; set; }
 
+    [JsonPropertyName("avatarMediaId")]
+    public Guid? AvatarMediaId { get; set; }
+
     [JsonPropertyName("dateOfBirth")]
     public DateOnly? DateOfBirth { get; set; }
 

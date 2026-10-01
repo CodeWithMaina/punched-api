@@ -19,6 +19,7 @@ public sealed class MediaStorageOptions
     public int PendingObjectLifecycleHours { get; set; } = 24;
     public int CleanupBatchSize { get; set; } = 25;
     public int WorkerBatchSize { get; set; } = 4;
+    public List<int> VariantWidths { get; set; } = [320, 640, 1280];
     public MediaProcessingOptions Processing { get; set; } = new();
     public MediaRetentionOptions Retention { get; set; } = new();
     public MediaLimitOptions Limits { get; set; } = MediaLimitOptions.CreateDefaults();

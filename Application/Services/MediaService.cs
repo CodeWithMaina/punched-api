@@ -65,6 +65,7 @@ public sealed partial class MediaService : IMediaService
         media.SourceKey = _keys.CreatePendingKey(media);
         _db.Media.Add(media);
         await _db.SaveChangesAsync(cancellationToken);
+        MediaMetrics.RecordUploadCreated();
         await _idempotency.StoreAsync(idempotencyKey, userId, hash, JsonSerializer.Serialize(new { mediaId = media.Id }));
         return await GrantAsync(media, cancellationToken);
     }
@@ -74,6 +75,15 @@ public sealed partial class MediaService : IMediaService
     {
         if (purpose == MediaPurposes.UserAvatar)
             return request.TargetId is null || request.TargetId == userId ? (true, null, "", null, userId) : (false, "TARGET_NOT_FOUND", "The avatar target is not available.", null, null);
+
+        if (purpose == MediaPurposes.ReviewImage && request.TargetId is Guid reviewId)
+        {
+            var review = await _db.Reviews.FirstOrDefaultAsync(x => x.Id == reviewId && x.CustomerId == userId, cancellationToken);
+            return review == null
+                ? (false, "TARGET_NOT_FOUND", "The review target is not available.", null, null)
+                : (true, null, "", review.BusinessId, null);
+        }
+
         var businessId = await _businessContext.GetBusinessIdAsync();
         if (!businessId.HasValue || _businessContext.GetRole() is not ("Business" or "Staff"))
             return (false, "FORBIDDEN", "Business media management is not authorized.", null, null);

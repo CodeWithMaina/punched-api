@@ -79,6 +79,13 @@ public partial class BusinessService : IBusinessService
                 .FirstOrDefault();
 
             var hasActiveReferralProgram = business.ReferralProgram is { IsActive: true };
+            var galleryRelationships = await _unitOfWork.BusinessMedia.FindAsync(x => x.BusinessId == businessId);
+            var galleryIds = galleryRelationships.Select(x => x.MediaId).ToList();
+            var readyGalleryIds = galleryIds.Count == 0
+                ? []
+                : (await _unitOfWork.Media.FindAsync(x => galleryIds.Contains(x.Id) && x.Status == MediaStatus.Ready))
+                    .Select(x => x.Id)
+                    .ToList();
 
             // Customer-facing projection of the SAME effective entitlements used
             // by [RequireModule]. Computed from data already in hand (no extra
@@ -98,6 +105,9 @@ public partial class BusinessService : IBusinessService
                 Location = business.Location,
                 Description = business.Description,
                 LogoUrl = business.LogoUrl,
+                LogoMediaId = business.LogoMediaId,
+                CoverMediaId = business.CoverMediaId,
+                GalleryMediaIds = readyGalleryIds,
                 PhoneNumber = business.PhoneNumber,
                 Email = business.Email,
                 // Kept for existing consumers (storefront shell); both now read
@@ -701,6 +711,8 @@ public partial class BusinessService : IBusinessService
         Email = b.Email,
         Description = b.Description,
         LogoUrl = b.LogoUrl,
+        LogoMediaId = b.LogoMediaId,
+        CoverMediaId = b.CoverMediaId,
         OwnerId = b.OwnerId,
         DefaultDailyGoal = b.DefaultDailyGoal,
         DailyGoalType = string.IsNullOrWhiteSpace(b.DailyGoalType) ? "stamps" : b.DailyGoalType.Trim().ToLowerInvariant(),

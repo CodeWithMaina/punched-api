@@ -187,7 +187,11 @@ try
         builder.Configuration.GetSection(MediaStorageOptions.SectionName));
     builder.Services.AddSingleton<IMediaKeyFactory, MediaKeyFactory>();
     builder.Services.AddSingleton<IMediaUrlFactory, MediaUrlFactory>();
+    builder.Services.AddSingleton<IMediaValidator, MediaValidator>();
+    builder.Services.AddScoped<IMediaProcessor, MediaProcessor>();
     builder.Services.AddScoped<IObjectStore, R2ObjectStore>();
+    builder.Services.AddHostedService<MediaProcessingWorker>();
+    builder.Services.AddHostedService<MediaCleanupWorker>();
     builder.Services.AddScoped<IMediaService, MediaService>();
     builder.Services.AddScoped<PunchedApi.Application.Programs.IProgramRuleEngine, PunchedApi.Application.Programs.ProgramRuleEngine>();
     builder.Services.AddScoped<IIdempotencyService, IdempotencyService>();

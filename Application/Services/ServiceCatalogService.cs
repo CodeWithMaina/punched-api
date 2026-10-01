@@ -88,7 +88,7 @@ public class ServiceCatalogService : IServiceCatalogService
             .FindAsync(s => s.BusinessId == businessId && s.IsActive && s.Showcase);
 
         return ApiResponse<List<ServiceCatalogItemResponse>>.Ok(
-            services.OrderBy(s => s.CreatedAt).Select(Map).ToList());
+            await MapManyAsync(services.OrderBy(s => s.CreatedAt)));
     }
 
     public async Task<ApiResponse<List<ServiceCatalogItemResponse>>> GetMyServicesAsync(Guid ownerUserId)
@@ -101,7 +101,7 @@ public class ServiceCatalogService : IServiceCatalogService
             .FindAsync(s => s.BusinessId == business.Id);
 
         return ApiResponse<List<ServiceCatalogItemResponse>>.Ok(
-            services.OrderBy(s => s.CreatedAt).Select(Map).ToList());
+            await MapManyAsync(services.OrderBy(s => s.CreatedAt)));
     }
 
     public async Task<ApiResponse<ServiceCatalogItemResponse>> GetServiceAsync(Guid ownerUserId, Guid serviceId)
@@ -116,7 +116,7 @@ public class ServiceCatalogService : IServiceCatalogService
         if (service.BusinessId != business.Id)
             return ApiResponse<ServiceCatalogItemResponse>.Fail("FORBIDDEN", "Not authorized to access this service.");
 
-        return ApiResponse<ServiceCatalogItemResponse>.Ok(Map(service));
+        return ApiResponse<ServiceCatalogItemResponse>.Ok(await MapAsync(service));
     }
 
     public async Task<ApiResponse<ServiceCatalogItemResponse>> CreateServiceAsync(Guid ownerUserId, CreateServiceRequest request)
@@ -141,7 +141,7 @@ public class ServiceCatalogService : IServiceCatalogService
         await _unitOfWork.ServiceCatalogItems.AddAsync(service);
         await _unitOfWork.SaveChangesAsync();
 
-        return ApiResponse<ServiceCatalogItemResponse>.Ok(Map(service));
+        return ApiResponse<ServiceCatalogItemResponse>.Ok(await MapAsync(service));
     }
 
     public async Task<ApiResponse<ServiceCatalogItemResponse>> UpdateServiceAsync(Guid ownerUserId, Guid serviceId, UpdateServiceRequest request)
@@ -172,7 +172,7 @@ public class ServiceCatalogService : IServiceCatalogService
         _unitOfWork.ServiceCatalogItems.Update(service);
         await _unitOfWork.SaveChangesAsync();
 
-        return ApiResponse<ServiceCatalogItemResponse>.Ok(Map(service));
+        return ApiResponse<ServiceCatalogItemResponse>.Ok(await MapAsync(service));
     }
 
     public async Task<ApiResponse<bool>> DeleteServiceAsync(Guid ownerUserId, Guid serviceId)
@@ -238,6 +238,20 @@ public class ServiceCatalogService : IServiceCatalogService
                 AvatarUrl = u.AvatarUrl
             })
             .ToList());
+    }
+
+    private async Task<List<ServiceCatalogItemResponse>> MapManyAsync(IEnumerable<ServiceCatalogItem> services)
+    {
+        var mapped = await Task.WhenAll(services.Select(MapAsync));
+        return mapped.ToList();
+    }
+
+    private async Task<ServiceCatalogItemResponse> MapAsync(ServiceCatalogItem service)
+    {
+        var media = await _unitOfWork.ServiceMedia.FirstOrDefaultAsync(x => x.ServiceCatalogItemId == service.Id && x.Role == "Primary");
+        var response = Map(service);
+        response.ImageMediaId = media?.MediaId;
+        return response;
     }
 
     private static ServiceCatalogItemResponse Map(ServiceCatalogItem s) => new()

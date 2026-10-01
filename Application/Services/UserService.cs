@@ -49,6 +49,7 @@ public class UserService : IUserService
                 FullName = user.FullName,
                 Phone = user.PhoneNumber,
                 AvatarUrl = user.AvatarUrl,
+                AvatarMediaId = user.AvatarMediaId,
                 DateOfBirth = user.DateOfBirth,
                 Gender = user.Gender,
                 Role = user.Role,

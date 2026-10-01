@@ -84,7 +84,8 @@ public sealed class ReviewService : IReviewService
         return await PageAsync(query, page, pageSize, async rows =>
         {
             var customers = await DisplayNamesAsync(rows);
-            return rows.Select(r => MapPublic(r, customers[r.CustomerId])).ToList();
+            var images = await ReviewImagesAsync(rows);
+            return rows.Select(r => MapPublic(r, customers[r.CustomerId], images.GetValueOrDefault(r.Id) ?? [])).ToList();
         });
     }
 
@@ -92,7 +93,8 @@ public sealed class ReviewService : IReviewService
         PageAsync(_context.Reviews.AsNoTracking().Where(r => r.BusinessId == businessId), page, pageSize, async rows =>
         {
             var customers = await DisplayNamesAsync(rows);
-            return rows.Select(r => MapBusiness(r, customers[r.CustomerId])).ToList();
+            var images = await ReviewImagesAsync(rows);
+            return rows.Select(r => MapBusiness(r, customers[r.CustomerId], images.GetValueOrDefault(r.Id) ?? [])).ToList();
         });
 
     public async Task<ApiResponse<ReviewResponse>> UpdateAsync(Guid customerId, Guid reviewId, UpdateReviewRequest request)
@@ -150,11 +152,20 @@ public sealed class ReviewService : IReviewService
     /// <summary>Narrows a review query to the active tenant (no-op on the platform root).</summary>
     private IQueryable<Review> TenantScoped(IQueryable<Review> query) =>
         TenantBusinessId is Guid tenantId ? query.Where(r => r.BusinessId == tenantId) : query;
-    private async Task<Dictionary<Guid, (string Name, string? Avatar)>> DisplayNamesAsync(List<Review> rows)
+    private async Task<Dictionary<Guid, (string Name, string? Avatar, Guid? AvatarMediaId)>> DisplayNamesAsync(List<Review> rows)
     {
         var ids = rows.Select(r => r.CustomerId).Distinct().ToList();
         return await _context.Users.AsNoTracking().Where(u => ids.Contains(u.Id))
-            .ToDictionaryAsync(u => u.Id, u => (u.FullName, u.AvatarUrl));
+                .ToDictionaryAsync(u => u.Id, u => (u.FullName, u.AvatarUrl, u.AvatarMediaId));
+    }
+
+    private async Task<Dictionary<Guid, List<Guid>>> ReviewImagesAsync(List<Review> rows)
+    {
+            var reviewIds = rows.Select(row => row.Id).ToList();
+            return await _context.ReviewMedia.AsNoTracking()
+                .Where(row => reviewIds.Contains(row.ReviewId))
+                .GroupBy(row => row.ReviewId)
+                .ToDictionaryAsync(group => group.Key, group => group.Select(row => row.MediaId).ToList());
     }
 
     private static ReviewResponse MapCustomer(Review r) => new()
@@ -163,17 +174,17 @@ public sealed class ReviewService : IReviewService
         Comment = r.Comment, Status = r.Status, CreatedAt = r.CreatedAt, UpdatedAt = r.UpdatedAt
     };
 
-    private static PublicReviewResponse MapPublic(Review r, (string Name, string? Avatar) customer) => new()
+    private static PublicReviewResponse MapPublic(Review r, (string Name, string? Avatar, Guid? AvatarMediaId) customer, IReadOnlyList<Guid> images) => new()
     {
         Id = r.Id, BusinessId = r.BusinessId, Rating = r.Rating, Comment = r.Comment,
-        ReviewerDisplayName = DisplayName(customer.Name), ReviewerAvatar = customer.Avatar,
+        ReviewerDisplayName = DisplayName(customer.Name), ReviewerAvatar = customer.Avatar, ReviewerAvatarMediaId = customer.AvatarMediaId, ImageMediaIds = images,
         CreatedAt = r.CreatedAt, UpdatedAt = r.UpdatedAt
     };
 
-    private static BusinessReviewResponse MapBusiness(Review r, (string Name, string? Avatar) customer) => new()
+    private static BusinessReviewResponse MapBusiness(Review r, (string Name, string? Avatar, Guid? AvatarMediaId) customer, IReadOnlyList<Guid> images) => new()
     {
         Id = r.Id, BusinessId = r.BusinessId, Rating = r.Rating, Comment = r.Comment, Status = r.Status,
-        ReviewerDisplayName = DisplayName(customer.Name), ReviewerAvatar = customer.Avatar,
+        ReviewerDisplayName = DisplayName(customer.Name), ReviewerAvatar = customer.Avatar, ReviewerAvatarMediaId = customer.AvatarMediaId, ImageMediaIds = images,
         CreatedAt = r.CreatedAt, UpdatedAt = r.UpdatedAt
     };
 

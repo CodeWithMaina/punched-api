@@ -40,6 +40,9 @@ public class ServiceCatalogItemResponse
     [JsonPropertyName("showcase")]
     public bool Showcase { get; set; } = true;
 
+    [JsonPropertyName("imageMediaId")]
+    public Guid? ImageMediaId { get; set; }
+
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
 }

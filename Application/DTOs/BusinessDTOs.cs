@@ -153,6 +153,15 @@ public class BusinessResponse
     [JsonPropertyName("logoUrl")]
     public string? LogoUrl { get; set; }
 
+    [JsonPropertyName("logoMediaId")]
+    public Guid? LogoMediaId { get; set; }
+
+    [JsonPropertyName("coverMediaId")]
+    public Guid? CoverMediaId { get; set; }
+
+    [JsonPropertyName("galleryMediaIds")]
+    public IReadOnlyList<Guid> GalleryMediaIds { get; set; } = [];
+
     [JsonPropertyName("ownerId")]
     public Guid? OwnerId { get; set; }
 
@@ -343,6 +352,9 @@ public class LoyaltyProgramResponse
     /// <summary>Earning model key (see <c>ProgramTypes</c>).</summary>
     [JsonPropertyName("programType")]
     public string ProgramType { get; set; } = "stamp";
+
+    [JsonPropertyName("imageMediaId")]
+    public Guid? ImageMediaId { get; set; }
 
     /// <summary>Structured configuration when the program uses the flexible model.</summary>
     [JsonPropertyName("config")]
@@ -618,6 +630,15 @@ public class PublicBusinessProfileResponse
 
     [JsonPropertyName("logoUrl")]
     public string? LogoUrl { get; set; }
+
+    [JsonPropertyName("logoMediaId")]
+    public Guid? LogoMediaId { get; set; }
+
+    [JsonPropertyName("coverMediaId")]
+    public Guid? CoverMediaId { get; set; }
+
+    [JsonPropertyName("galleryMediaIds")]
+    public IReadOnlyList<Guid> GalleryMediaIds { get; set; } = [];
 
     [JsonPropertyName("phoneNumber")]
     public string? PhoneNumber { get; set; }

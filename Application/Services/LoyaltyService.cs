@@ -414,7 +414,7 @@ public class LoyaltyService : ILoyaltyService
 
         return ApiResponse<ProgramDetailResponse>.Ok(new ProgramDetailResponse
         {
-            Program = MapProgram(program),
+                Program = await MapProgramWithMediaAsync(program),
             Summary = _ruleEngine.Describe(program),
             ActiveCustomers = activeCards,
             StampsIssued = stampsIssued,
@@ -737,6 +737,14 @@ public class LoyaltyService : ILoyaltyService
             .GroupBy(s => s.CardId)
             .Select(g => new { CardId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.CardId, x => x.Count);
+    }
+
+    private async Task<LoyaltyProgramResponse> MapProgramWithMediaAsync(LoyaltyProgram program)
+    {
+        var response = MapProgram(program);
+        var media = await _unitOfWork.LoyaltyProgramMedia.FirstOrDefaultAsync(x => x.LoyaltyProgramId == program.Id && x.Role == "Primary");
+        response.ImageMediaId = media?.MediaId;
+        return response;
     }
 
     private static LoyaltyProgramResponse MapProgram(LoyaltyProgram p) => new()

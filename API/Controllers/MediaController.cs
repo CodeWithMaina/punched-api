@@ -71,6 +71,8 @@ public sealed class MediaController : ControllerBase
     public Task<IActionResult> ClearAvatar(CancellationToken cancellationToken) => HandleClearAvatar(cancellationToken);
     [HttpPost("business/gallery")]
     public Task<IActionResult> AttachGallery([FromBody] AttachGalleryMediaRequest request, CancellationToken cancellationToken) => HandleAttachGallery(request, cancellationToken);
+    [HttpGet("business/gallery")]
+    public Task<IActionResult> GetGallery(CancellationToken cancellationToken) => HandleGetGallery(cancellationToken);
     [HttpPatch("business/gallery/order")]
     public Task<IActionResult> ReorderGallery([FromBody] ReorderGalleryMediaRequest request, CancellationToken cancellationToken) => HandleReorderGallery(request, cancellationToken);
     [HttpDelete("business/gallery/{mediaId:guid}")]
@@ -98,6 +100,8 @@ public sealed class MediaController : ControllerBase
     { var id = UserId(); return id == null ? Unauthorized() : Map(await _media.AssignUserAvatarAsync(id.Value, Guid.Empty, ct)); }
     private async Task<IActionResult> HandleAttachGallery(AttachGalleryMediaRequest request, CancellationToken ct)
     { var id = UserId(); return id == null ? Unauthorized() : Map(await _media.AttachGalleryAsync(id.Value, request.MediaId, request.SortOrder, request.Featured, ct)); }
+    private async Task<IActionResult> HandleGetGallery(CancellationToken ct)
+    { var id = UserId(); return id == null ? Unauthorized() : Map(await _media.GetBusinessGalleryAsync(id.Value, ct)); }
     private async Task<IActionResult> HandleReorderGallery(ReorderGalleryMediaRequest request, CancellationToken ct)
     { var id = UserId(); return id == null ? Unauthorized() : Map(await _media.ReorderGalleryAsync(id.Value, request.MediaIds, ct)); }
     private async Task<IActionResult> HandleAttachService(Guid serviceId, AttachRelationshipMediaRequest request, CancellationToken ct)

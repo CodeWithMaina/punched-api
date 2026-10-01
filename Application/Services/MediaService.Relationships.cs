@@ -85,6 +85,29 @@ public sealed partial class MediaService
         return ApiResponse<BusinessMediaResponse>.Ok(new BusinessMediaResponse { BusinessId = businessId, MediaId = mediaId, Role = "Gallery", SortOrder = row.SortOrder, Featured = row.IsFeatured, Media = Map(media.Data) });
     }
 
+    public async Task<ApiResponse<List<BusinessMediaResponse>>> GetBusinessGalleryAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        var businessId = await _businessContext.GetBusinessIdAsync();
+        if (!businessId.HasValue || _businessContext.GetRole() is not ("Business" or "Staff"))
+            return Fail<List<BusinessMediaResponse>>("FORBIDDEN", "Business media management is not authorized.");
+
+        var rows = await (from relationship in _db.BusinessMedia.AsNoTracking()
+                          join media in _db.Media.AsNoTracking() on relationship.MediaId equals media.Id
+                          where relationship.BusinessId == businessId.Value && media.Status == MediaStatus.Ready
+                          orderby relationship.SortOrder, relationship.CreatedAt
+                          select new { relationship, media }).ToListAsync(cancellationToken);
+
+        return ApiResponse<List<BusinessMediaResponse>>.Ok(rows.Select(item => new BusinessMediaResponse
+        {
+            BusinessId = item.relationship.BusinessId,
+            MediaId = item.relationship.MediaId,
+            Role = item.relationship.Role,
+            SortOrder = item.relationship.SortOrder,
+            Featured = item.relationship.IsFeatured,
+            Media = Map(item.media)
+        }).ToList());
+    }
+
     public async Task<ApiResponse<bool>> ReorderGalleryAsync(Guid userId, IReadOnlyList<Guid> mediaIds, CancellationToken cancellationToken)
     {
         var businessId = await _businessContext.GetBusinessIdAsync();
@@ -104,7 +127,10 @@ public sealed partial class MediaService
         if (!authorized) return Fail<bool>("FORBIDDEN", "You are not authorized to detach this media.");
         switch (relationship)
         {
-            case "business-gallery": _db.BusinessMedia.RemoveRange(_db.BusinessMedia.Where(x => x.BusinessId == targetId && x.MediaId == mediaId)); break;
+            case "business-gallery":
+                var galleryBusinessId = targetId == Guid.Empty ? businessId : targetId;
+                _db.BusinessMedia.RemoveRange(_db.BusinessMedia.Where(x => x.BusinessId == galleryBusinessId && x.MediaId == mediaId));
+                break;
             case "service": _db.ServiceMedia.RemoveRange(_db.ServiceMedia.Where(x => x.ServiceCatalogItemId == targetId && x.MediaId == mediaId)); break;
             case "loyalty-program": _db.LoyaltyProgramMedia.RemoveRange(_db.LoyaltyProgramMedia.Where(x => x.LoyaltyProgramId == targetId && x.MediaId == mediaId)); break;
             case "review": _db.ReviewMedia.RemoveRange(_db.ReviewMedia.Where(x => x.ReviewId == targetId && x.MediaId == mediaId)); break;

@@ -63,6 +63,7 @@ public sealed partial class MediaService
         media.NextAttemptAt = DateTime.UtcNow;
         media.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(cancellationToken);
+        MediaMetrics.RecordUploadCompleted();
         return await CompleteReplayAsync(idempotencyKey, userId, hash, media, cancellationToken);
     }
 

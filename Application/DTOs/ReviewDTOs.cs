@@ -41,6 +41,7 @@ public sealed class ReviewResponse
     public DateTime CreatedAt { get; set; }
     [JsonPropertyName("updatedAt")]
     public DateTime UpdatedAt { get; set; }
+    [JsonPropertyName("imageMediaIds")] public IReadOnlyList<Guid> ImageMediaIds { get; set; } = [];
 }
 
 /// <summary>Public contract. Customer and appointment identifiers are intentionally excluded.</summary>
@@ -52,6 +53,8 @@ public sealed class PublicReviewResponse
     [JsonPropertyName("comment")] public string? Comment { get; set; }
     [JsonPropertyName("reviewerDisplayName")] public string? ReviewerDisplayName { get; set; }
     [JsonPropertyName("reviewerAvatar")] public string? ReviewerAvatar { get; set; }
+    [JsonPropertyName("reviewerAvatarMediaId")] public Guid? ReviewerAvatarMediaId { get; set; }
+    [JsonPropertyName("imageMediaIds")] public IReadOnlyList<Guid> ImageMediaIds { get; set; } = [];
     [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; set; }
     [JsonPropertyName("updatedAt")] public DateTime UpdatedAt { get; set; }
 }
@@ -65,6 +68,8 @@ public sealed class BusinessReviewResponse
     [JsonPropertyName("status")] public string Status { get; set; } = string.Empty;
     [JsonPropertyName("reviewerDisplayName")] public string? ReviewerDisplayName { get; set; }
     [JsonPropertyName("reviewerAvatar")] public string? ReviewerAvatar { get; set; }
+    [JsonPropertyName("reviewerAvatarMediaId")] public Guid? ReviewerAvatarMediaId { get; set; }
+    [JsonPropertyName("imageMediaIds")] public IReadOnlyList<Guid> ImageMediaIds { get; set; } = [];
     [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; set; }
     [JsonPropertyName("updatedAt")] public DateTime UpdatedAt { get; set; }
 }
