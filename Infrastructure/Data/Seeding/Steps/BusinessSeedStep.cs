@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using PunchedApi.Application.Services;
 
 namespace PunchedApi.Infrastructure.Data.Seeding.Steps;
 
@@ -20,6 +21,18 @@ public sealed class BusinessSeedStep : ISeedStep
         var existingByNameLocation = await context.Db.Businesses
             .Where(b => context.Scenario.Businesses.Select(s => s.Name).Contains(b.Name))
             .ToListAsync(cancellationToken);
+
+        // Subdomain slugs already in circulation (live + superseded) so seeded
+        // addresses never collide with real businesses or captured redirects.
+        var takenSlugs = new HashSet<string>(StringComparer.Ordinal);
+        takenSlugs.UnionWith(await context.Db.Businesses
+            .IgnoreQueryFilters()
+            .Where(b => b.Slug != null)
+            .Select(b => b.Slug!)
+            .ToListAsync(cancellationToken));
+        takenSlugs.UnionWith(await context.Db.BusinessSlugHistories
+            .Select(h => h.Slug)
+            .ToListAsync(cancellationToken));
 
         var created = 0;
 
@@ -52,6 +65,17 @@ public sealed class BusinessSeedStep : ISeedStep
             business.LogoUrl = def.LogoUrl;
             business.MpesaNumber = def.MpesaNumber;
             business.OwnerId = owner.Id;
+
+            // Subdomain address: only assign when missing — an owner-customized
+            // slug is never clobbered by a reseed. Deterministic via the shared
+            // policy (name → base → numbered suffix against takenSlugs).
+            if (string.IsNullOrEmpty(business.Slug))
+            {
+                business.Slug = BusinessSlugPolicy.Next(
+                    BusinessSlugPolicy.Slugify(def.Name),
+                    candidate => takenSlugs.Contains(candidate));
+            }
+            takenSlugs.Add(business.Slug!);
 
             context.BusinessesByKey[def.Key] = business;
         }

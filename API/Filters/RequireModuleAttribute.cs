@@ -35,7 +35,9 @@ public class RequireModuleAttribute : Attribute, IAsyncAuthorizationFilter
     {
         // Skip if the endpoint was explicitly made anonymous (e.g. public
         // catalog/availability endpoints on a decorated controller).
-        if (ctx.Filters.OfType<Microsoft.AspNetCore.Authorization.IAllowAnonymous>().Any())
+        if (ctx.HttpContext.GetEndpoint()?.Metadata.GetMetadata<Microsoft.AspNetCore.Authorization.IAllowAnonymous>() != null ||
+            ctx.ActionDescriptor.EndpointMetadata.OfType<Microsoft.AspNetCore.Authorization.IAllowAnonymous>().Any() ||
+            ctx.Filters.OfType<Microsoft.AspNetCore.Authorization.IAllowAnonymous>().Any())
             return;
 
         var businessContext = ctx.HttpContext.RequestServices

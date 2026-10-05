@@ -1,0 +1,1 @@
+namespace PunchedApi.Application.Notifications;

@@ -3,11 +3,10 @@ using System.ComponentModel.DataAnnotations;
 namespace PunchedApi.Domain.Entities;
 
 /// <summary>
-/// An individual stamp card customers can use within a loyalty program.
-/// A loyalty program owns one or more stamp cards (one-to-many); each card defines its
-/// own stamp goal, reward and visual design. The classic program-level fields on
-/// <see cref="LoyaltyProgram"/> remain the default/stamp-pipeline values so
-/// existing stamping behaviour is unchanged.
+/// An individual stamp-card rule set customers can use within a loyalty program.
+/// A loyalty program owns one or more stamp cards; each child defines its own
+/// stamp goal and reward. The visual design is canonical at
+/// <see cref="LoyaltyProgram.CardDesignId"/> and shared by every card in that program.
 /// </summary>
 public class StampCard : BaseEntity
 {
@@ -46,13 +45,29 @@ public class StampCard : BaseEntity
     public StampCardStatus Status { get; set; } = StampCardStatus.Draft;
 
     /// <summary>
-    /// FK to the reusable <see cref="CardDesign"/> controlling this card's visuals.
-    /// Null means the card uses the app's built-in default rendering.
+    /// Legacy nullable design reference retained for existing rows. New writes are
+    /// rejected and rendering ignores this field; program-level CardDesignId is canonical.
     /// </summary>
     public Guid? CardDesignId { get; set; }
+
+    /// <summary>
+    /// Monotonic version of this card's *business rules*. Incremented whenever
+    /// <see cref="StampsRequired"/>, <see cref="RewardDescription"/> or
+    /// <see cref="RewardValue"/> change, and recorded in
+    /// <see cref="StampCardRulesChange"/>. New enrolments snapshot both the rules
+    /// and this version, so a later edit can never silently reinterpret an
+    /// existing customer's progress.
+    /// </summary>
+    public int RulesVersion { get; set; } = 1;
+
+    /// <summary>Last rules mutation timestamp (null for never-updated rows).</summary>
+    public DateTime? UpdatedAt { get; set; }
 
     // ── Navigation ──────────────────────────────────────────
     public virtual LoyaltyProgram Program { get; set; } = null!;
     public virtual Business Business { get; set; } = null!;
     public virtual CardDesign? CardDesign { get; set; }
+
+    /// <summary>Customer enrolments bound to this card template.</summary>
+    public virtual ICollection<LoyaltyCard> LoyaltyCards { get; set; } = new List<LoyaltyCard>();
 }

@@ -39,6 +39,13 @@ public class CardDesignConfiguration : IEntityTypeConfiguration<CardDesign>
         builder.Property(e => e.IsDefault).IsRequired().HasColumnName("is_default").HasDefaultValue(false);
         builder.Property(e => e.CreatedAt).HasColumnName("created_at");
 
+        // Structured presentation configuration + append-only versioning metadata.
+        builder.Property(e => e.ConfigJson).HasColumnName("config_json");
+        builder.Property(e => e.CurrentVersion)
+            .HasColumnName("current_version")
+            .HasDefaultValue(0);
+        builder.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+
         builder.HasIndex(e => e.BusinessId);
 
         // Exactly one platform default (partial unique index; ignored by SQLite

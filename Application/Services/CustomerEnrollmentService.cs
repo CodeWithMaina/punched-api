@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Loyalty;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -19,8 +20,18 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
     private readonly ApplicationDbContext _context;
     private readonly ILogger<CustomerEnrollmentService> _logger;
 
-    public CustomerEnrollmentService(IUnitOfWork u, ApplicationDbContext c, ILogger<CustomerEnrollmentService> l)
-    { _unitOfWork = u; _context = c; _logger = l; }
+    /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
+    private readonly ITenantContext? _tenant;
+
+    public CustomerEnrollmentService(
+        IUnitOfWork u,
+        ApplicationDbContext c,
+        ILogger<CustomerEnrollmentService> l,
+        ITenantContext? tenant = null)
+    { _unitOfWork = u; _context = c; _logger = l; _tenant = tenant; }
+
+    /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
+    private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
 
     public async Task<bool> IsEnrolledAsync(Guid customerId, Guid businessId) =>
         await _context.CustomerBusinessEnrollments.AnyAsync(e =>
@@ -29,16 +40,22 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
 
     public async Task<ApiResponse<List<CustomerBusinessDto>>> GetMyBusinessesAsync(Guid customerId)
     {
-        var rows = await _context.CustomerBusinessEnrollments.AsNoTracking()
+        var query = _context.CustomerBusinessEnrollments.AsNoTracking()
             .Include(e => e.Business)
-            .Where(e => e.CustomerId == customerId && e.Status == CustomerBusinessEnrollmentStatus.Active)
-            .OrderByDescending(e => e.EnrolledAt).ToListAsync();
+            .Where(e => e.CustomerId == customerId && e.Status == CustomerBusinessEnrollmentStatus.Active);
+        if (TenantBusinessId is Guid tenantId)
+            query = query.Where(e => e.BusinessId == tenantId);
+
+        var rows = await query.OrderByDescending(e => e.EnrolledAt).ToListAsync();
         return ApiResponse<List<CustomerBusinessDto>>.Ok(rows.Select(e => MapEnrollment(e)).ToList());
     }
 
 
     public async Task<ApiResponse<CustomerBusinessDto>> EnrollAsync(Guid customerId, Guid businessId, string? source = null)
     {
+        // Tenant narrowing: on a tenant host enrolment may only target the active tenant.
+        if (TenantBusinessId is Guid activeTenantId && businessId != activeTenantId)
+            return ApiResponse<CustomerBusinessDto>.Fail("FORBIDDEN", "This business is not available on this site.");
         var src = NormalizeSource(source);
         try
         {
@@ -104,6 +121,7 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
         var query = _context.CustomerStampCards.AsNoTracking()
             .Include(c => c.StampCard).ThenInclude(s => s.Business)
             .Where(c => c.CustomerId == customerId && c.Status == CustomerStampCardStatus.Active);
+        if (TenantBusinessId is Guid tenantId) query = query.Where(c => c.StampCard.BusinessId == tenantId);
         if (businessId.HasValue) query = query.Where(c => c.StampCard.BusinessId == businessId.Value);
         var rows = await query.OrderByDescending(c => c.JoinedAt).ToListAsync();
         var totals = await _context.LoyaltyCards.AsNoTracking()
@@ -120,6 +138,8 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
             var card = await _context.StampCards.AsNoTracking().Include(s => s.Business)
                 .FirstOrDefaultAsync(s => s.Id == stampCardId);
             if (card == null) return ApiResponse<CustomerStampCardDto>.Fail("NOT_FOUND", "Stamp card not found.");
+            if (TenantBusinessId is Guid tenantId && card.BusinessId != tenantId)
+                return ApiResponse<CustomerStampCardDto>.Fail("NOT_FOUND", "Stamp card not found.");
             if (card.Status == StampCardStatus.Archived) return ApiResponse<CustomerStampCardDto>.Fail("CARD_ARCHIVED", "Archived.");
             if (card.Status != StampCardStatus.Active) return ApiResponse<CustomerStampCardDto>.Fail("CARD_INACTIVE", "Not active.");
             if (!await IsEnrolledAsync(customerId, card.BusinessId))
@@ -147,6 +167,7 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
             };
             await _unitOfWork.CustomerStampCards.AddAsync(m);
             await _unitOfWork.SaveChangesAsync();
+            await TryBindFreshLoyaltyCardAsync(customerId, card);
             return ApiResponse<CustomerStampCardDto>.Ok(await MapStampCardWithTotalAsync(m, card));
         }
         catch (DbUpdateException ex) when (IsUniqueViolation(ex))
@@ -170,6 +191,30 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
         _unitOfWork.CustomerStampCards.Update(existing);
         await _unitOfWork.SaveChangesAsync();
         return ApiResponse<bool>.Ok(true);
+    }
+
+    /// <summary>
+    /// Binds a brand-new (zero-progress) loyalty card to the stamp card the
+    /// customer just joined, freezing that card's rules as their snapshot.
+    /// Cards with any progress (or another binding) are never re-bound — their
+    /// established rule stays exactly as they joined it (§36).
+    /// </summary>
+    private async Task TryBindFreshLoyaltyCardAsync(Guid customerId, StampCard stampCard)
+    {
+        var loyaltyCard = await _context.LoyaltyCards
+            .FirstOrDefaultAsync(l => l.CustomerId == customerId && l.BusinessId == stampCard.BusinessId);
+        if (loyaltyCard == null || loyaltyCard.StampCardId != null
+            || loyaltyCard.TotalStamps != 0 || loyaltyCard.LifetimeStamps != 0)
+            return;
+
+        var program = await _context.LoyaltyPrograms
+            .AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == loyaltyCard.ProgramId);
+        if (program == null) return;
+
+        LoyaltyCardSnapshot.Apply(loyaltyCard, program, stampCard, DateTime.UtcNow);
+        _context.LoyaltyCards.Update(loyaltyCard);
+        await _context.SaveChangesAsync();
     }
 
     private static string NormalizeSource(string? s)

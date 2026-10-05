@@ -14,19 +14,29 @@ namespace PunchedApi.API.Controllers;
 /// Brute-force sensitive actions (login, register, password reset,
 /// email verification) are rate limited via the "login" policy;
 /// verification-code resend uses the tighter "otp" policy.
+///
+/// The limit is applied per action rather than at class level because
+/// <c>refresh-token</c> must NOT share the credential bucket: with the shared
+/// cross-subdomain session every origin (platform root + each business
+/// subdomain) silently hydrates once per fresh load, so a 5-per-30-minutes
+/// budget would lock real users — and their login form — out of the app.
 /// </summary>
 [ApiController]
 [Route("v1/auth")]
-[EnableRateLimiting("login")]
 [Produces("application/json")]
 public class AuthController : ControllerBase
 {
     private readonly IAuthService _authService;
+    private readonly Application.Services.ISessionCookieService _sessionCookie;
     private readonly ILogger<AuthController> _logger;
 
-    public AuthController(IAuthService authService, ILogger<AuthController> logger)
+    public AuthController(
+        IAuthService authService,
+        Application.Services.ISessionCookieService sessionCookie,
+        ILogger<AuthController> logger)
     {
         _authService = authService;
+        _sessionCookie = sessionCookie;
         _logger = logger;
     }
 
@@ -40,6 +50,8 @@ public class AuthController : ControllerBase
     /// <response code="409">Email already registered.</response>
     /// <response code="400">Validation error.</response>
     [HttpPost("register")]
+    [AllowAnonymous]
+    [EnableRateLimiting("login")]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status409Conflict)]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status400BadRequest)]
@@ -68,6 +80,8 @@ public class AuthController : ControllerBase
     /// <response code="409">Email already registered or business name taken.</response>
     /// <response code="400">Validation error.</response>
     [HttpPost("register-business")]
+    [AllowAnonymous]
+    [EnableRateLimiting("login")]
     [ProducesResponseType(typeof(ApiResponse<RegisterBusinessResponse>), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ApiResponse<RegisterBusinessResponse>), StatusCodes.Status409Conflict)]
     [ProducesResponseType(typeof(ApiResponse<RegisterBusinessResponse>), StatusCodes.Status400BadRequest)]
@@ -98,6 +112,7 @@ public class AuthController : ControllerBase
     /// <response code="401">Invalid verification code.</response>
     /// <response code="410">Verification code expired.</response>
     [HttpPost("verify-email")]
+    [AllowAnonymous]
     [EnableRateLimiting("otp")]
     [ProducesResponseType(typeof(ApiResponse<AuthResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<AuthResponse>), StatusCodes.Status401Unauthorized)]
@@ -116,6 +131,7 @@ public class AuthController : ControllerBase
             };
         }
 
+        IssueSharedSession(result.Data);
         return Ok(result);
     }
 
@@ -129,6 +145,8 @@ public class AuthController : ControllerBase
     /// <response code="401">Invalid credentials or unverified account.</response>
     /// <response code="423">Account locked due to too many failed attempts.</response>
     [HttpPost("login")]
+    [AllowAnonymous]
+    [EnableRateLimiting("login")]
     [ProducesResponseType(typeof(ApiResponse<AuthResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<AuthResponse>), StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Login([FromBody] LoginRequest request)
@@ -145,34 +163,60 @@ public class AuthController : ControllerBase
             };
         }
 
+        IssueSharedSession(result.Data);
         return Ok(result);
     }
 
     /// <summary>
     /// Rotate refresh token — issues new access and refresh tokens.
     /// Revokes the old refresh token.
+    ///
+    /// The refresh token may be supplied in the body (origin-local flow) or,
+    /// for cross-subdomain hydration, omitted entirely: the shared HttpOnly
+    /// session cookie is then used, so signing in on punched.app also signs the
+    /// visitor in on java-house.punched.app without copying tokens between
+    /// origins.
     /// </summary>
-    /// <param name="request">Current refresh token.</param>
+    /// <param name="request">Current refresh token and optional tenant context.</param>
     /// <returns>New access and refresh tokens.</returns>
     /// <response code="200">Tokens refreshed.</response>
     /// <response code="401">Invalid or expired refresh token.</response>
     [HttpPost("refresh-token")]
+    [AllowAnonymous]
+    [EnableRateLimiting("refresh")]
     [ProducesResponseType(typeof(ApiResponse<TokenResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<TokenResponse>), StatusCodes.Status401Unauthorized)]
-    public async Task<IActionResult> RefreshToken([FromBody] RefreshTokenRequest request)
+    public async Task<IActionResult> RefreshToken([FromBody] RefreshTokenRequest? request)
     {
-        var result = await _authService.RefreshTokenAsync(request.RefreshToken);
+        var refreshToken = !string.IsNullOrWhiteSpace(request?.RefreshToken)
+            ? request!.RefreshToken
+            : _sessionCookie.Read(Request);
+
+        if (string.IsNullOrWhiteSpace(refreshToken))
+        {
+            return Unauthorized(ApiResponse<TokenResponse>.Fail(
+                "INVALID_REFRESH_TOKEN",
+                "Invalid or expired refresh token."));
+        }
+
+        var result = await _authService.RefreshTokenAsync(refreshToken, request?.BusinessSlug);
 
         if (!result.Success)
         {
+            // A rejected session must not keep a dead cookie alive.
+            _sessionCookie.Clear(Request, Response);
             return Unauthorized(result);
         }
+
+        if (result.Data != null)
+            _sessionCookie.Write(Request, Response, result.Data.RefreshToken);
 
         return Ok(result);
     }
 
     /// <summary>
-    /// Logout: revokes all refresh tokens for the current user.
+    /// Logout: revokes all refresh tokens for the current user and clears the
+    /// shared cross-subdomain session cookie.
     /// Requires a valid access token.
     /// </summary>
     /// <returns>Success message.</returns>
@@ -189,7 +233,22 @@ public class AuthController : ControllerBase
             return Unauthorized(ApiResponse<MessageResponse>.Fail("UNAUTHORIZED", "Invalid token."));
 
         var result = await _authService.LogoutAsync(userAuthId.Value);
+
+        // Server-side sessions are revoked; drop the shared cookie so no origin
+        // can silently hydrate from a dead session.
+        _sessionCookie.Clear(Request, Response);
         return Ok(result);
+    }
+
+    /// <summary>
+    /// Writes the shared cross-subdomain session cookie for a successful
+    /// sign-in. Only the refresh token is stored; access tokens stay
+    /// origin-local in the client.
+    /// </summary>
+    private void IssueSharedSession(AuthResponse? auth)
+    {
+        if (auth == null || string.IsNullOrWhiteSpace(auth.RefreshToken)) return;
+        _sessionCookie.Write(Request, Response, auth.RefreshToken);
     }
 
     /// <summary>
@@ -200,6 +259,7 @@ public class AuthController : ControllerBase
     /// <returns>Success message.</returns>
     /// <response code="200">Verification code sent (if email exists).</response>
     [HttpPost("request-email")]
+    [AllowAnonymous]
     [EnableRateLimiting("otp")]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> RequestEmail([FromBody] RequestEmailRequest request)
@@ -213,6 +273,8 @@ public class AuthController : ControllerBase
     /// Does not reveal whether the email is registered.
     /// </summary>
     [HttpPost("forgot-password")]
+    [AllowAnonymous]
+    [EnableRateLimiting("login")]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request)
     {
@@ -224,6 +286,8 @@ public class AuthController : ControllerBase
     /// Reset password using the verification code from forgot-password.
     /// </summary>
     [HttpPost("reset-password")]
+    [AllowAnonymous]
+    [EnableRateLimiting("login")]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest request)
@@ -246,6 +310,7 @@ public class AuthController : ControllerBase
     /// </summary>
     [HttpPost("change-password")]
     [Authorize]
+    [EnableRateLimiting("login")]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]

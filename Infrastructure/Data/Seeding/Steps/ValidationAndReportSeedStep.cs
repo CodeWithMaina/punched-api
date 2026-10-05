@@ -19,7 +19,7 @@ public sealed class ValidationAndReportSeedStep : ISeedStep
             .CountAsync(cancellationToken);
 
         var duplicateCards = await context.Db.LoyaltyCards
-            .GroupBy(c => new { c.CustomerId, c.BusinessId })
+            .GroupBy(c => new { c.CustomerId, c.ProgramId })
             .Where(g => g.Count() > 1)
             .CountAsync(cancellationToken);
 

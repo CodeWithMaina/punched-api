@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -21,8 +22,11 @@ public class AppointmentService : IAppointmentService
     private readonly AppointmentAvailabilityService _availability;
     private readonly IMapper _mapper;
     private readonly IPermissionService _permissionService;
-    private readonly INotificationsService _notifications;
+    private readonly INotificationService _notifications;
     private readonly ILogger<AppointmentService> _logger;
+
+    /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
+    private readonly ITenantContext? _tenant;
 
     public AppointmentService(
         IUnitOfWork unitOfWork,
@@ -30,8 +34,9 @@ public class AppointmentService : IAppointmentService
         AppointmentAvailabilityService availability,
         IMapper mapper,
         IPermissionService permissionService,
-        INotificationsService notifications,
-        ILogger<AppointmentService> logger)
+        INotificationService notifications,
+        ILogger<AppointmentService> logger,
+        ITenantContext? tenant = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
@@ -40,6 +45,29 @@ public class AppointmentService : IAppointmentService
         _permissionService = permissionService;
         _notifications = notifications;
         _logger = logger;
+        _tenant = tenant;
+    }
+
+    /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
+    private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
+
+    private Task<string> GetBusinessNameAsync(Guid businessId) => _context.Businesses
+        .AsNoTracking()
+        .Where(business => business.Id == businessId)
+        .Select(business => business.Name)
+        .FirstOrDefaultAsync()!;
+
+    private async Task SendNotificationSafelyAsync(NotificationRequest request)
+    {
+        try
+        {
+            await _notifications.SendAsync(request);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Notification {NotificationType} could not be queued for recipient {RecipientUserId}.",
+                request.Type, request.RecipientUserId);
+        }
     }
 
     /// <summary>
@@ -83,6 +111,10 @@ public class AppointmentService : IAppointmentService
     public async Task<ApiResponse<AppointmentResponse>> CreateAppointmentAsync(
         Guid callerUserId, string role, CreateAppointmentRequest request)
     {
+        // Tenant narrowing: on a tenant host the request body must target the active tenant.
+        if (TenantBusinessId is Guid activeTenantId && request.BusinessId != activeTenantId)
+            return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "This business is not available on this site.");
+
         // Resolve the caller's tenant business id.
         Guid businessId;
         if (IsRole(role, "Business"))
@@ -149,6 +181,10 @@ public class AppointmentService : IAppointmentService
     public async Task<ApiResponse<AppointmentResponse>> CreateAppointmentOnBehalfAsync(
         Guid callerUserId, string role, CreateAppointmentOnBehalfRequest request)
     {
+        // Tenant narrowing: on a tenant host the request body must target the active tenant.
+        if (TenantBusinessId is Guid activeTenantId && request.BusinessId != activeTenantId)
+            return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "This business is not available on this site.");
+
         Guid businessId;
         if (IsRole(role, "Business"))
         {
@@ -262,6 +298,7 @@ public class AppointmentService : IAppointmentService
             {
                 var overlaps = await _context.Appointments
                     .Where(a => a.BusinessId == appointment.BusinessId && a.StaffUserId == effectiveStaffId.Value
+                        && a.Status != "cancelled"
                         && a.ScheduledAt < endAt && a.EndAt > scheduledAt && a.Id != appointmentId)
                     .AnyAsync();
                 if (overlaps)
@@ -305,7 +342,7 @@ public class AppointmentService : IAppointmentService
             await _unitOfWork.SaveChangesAsync();
             await transaction.CommitAsync();
         }
-        catch (Npgsql.PostgresException pg) when (pg.SqlState == "23501")
+        catch (Npgsql.PostgresException pg) when (pg.SqlState == Npgsql.PostgresErrorCodes.ExclusionViolation)
         {
             // appointments_no_staff_overlap exclusion constraint fired — the slot was
             // taken between the availability check and this save.
@@ -415,8 +452,17 @@ public class AppointmentService : IAppointmentService
             .FirstOrDefaultAsync();
         if (ownerId != Guid.Empty && ownerId != null)
         {
-            await _notifications.CreateAsync(
-                ownerId.Value, appointment.BusinessId, "RescheduleRequested", appointment.Id);
+            await SendNotificationSafelyAsync(new NotificationRequest(
+                "appointment.reschedule_requested",
+                ownerId.Value,
+                appointment.BusinessId,
+                new Dictionary<string, object?>
+                {
+                    ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+                    ["scheduledAt"] = rescheduleRequest.ProposedScheduledAt.ToString("O"),
+                    ["appointmentId"] = appointment.Id
+                },
+                $"appt:{rescheduleRequest.Id}:reschedule-requested"));
         }
 
         return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
@@ -444,9 +490,21 @@ public class AppointmentService : IAppointmentService
         var snapshot = System.Text.Json.JsonSerializer.Deserialize<List<AppointmentServiceSnapshot>>(
             rescheduleRequest.ProposedServicesJson) ?? new List<AppointmentServiceSnapshot>();
 
+        // The slot may have been taken since the customer proposed it.
+        var proposedMinutes = (int)(rescheduleRequest.ProposedEndAt - rescheduleRequest.ProposedScheduledAt).TotalMinutes;
+        var proposedServiceIds = snapshot.Count > 0
+            ? snapshot.Select(s => s.ServiceCatalogItemId).ToArray()
+            : appointment.Resources.Select(r => r.ServiceCatalogItemId).ToArray();
+        var recheck = await _availability.ResolveBookingStaffAsync(
+            appointment.BusinessId, proposedServiceIds, rescheduleRequest.ProposedStaffUserId,
+            rescheduleRequest.ProposedScheduledAt, proposedMinutes,
+            excludeAppointmentId: appointment.Id, enforceLeadTime: false);
+        if (!recheck.Ok)
+            return ApiResponse<AppointmentResponse>.Fail(recheck.ErrorCode!, recheck.ErrorMessage!);
+
         appointment.ScheduledAt = rescheduleRequest.ProposedScheduledAt;
         appointment.EndAt = rescheduleRequest.ProposedEndAt;
-        appointment.StaffUserId = rescheduleRequest.ProposedStaffUserId;
+        appointment.StaffUserId = recheck.StaffUserId;
 
         if (snapshot.Count > 0)
         {
@@ -485,8 +543,17 @@ public class AppointmentService : IAppointmentService
 
         await _unitOfWork.SaveChangesAsync();
 
-        await _notifications.CreateAsync(
-            appointment.CustomerId, appointment.BusinessId, "RescheduleApproved", appointment.Id);
+        await SendNotificationSafelyAsync(new NotificationRequest(
+            "appointment.reschedule_approved",
+            appointment.CustomerId,
+            appointment.BusinessId,
+            new Dictionary<string, object?>
+            {
+                ["businessName"] = business.Name,
+                ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+                ["appointmentId"] = appointment.Id
+            },
+            $"appt:{rescheduleRequest.Id}:reschedule-approved"));
 
         var updated = await LoadAsync(appointmentId);
         return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(updated!));
@@ -516,8 +583,17 @@ public class AppointmentService : IAppointmentService
         rescheduleRequest.ResolvedByUserId = callerUserId;
         await _unitOfWork.SaveChangesAsync();
 
-        await _notifications.CreateAsync(
-            appointment.CustomerId, appointment.BusinessId, "RescheduleRejected", appointment.Id);
+        await SendNotificationSafelyAsync(new NotificationRequest(
+            "appointment.reschedule_rejected",
+            appointment.CustomerId,
+            appointment.BusinessId,
+            new Dictionary<string, object?>
+            {
+                ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+                ["scheduledAt"] = rescheduleRequest.ProposedScheduledAt.ToString("O"),
+                ["appointmentId"] = appointment.Id
+            },
+            $"appt:{rescheduleRequest.Id}:reschedule-rejected"));
 
         return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
     }
@@ -599,6 +675,8 @@ public class AppointmentService : IAppointmentService
             .AsNoTracking()
             .Include(a => a.Resources)
             .Where(a => a.CustomerId == customerId);
+        if (TenantBusinessId is Guid tenantId)
+            query = query.Where(a => a.BusinessId == tenantId);
 
         if (request.BusinessId.HasValue)
             query = query.Where(a => a.BusinessId == request.BusinessId.Value);
@@ -657,9 +735,13 @@ public class AppointmentService : IAppointmentService
     /// </summary>
     public async Task<ApiResponse<CustomerAppointmentFiltersResponse>> GetCustomerAppointmentFiltersAsync(Guid customerId)
     {
-        var appointments = await _context.Appointments
+        var filterQuery = _context.Appointments
             .AsNoTracking()
-            .Where(a => a.CustomerId == customerId)
+            .Where(a => a.CustomerId == customerId);
+        if (TenantBusinessId is Guid tenantId)
+            filterQuery = filterQuery.Where(a => a.BusinessId == tenantId);
+
+        var appointments = await filterQuery
             .Select(a => new { a.BusinessId, a.StaffUserId, a.Id })
             .ToListAsync();
 
@@ -927,6 +1009,7 @@ public class AppointmentService : IAppointmentService
             {
                 var overlaps = await _context.Appointments
                     .Where(a => a.BusinessId == businessId && a.StaffUserId == staffUserId.Value
+                        && a.Status != "cancelled"
                         && a.ScheduledAt < endAt && a.EndAt > scheduledAt && a.Id != excludeId)
                     .AnyAsync();
                 if (overlaps)
@@ -983,7 +1066,7 @@ public class AppointmentService : IAppointmentService
             var created = await LoadAsync(appointment.Id);
             return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(created!));
         }
-        catch (Npgsql.PostgresException pg) when (pg.SqlState == "23501")
+        catch (Npgsql.PostgresException pg) when (pg.SqlState == Npgsql.PostgresErrorCodes.ExclusionViolation)
         {
             // appointments_no_staff_overlap exclusion constraint fired — the slot was
             // taken between the availability check and this save.
@@ -1062,6 +1145,15 @@ public class AppointmentService : IAppointmentService
     {
         if (!staffUserId.HasValue)
             return (null, null, null);
+
+        // Solo business: the owner is the provider and performs every service.
+        if (await _availability.IsSoloOwnerAsync(businessId, staffUserId.Value))
+        {
+            var owner = await _context.Users.FirstOrDefaultAsync(u => u.Id == staffUserId.Value);
+            return owner == null
+                ? (null, "STAFF_NOT_FOUND", "Staff member not found in this business.")
+                : (owner, null, null);
+        }
 
         var staff = await _context.Users.FirstOrDefaultAsync(u => u.Id == staffUserId.Value && u.StaffBusinessId == businessId);
         if (staff == null)
@@ -1153,8 +1245,14 @@ public class AppointmentService : IAppointmentService
         return null;
     }
 
-    private Task<Appointment?> LoadAsync(Guid id) =>
-        _context.Appointments.Include(a => a.Resources).FirstOrDefaultAsync(a => a.Id == id);
+    private async Task<Appointment?> LoadAsync(Guid id)
+    {
+        // Tenant narrowing: an appointment outside the active tenant is indistinguishable from a missing one.
+        var query = _context.Appointments.Include(a => a.Resources).Where(a => a.Id == id);
+        if (TenantBusinessId is Guid tenantId)
+            query = query.Where(a => a.BusinessId == tenantId);
+        return await query.FirstOrDefaultAsync();
+    }
 
     /// <summary>
     /// Maps an appointment to its response, deriving updatedAt from the most recent

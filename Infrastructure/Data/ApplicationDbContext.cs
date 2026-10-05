@@ -18,6 +18,9 @@ public class ApplicationDbContext : DbContext
     public DbSet<User> Users => Set<User>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<Business> Businesses => Set<Business>();
+
+    /// <summary>Superseded subdomain slugs — old URLs resolve through this table.</summary>
+    public DbSet<BusinessSlugHistory> BusinessSlugHistories => Set<BusinessSlugHistory>();
     public DbSet<LoyaltyProgram> LoyaltyPrograms => Set<LoyaltyProgram>();
     public DbSet<LoyaltyCard> LoyaltyCards => Set<LoyaltyCard>();
     public DbSet<QrToken> QrTokens => Set<QrToken>();
@@ -30,6 +33,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<StaffDailyAnalytics> StaffDailyAnalytics => Set<StaffDailyAnalytics>();
     public DbSet<StaffShift> StaffShifts => Set<StaffShift>();
     public DbSet<NotificationLog> NotificationLogs => Set<NotificationLog>();
+    public DbSet<PushDevice> PushDevices => Set<PushDevice>();
     public DbSet<Review> Reviews => Set<Review>();
     public DbSet<ApiEventLog> ApiEventLogs => Set<ApiEventLog>();
     public DbSet<LoyaltyProgramHistory> LoyaltyProgramHistory => Set<LoyaltyProgramHistory>();
@@ -41,6 +45,10 @@ public class ApplicationDbContext : DbContext
     public DbSet<ServiceCatalogItem> ServiceCatalogItems => Set<ServiceCatalogItem>();
     public DbSet<StaffServiceAssignment> StaffServiceAssignments => Set<StaffServiceAssignment>();
     public DbSet<Notification> Notifications => Set<Notification>();
+
+    /// <summary>Sparse preference overrides (business kill-switches + user overrides).</summary>
+    public DbSet<NotificationPreference> NotificationPreferences => Set<NotificationPreference>();
+
     public DbSet<RescheduleRequest> RescheduleRequests => Set<RescheduleRequest>();
     public DbSet<StaffInvitation> StaffInvitations => Set<StaffInvitation>();
     public DbSet<Module> Modules => Set<Module>();
@@ -53,8 +61,23 @@ public class ApplicationDbContext : DbContext
     public DbSet<SubscriptionAuditLog> SubscriptionAuditLogs => Set<SubscriptionAuditLog>();
     public DbSet<StampCard> StampCards => Set<StampCard>();
     public DbSet<CardDesign> CardDesigns => Set<CardDesign>();
+    public DbSet<CardDesignVersion> CardDesignVersions => Set<CardDesignVersion>();
+    public DbSet<CardAsset> CardAssets => Set<CardAsset>();
+    public DbSet<Media> Media => Set<Media>();
+    public DbSet<BusinessMedia> BusinessMedia => Set<BusinessMedia>();
+    public DbSet<ServiceMedia> ServiceMedia => Set<ServiceMedia>();
+    public DbSet<LoyaltyProgramMedia> LoyaltyProgramMedia => Set<LoyaltyProgramMedia>();
+    public DbSet<ReviewMedia> ReviewMedia => Set<ReviewMedia>();
+    public DbSet<StampCardRulesChange> StampCardRulesChanges => Set<StampCardRulesChange>();
     public DbSet<CustomerBusinessEnrollment> CustomerBusinessEnrollments => Set<CustomerBusinessEnrollment>();
     public DbSet<CustomerStampCard> CustomerStampCards => Set<CustomerStampCard>();
+
+
+    // ── Payments module (direct-to-business payments) ──────
+    public DbSet<Payment> Payments => Set<Payment>();
+    public DbSet<PaymentAttempt> PaymentAttempts => Set<PaymentAttempt>();
+    public DbSet<PaymentCallback> PaymentCallbacks => Set<PaymentCallback>();
+    public DbSet<BusinessPaymentConfig> BusinessPaymentConfigs => Set<BusinessPaymentConfig>();
 
     // ── Attendance module ─────────────────────────────────────
     public DbSet<AttendancePolicy> AttendancePolicies => Set<AttendancePolicy>();
@@ -79,5 +102,27 @@ public class ApplicationDbContext : DbContext
         // Global filters ensure soft-deleted records are excluded from normal app flows.
         modelBuilder.Entity<User>().HasQueryFilter(u => !u.IsDeleted);
         modelBuilder.Entity<Business>().HasQueryFilter(b => !b.IsDeleted);
+
+        modelBuilder.Entity<BusinessMedia>()
+            .HasIndex(x => x.BusinessId)
+            .IsUnique()
+            .HasFilter("\"is_featured\" = true")
+            .HasDatabaseName("ux_business_media_one_featured");
+
+        modelBuilder.Entity<PushDevice>()
+            .ToTable("push_devices")
+            .Property(x => x.Id).HasColumnName("id");
+        modelBuilder.Entity<PushDevice>().Property(x => x.UserId).HasColumnName("user_id");
+        modelBuilder.Entity<PushDevice>().Property(x => x.Endpoint).HasColumnName("endpoint");
+        modelBuilder.Entity<PushDevice>().Property(x => x.P256dh).HasColumnName("p256dh");
+        modelBuilder.Entity<PushDevice>().Property(x => x.Auth).HasColumnName("auth");
+        modelBuilder.Entity<PushDevice>().Property(x => x.UserAgent).HasColumnName("user_agent");
+        modelBuilder.Entity<PushDevice>().Property(x => x.IsActive).HasColumnName("is_active");
+        modelBuilder.Entity<PushDevice>().Property(x => x.LastSeenAt).HasColumnName("last_seen_at");
+        modelBuilder.Entity<PushDevice>().Property(x => x.CreatedAt).HasColumnName("created_at");
+        modelBuilder.Entity<PushDevice>()
+            .HasIndex(x => x.Endpoint)
+            .IsUnique()
+            .HasDatabaseName("ux_push_devices_endpoint");
     }
 }

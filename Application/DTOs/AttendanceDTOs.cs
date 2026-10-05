@@ -222,12 +222,21 @@ public sealed class AttendanceOverviewStaffItem
     [JsonPropertyName("fullName")]
     public string FullName { get; set; } = string.Empty;
 
-    /// <summary>"NOT_CLOCKED_IN" | "CLOCKED_IN" | "CLOCKED_OUT" today.</summary>
-    [JsonPropertyName("state")]
-    public string State { get; set; } = "NOT_CLOCKED_IN";
+    /// <summary>Optional profile image for the owner's team list.</summary>
+    [JsonPropertyName("avatarUrl")]
+    public string? AvatarUrl { get; set; }
 
+    /// <summary>"not_clocked_in" | "clocked_in" | "clocked_out" today.</summary>
+    [JsonPropertyName("state")]
+    public string State { get; set; } = "not_clocked_in";
+
+    /// <summary>Clock-in time of the day's session (open or finished).</summary>
     [JsonPropertyName("openedAt")]
     public DateTime? OpenedAt { get; set; }
+
+    /// <summary>Clock-out time of the day's finished session (null while open / never clocked).</summary>
+    [JsonPropertyName("closedAt")]
+    public DateTime? ClosedAt { get; set; }
 
     [JsonPropertyName("workedMinutes")]
     public int? WorkedMinutes { get; set; }
@@ -242,8 +251,16 @@ public sealed class AttendanceOverviewResponse
     [JsonPropertyName("date")]
     public DateOnly Date { get; set; }
 
+    /// <summary>Total staff linked to the business (team size for the day).</summary>
+    [JsonPropertyName("totalStaffCount")]
+    public int TotalStaffCount { get; set; }
+
     [JsonPropertyName("clockedInCount")]
     public int ClockedInCount { get; set; }
+
+    /// <summary>Staff whose shift for the day is already closed.</summary>
+    [JsonPropertyName("completedShiftCount")]
+    public int CompletedShiftCount { get; set; }
 
     [JsonPropertyName("notClockedInCount")]
     public int NotClockedInCount { get; set; }
@@ -253,6 +270,70 @@ public sealed class AttendanceOverviewResponse
 
     [JsonPropertyName("staff")]
     public List<AttendanceOverviewStaffItem> Staff { get; set; } = new();
+}
+
+/// <summary>
+/// Owner-initiated manual clock event for a specific staff member
+/// (<c>POST v1/businesses/me/attendance/staff/{id}/clock-in|clock-out</c>).
+///
+/// <para>Distinct from <see cref="AttendanceClockRequest"/>: there is no QR
+/// token — the owner IS the trust anchor — so the location is optional and an
+/// explanatory note may accompany the correction. Every identity field
+/// (business, staff, actor) is derived server-side; only these two optional
+/// values are ever accepted from the client.</para>
+/// </summary>
+public sealed class OwnerAttendanceClockRequest
+{
+    /// <summary>
+    /// Location the shift is attributed to. When omitted the server falls back
+    /// to the staff member's currently open session location (on clock-out) or
+    /// null (on clock-in).
+    /// </summary>
+    [JsonPropertyName("locationId")]
+    public Guid? LocationId { get; set; }
+
+    /// <summary>
+    /// Why the owner recorded this manually (e.g. "forgot to scan in"). Kept on
+    /// the append-only event's verification summary — never customer PII.
+    /// </summary>
+    [JsonPropertyName("note")]
+    [MaxLength(300)]
+    public string? Note { get; set; }
+}
+
+/// <summary>
+/// Result of an owner-initiated manual clock event. Carries the post-operation
+/// session state so the owner's attendance view can update from one payload.
+/// </summary>
+public sealed class OwnerAttendanceClockResponse
+{
+    [JsonPropertyName("staffUserId")]
+    public Guid StaffUserId { get; set; }
+
+    /// <summary>"clocked_in" | "not_clocked_in" after the operation.</summary>
+    [JsonPropertyName("state")]
+    public string State { get; set; } = "not_clocked_in";
+
+    /// <summary>SCREAMING_SNAKE ledger event that was written: "CLOCK_IN" | "CLOCK_OUT".</summary>
+    [JsonPropertyName("eventType")]
+    public string EventType { get; set; } = string.Empty;
+
+    [JsonPropertyName("occurredAt")]
+    public DateTime OccurredAt { get; set; }
+
+    [JsonPropertyName("locationId")]
+    public Guid? LocationId { get; set; }
+
+    [JsonPropertyName("locationName")]
+    public string? LocationName { get; set; }
+
+    /// <summary>UTC open time of the session that is now (or was) open.</summary>
+    [JsonPropertyName("openedAt")]
+    public DateTime? OpenedAt { get; set; }
+
+    /// <summary>Computed worked minutes; non-null only after a clock-out.</summary>
+    [JsonPropertyName("workedMinutes")]
+    public int? WorkedMinutes { get; set; }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -357,6 +438,85 @@ public sealed class AttendanceHistoryQuery
 
     [JsonPropertyName("locationId")]
     public Guid? LocationId { get; set; }
+
+    /// <summary>Optional "CLOCK_IN" / "CLOCK_OUT" filter.</summary>
+    [JsonPropertyName("eventType")]
+    public string? EventType { get; set; }
+
+    [JsonPropertyName("page")]
+    public int Page { get; set; } = 1;
+
+    [JsonPropertyName("pageSize")]
+    public int PageSize { get; set; } = 25;
+}
+
+/// <summary>
+/// One row of the BUSINESS-wide attendance ledger
+/// (<c>GET v1/businesses/me/attendance/records</c>). Same event shape as
+/// <see cref="AttendanceHistoryItem"/> plus the staff identity it belongs to
+/// and, for manual entries, the person who recorded it.
+/// </summary>
+public sealed class BusinessAttendanceRecord
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    [JsonPropertyName("staffUserId")]
+    public Guid StaffUserId { get; set; }
+
+    [JsonPropertyName("fullName")]
+    public string FullName { get; set; } = string.Empty;
+
+    [JsonPropertyName("avatarUrl")]
+    public string? AvatarUrl { get; set; }
+
+    /// <summary>SCREAMING_SNAKE wire value ("CLOCK_IN" / "CLOCK_OUT").</summary>
+    [JsonPropertyName("eventType")]
+    public string EventType { get; set; } = string.Empty;
+
+    [JsonPropertyName("occurredAt")]
+    public DateTime OccurredAt { get; set; }
+
+    [JsonPropertyName("locationId")]
+    public Guid? LocationId { get; set; }
+
+    [JsonPropertyName("locationName")]
+    public string? LocationName { get; set; }
+
+    [JsonPropertyName("sessionId")]
+    public Guid? SessionId { get; set; }
+
+    /// <summary>Computed on close; null while the owning session is open.</summary>
+    [JsonPropertyName("workedMinutes")]
+    public int? WorkedMinutes { get; set; }
+
+    /// <summary>True when the owning session is still open.</summary>
+    [JsonPropertyName("inProgress")]
+    public bool InProgress { get; set; }
+
+    /// <summary>"standard" (scanned) or "manual" (owner-recorded).</summary>
+    [JsonPropertyName("source")]
+    public string Source { get; set; } = "standard";
+
+    /// <summary>Display name of the user who recorded the event (manual entries).</summary>
+    [JsonPropertyName("recordedByName")]
+    public string? RecordedByName { get; set; }
+}
+
+/// <summary>
+/// Query for the business-wide attendance ledger. Filters compose: a date
+/// window, one staff member, one event direction — all optional.
+/// </summary>
+public sealed class BusinessAttendanceRecordsQuery
+{
+    [JsonPropertyName("staffUserId")]
+    public Guid? StaffUserId { get; set; }
+
+    [JsonPropertyName("from")]
+    public DateOnly? From { get; set; }
+
+    [JsonPropertyName("to")]
+    public DateOnly? To { get; set; }
 
     /// <summary>Optional "CLOCK_IN" / "CLOCK_OUT" filter.</summary>
     [JsonPropertyName("eventType")]

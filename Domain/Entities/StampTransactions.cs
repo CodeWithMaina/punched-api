@@ -10,6 +10,9 @@ public static class StampTransactions
     /// <summary>Stamps earned from a completed appointment.</summary>
     public const string Appointment = "APPOINTMENT";
 
+    /// <summary>Stamps awarded at the counter from a scanned customer QR token.</summary>
+    public const string Scan = "SCAN";
+
     /// <summary>Stamps earned from a completed service.</summary>
     public const string Service = "SERVICE";
 

@@ -110,10 +110,15 @@ public class StaffInvitationsController : ControllerBase
 /// <summary>
 /// Public invitation acceptance endpoints (no auth required — validation is token-based).
 /// Used by the staff invitation acceptance page.
+///
+/// EXPLICIT [AllowAnonymous]: these are reached from an email link by someone
+/// who is not signed in yet. Under the deny-by-default fallback policy the
+/// attribute is mandatory — without it every invitation link would 401.
 /// </summary>
 [ApiController]
 [Route("v1/invitations")]
 [Produces("application/json")]
+[AllowAnonymous]
 public class InvitationsController : ControllerBase
 {
     private readonly IInvitationService _invitationService;

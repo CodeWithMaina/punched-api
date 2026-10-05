@@ -63,7 +63,7 @@ public class LoyaltyCardController : ControllerBase
     }
 
     /// <summary>
-    /// Get a specific loyalty card for the authenticated customer.
+    /// Get a specific loyalty card owned by the authenticated customer.
     /// </summary>
     [HttpGet("{cardId:guid}")]
     [Authorize(Roles = "Customer")]

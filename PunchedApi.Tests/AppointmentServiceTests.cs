@@ -348,7 +348,7 @@ public class AppointmentServiceTests
         Assert.Equal(a2.Id, svcFiltered.Data.Items[0].Id);
 
         var paged = await env.Service.GetBusinessAppointmentsAsync(env.Owner.Id, null, null, null, null, null, null, 2, 1);
-        Assert.Equal(1, paged.Data!.Items.Count);
+        Assert.Single(paged.Data!.Items);
         Assert.Equal(2, paged.Data.TotalCount);
     }
 

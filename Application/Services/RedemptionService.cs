@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Loyalty;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -23,7 +25,7 @@ public class RedemptionService : IRedemptionService
     private readonly IAnalyticsAggregationService _analyticsAggregationService;
     private readonly IBusinessScopeResolver _businessScopeResolver;
     private readonly IPermissionService _permissionService;
-    private readonly INotificationsService _notificationsService;
+    private readonly INotificationService _notificationService;
     private readonly ISseService _sseService;
     private readonly IIdempotencyService _idempotencyService;
     private readonly ILogger<RedemptionService> _logger;
@@ -34,7 +36,7 @@ public class RedemptionService : IRedemptionService
         IAnalyticsAggregationService analyticsAggregationService,
         IBusinessScopeResolver businessScopeResolver,
         IPermissionService permissionService,
-        INotificationsService notificationsService,
+        INotificationService notificationService,
         ISseService sseService,
         IIdempotencyService idempotencyService,
         ILogger<RedemptionService> logger)
@@ -44,7 +46,7 @@ public class RedemptionService : IRedemptionService
         _analyticsAggregationService = analyticsAggregationService;
         _businessScopeResolver = businessScopeResolver;
         _permissionService = permissionService;
-        _notificationsService = notificationsService;
+        _notificationService = notificationService;
         _sseService = sseService;
         _idempotencyService = idempotencyService;
         _logger = logger;
@@ -66,7 +68,7 @@ public class RedemptionService : IRedemptionService
                     if (lookup.Conflict)
                         return ApiResponse<RedemptionResponse>.Fail("IDEMPOTENCY_CONFLICT",
                             "Idempotency key already used with a different request body.");
-                    var replay = System.Text.Json.JsonSerializer.Deserialize<ApiResponse<RedemptionResponse>>(lookup.ResponseJson);
+                    var replay = System.Text.Json.JsonSerializer.Deserialize<ApiResponse<RedemptionResponse>>(lookup.ResponseJson ?? "{}");
                     if (replay != null) return replay;
                 }
             }
@@ -79,7 +81,10 @@ public class RedemptionService : IRedemptionService
             if (card == null)
                 return ApiResponse<RedemptionResponse>.Fail("NOT_FOUND", "Loyalty card not found.");
 
-            var stampsRequired = card.Program.StampsRequired;
+            // The customer's snapshotted rule wins over the program's current
+            // configuration (CardRulesPolicy) — a later program edit can never
+            // reinterpret this card's progress.
+            var stampsRequired = CardRulesPolicy.ResolveEffectiveRequiredStamps(card, card.Program, card.StampCard);
             if (card.TotalStamps < stampsRequired)
                 return ApiResponse<RedemptionResponse>.Fail(
                     "INSUFFICIENT_STAMPS",
@@ -133,7 +138,7 @@ public class RedemptionService : IRedemptionService
                 CardId = card.Id,
                 StampNumber = card.LifetimeStamps,
                 TotalStamps = 0,
-                StampsRequired = card.Program.StampsRequired,
+                StampsRequired = stampsRequired,
                 RewardReady = true,
                 StampedAt = now,
                 RedemptionId = redemption.Id,
@@ -376,14 +381,23 @@ public class RedemptionService : IRedemptionService
                 CardId = card.Id,
                 StampNumber = card.LifetimeStamps,
                 TotalStamps = card.TotalStamps,
-                StampsRequired = card.Program.StampsRequired,
+                StampsRequired = CardRulesPolicy.ResolveEffectiveRequiredStamps(card, card.Program, card.StampCard),
                 RewardReady = false,
                 StampedAt = now,
                 RedemptionId = redemption.Id,
                 Message = "Enjoy your reward!"
             });
 
-            await _notificationsService.CreateAsync(card.CustomerId, scopedBusinessId, "RewardFulfilled");
+            await SendNotificationSafelyAsync(new NotificationRequest(
+                "loyalty.reward_fulfilled",
+                card.CustomerId,
+                scopedBusinessId,
+                new Dictionary<string, object?>
+                {
+                    ["businessName"] = card.Business.Name,
+                    ["rewardName"] = card.Program.RewardDescription
+                },
+                $"redemption:{redemption.Id}:fulfilled"));
 
             return ApiResponse<FulfillRedemptionResponse>.Ok(new FulfillRedemptionResponse
             {
@@ -475,14 +489,23 @@ public class RedemptionService : IRedemptionService
                 CardId = card.Id,
                 StampNumber = card.LifetimeStamps,
                 TotalStamps = card.TotalStamps,
-                StampsRequired = card.Program.StampsRequired,
+                StampsRequired = CardRulesPolicy.ResolveEffectiveRequiredStamps(card, card.Program, card.StampCard),
                 RewardReady = false,
                 StampedAt = now,
                 RedemptionId = redemption.Id,
                 Message = $"Your redemption was cancelled. {redemption.StampsConsumed} stamp(s) restored."
             });
 
-            await _notificationsService.CreateAsync(card.CustomerId, businessId.Value, "RewardCancelled");
+            await SendNotificationSafelyAsync(new NotificationRequest(
+                "loyalty.reward_cancelled",
+                card.CustomerId,
+                businessId.Value,
+                new Dictionary<string, object?>
+                {
+                    ["businessName"] = card.Business.Name,
+                    ["rewardName"] = card.Program.RewardDescription
+                },
+                $"redemption:{redemption.Id}:cancelled"));
 
             return ApiResponse<CancelRedemptionResponse>.Ok(new CancelRedemptionResponse
             {
@@ -499,6 +522,19 @@ public class RedemptionService : IRedemptionService
         {
             _logger.LogError(ex, "Error cancelling redemption {RedemptionId}", redemptionId);
             return ApiResponse<CancelRedemptionResponse>.Fail("CANCEL_FAILED", "Failed to cancel redemption.");
+        }
+    }
+
+    private async Task SendNotificationSafelyAsync(NotificationRequest request)
+    {
+        try
+        {
+            await _notificationService.SendAsync(request);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Notification {NotificationType} could not be queued for recipient {RecipientUserId}.",
+                request.Type, request.RecipientUserId);
         }
     }
 

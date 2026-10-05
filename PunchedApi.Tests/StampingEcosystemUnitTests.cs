@@ -4,9 +4,11 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Caching.Memory;
 using Moq;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Application.Services;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
@@ -34,6 +36,7 @@ public class StampingEcosystemTests : IDisposable
 {
     private readonly SqliteConnection _connection;
     private readonly ApplicationDbContext _db;
+    internal ApplicationDbContext Context => _db;
 
     public StampingEcosystemTests()
     {
@@ -60,9 +63,9 @@ public class StampingEcosystemTests : IDisposable
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
-    private sealed record Tenant(User Customer, User Staff, User Owner, Business Business, LoyaltyProgram Program, LoyaltyCard Card);
+    internal sealed record Tenant(User Customer, User Staff, User Owner, Business Business, LoyaltyProgram Program, LoyaltyCard Card);
 
-    private async Task<Tenant> SeedTenantAsync(
+    internal async Task<Tenant> SeedTenantAsync(
         int stampsRequired = 5,
         int totalStamps = 0,
         int lifetimeStamps = 0,
@@ -99,14 +102,25 @@ public class StampingEcosystemTests : IDisposable
             CreatedAt = DateTime.UtcNow.AddDays(-60)
         };
 
-        _db.AddRange(customer, owner, business, staff, program, card);
+        _db.AddRange(customer, owner, business, staff, program, card,
+            new CustomerBusinessEnrollment
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customer.Id,
+                BusinessId = business.Id,
+                Status = CustomerBusinessEnrollmentStatus.Active,
+                Source = "test",
+                EnrolledAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow
+            });
         // LifetimeStamps must always be ≥ TotalStamps (chk_lifetime_gte_total).
         card.LifetimeStamps = Math.Max(lifetimeStamps, totalStamps);
         await _db.SaveChangesAsync();
         return new Tenant(customer, staff, owner, business, program, card);
     }
 
-    private async Task<QrToken> SeedTokenAsync(Tenant t, string plainToken, bool used = false)
+    internal async Task<QrToken> SeedTokenAsync(Tenant t, string plainToken, bool used = false)
     {
         var token = new QrToken
         {
@@ -123,7 +137,7 @@ public class StampingEcosystemTests : IDisposable
         return token;
     }
 
-    private StampService CreateStampService(Tenant t)
+    internal StampService CreateStampService(Tenant t, INotificationService? notificationService = null)
     {
         var scopeResolver = new Mock<IBusinessScopeResolver>();
         scopeResolver.Setup(r => r.GetOwnedBusinessIdAsync(t.Owner.Id)).ReturnsAsync(t.Business.Id);
@@ -132,16 +146,15 @@ public class StampingEcosystemTests : IDisposable
             _db,
             new Mock<ISseService>().Object,
             new Mock<IReferralService>().Object,
-            new Mock<IEmailService>().Object,
             new Mock<IAnalyticsAggregationService>().Object,
-            new NotificationsService(new UnitOfWork(_db), _db, NullLogger<NotificationsService>.Instance),
+            notificationService ?? CreateNotificationService(),
             scopeResolver.Object,
             new PermissionService(),
             new IdempotencyService(new UnitOfWork(_db), _db, NullLogger<IdempotencyService>.Instance),
             NullLogger<StampService>.Instance);
     }
 
-    private RedemptionService CreateRedemptionService(Tenant t)
+    internal RedemptionService CreateRedemptionService(Tenant t, INotificationService? notificationService = null)
     {
         var scopeResolver = new Mock<IBusinessScopeResolver>();
         scopeResolver.Setup(r => r.GetOwnedBusinessIdAsync(t.Owner.Id)).ReturnsAsync(t.Business.Id);
@@ -151,14 +164,30 @@ public class StampingEcosystemTests : IDisposable
             new Mock<IAnalyticsAggregationService>().Object,
             scopeResolver.Object,
             new PermissionService(),
-            new NotificationsService(new UnitOfWork(_db), _db, NullLogger<NotificationsService>.Instance),
+            notificationService ?? CreateNotificationService(),
             new Mock<ISseService>().Object,
             new IdempotencyService(new UnitOfWork(_db), _db, NullLogger<IdempotencyService>.Instance),
             NullLogger<RedemptionService>.Instance);
     }
 
+    private INotificationService CreateNotificationService()
+    {
+        var unitOfWork = new UnitOfWork(_db);
+        return new NotificationService(
+            unitOfWork, _db, CreatePreferenceResolver(unitOfWork), NullLogger<NotificationService>.Instance);
+    }
+
+    internal IPreferenceResolver CreatePreferenceResolver() =>
+        CreatePreferenceResolver(new UnitOfWork(_db));
+
+    private static IPreferenceResolver CreatePreferenceResolver(IUnitOfWork unitOfWork) =>
+        new PreferenceResolver(
+            unitOfWork,
+            new MemoryCache(new MemoryCacheOptions()),
+            Array.Empty<INotificationChannel>());
+
     private StampingMaintenanceService CreateMaintenanceService()
-        => new(_db, NullLogger<StampingMaintenanceService>.Instance);
+        => new(_db, CreateNotificationService(), NullLogger<StampingMaintenanceService>.Instance);
 
     private StampAdjustmentRequest AdjustRequest(Guid cardId, int delta) =>
         new() { CardId = cardId, Delta = delta, Reason = StampAdjustmentReason.ManualCorrection, Note = "test" };
@@ -521,10 +550,10 @@ public class StampingEcosystemTests : IDisposable
 
         // Notification + dedupe log exist; re-run never notifies again.
         var log = await _db.NotificationLogs.SingleAsync(n => n.UserId == t.Customer.Id);
-        Assert.Equal("StampExpiry", log.TemplateType);
+        Assert.Equal("loyalty.stamp_expired", log.TemplateType);
         var second = await svc.ExpireStampsAsync();
         Assert.Equal(0, second);
-        Assert.Equal(1, await _db.NotificationLogs.CountAsync(n => n.TemplateType == "StampExpiry"));
+        Assert.Equal(1, await _db.NotificationLogs.CountAsync(n => n.TemplateType == "loyalty.stamp_expired"));
 
         _db.ChangeTracker.Clear();
         var reloadedCard = await _db.LoyaltyCards.AsNoTracking().SingleAsync(c => c.Id == t.Card.Id);
@@ -571,15 +600,15 @@ public class StampingEcosystemTests : IDisposable
         var sent = await svc.SendWinBackNotificationsAsync(30);
         Assert.Equal(1, sent);
 
-        var log = await _db.NotificationLogs.SingleAsync(n => n.TemplateType == "WinBackNudge");
+        var log = await _db.NotificationLogs.SingleAsync(n => n.TemplateType == "loyalty.win_back_nudge");
         Assert.Equal(t.Customer.Id, log.UserId);
         Assert.Equal(t.Business.Id, log.BusinessId);
-        Assert.Equal(1, await _db.Notifications.CountAsync(n => n.Type == "WinBackNudge"));
+        Assert.Equal(1, await _db.Notifications.CountAsync(n => n.Type == "loyalty.win_back_nudge"));
 
         // Re-run: deduped via NotificationLog.
         var second = await svc.SendWinBackNotificationsAsync(30);
         Assert.Equal(0, second);
-        Assert.Equal(1, await _db.NotificationLogs.CountAsync(n => n.TemplateType == "WinBackNudge"));
+        Assert.Equal(1, await _db.NotificationLogs.CountAsync(n => n.TemplateType == "loyalty.win_back_nudge"));
     }
 
     [Fact]
@@ -620,6 +649,35 @@ public class StampingEcosystemTests : IDisposable
         Assert.Equal(1, deleted);
         Assert.Null(await _db.IdempotencyKeys.FirstOrDefaultAsync(k => k.Key == "k-expired"));
         Assert.NotNull(await _db.IdempotencyKeys.FirstOrDefaultAsync(k => k.Key == "k-live"));
+    }
+
+    [Fact]
+    public async Task NotificationRetention_RemovesOnlyOldTerminalRows()
+    {
+        var tenant = await SeedTenantAsync();
+        var now = DateTime.UtcNow;
+        var old = now.AddDays(-100);
+
+        _db.Notifications.AddRange(
+            new Notification { Id = Guid.NewGuid(), UserId = tenant.Customer.Id, BusinessId = tenant.Business.Id, Type = "old-read", IsRead = true, CreatedAt = old },
+            new Notification { Id = Guid.NewGuid(), UserId = tenant.Customer.Id, BusinessId = tenant.Business.Id, Type = "old-unread", IsRead = false, CreatedAt = old });
+        _db.NotificationLogs.AddRange(
+            new NotificationLog { Id = Guid.NewGuid(), UserId = tenant.Customer.Id, BusinessId = tenant.Business.Id, Channel = "email", TemplateType = "old-sent", Status = "sent", CreatedAt = old, UpdatedAt = old },
+            new NotificationLog { Id = Guid.NewGuid(), UserId = tenant.Customer.Id, BusinessId = tenant.Business.Id, Channel = "email", TemplateType = "recent-failed", Status = "failed", CreatedAt = now.AddDays(-10), UpdatedAt = now.AddDays(-10) },
+            new NotificationLog { Id = Guid.NewGuid(), UserId = tenant.Customer.Id, BusinessId = tenant.Business.Id, Channel = "email", TemplateType = "old-failed", Status = "failed", CreatedAt = old, UpdatedAt = old },
+            new NotificationLog { Id = Guid.NewGuid(), UserId = tenant.Customer.Id, BusinessId = tenant.Business.Id, Channel = "email", TemplateType = "old-pending", Status = "pending", CreatedAt = old, UpdatedAt = old });
+        await _db.SaveChangesAsync();
+
+        var deleted = await CleanupService.CleanNotificationsAsync(
+            _db,
+            now,
+            new NotificationWorkerOptions { InboxRetentionDays = 90, LedgerRetentionDays = 90, FailedLedgerRetentionDays = 30 },
+            CancellationToken.None);
+
+        Assert.Equal(3, deleted);
+        Assert.Equal(1, await _db.Notifications.CountAsync(row => row.Type == "old-unread"));
+        Assert.Equal(1, await _db.NotificationLogs.CountAsync(row => row.TemplateType == "recent-failed"));
+        Assert.Equal(1, await _db.NotificationLogs.CountAsync(row => row.TemplateType == "old-pending"));
     }
 
     // ── Schema / Phase 6 risk sign-off ───────────────────────────

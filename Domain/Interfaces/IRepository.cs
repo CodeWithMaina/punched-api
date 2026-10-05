@@ -38,10 +38,21 @@ public interface IRepository<T> where T : BaseEntity
     /// </summary>
     Task<IEnumerable<T>> FindAsync(System.Linq.Expressions.Expression<Func<T, bool>> predicate);
 
+    /// <summary>Finds matching entities without adding them to the change tracker.</summary>
+    Task<IEnumerable<T>> FindNoTrackingAsync(System.Linq.Expressions.Expression<Func<T, bool>> predicate);
+
+    /// <summary>Projects matching rows without tracking or materializing full entities.</summary>
+    Task<List<TResult>> SelectNoTrackingAsync<TResult>(
+        System.Linq.Expressions.Expression<Func<T, bool>> predicate,
+        System.Linq.Expressions.Expression<Func<T, TResult>> selector);
+
     /// <summary>
     /// Finds a single entity matching a predicate or null.
     /// </summary>
     Task<T?> FirstOrDefaultAsync(System.Linq.Expressions.Expression<Func<T, bool>> predicate);
+
+    /// <summary>Finds one matching entity without adding it to the change tracker.</summary>
+    Task<T?> FirstOrDefaultNoTrackingAsync(System.Linq.Expressions.Expression<Func<T, bool>> predicate);
 
     /// <summary>
     /// Checks if any entity matches the predicate.

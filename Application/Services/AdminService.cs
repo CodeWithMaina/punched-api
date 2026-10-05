@@ -15,6 +15,7 @@ public class AdminService : IAdminService
     private readonly IAnalyticsAggregationService _analyticsAggregator;
     private readonly ISegmentationService _segmentationService;
     private readonly ILoyaltyService _loyaltyService;
+    private readonly ITenantUrlBuilder _tenantUrls;
     private readonly ILogger<AdminService> _logger;
 
     public AdminService(
@@ -24,6 +25,7 @@ public class AdminService : IAdminService
         IAnalyticsAggregationService analyticsAggregator,
         ISegmentationService segmentationService,
         ILoyaltyService loyaltyService,
+        ITenantUrlBuilder tenantUrls,
         ILogger<AdminService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -32,6 +34,7 @@ public class AdminService : IAdminService
         _analyticsAggregator = analyticsAggregator;
         _segmentationService = segmentationService;
         _loyaltyService = loyaltyService;
+        _tenantUrls = tenantUrls;
         _logger = logger;
     }
 
@@ -185,10 +188,14 @@ public class AdminService : IAdminService
                     TotalStaff = _context.Users.Count(u => u.Role == UserRole.Staff && u.StaffBusinessId == b.Id),
                     ProgramCount = b.LoyaltyPrograms.Count(),
                     CreatedAt = b.CreatedAt,
+                    Slug = b.Slug,
                 })
                 .OrderByDescending(b => b.TotalStamps)
                 .Take(10)
                 .ToListAsync();
+
+            foreach (var summary in topBusinesses)
+                summary.TenantUrl = _tenantUrls.BuildForSlug(summary.Slug);
 
             var recentBusinesses = await _context.Businesses
                 .Include(b => b.Owner)
@@ -208,8 +215,12 @@ public class AdminService : IAdminService
                     TotalStaff = _context.Users.Count(u => u.Role == UserRole.Staff && u.StaffBusinessId == b.Id),
                     ProgramCount = b.LoyaltyPrograms.Count(),
                     CreatedAt = b.CreatedAt,
+                    Slug = b.Slug,
                 })
                 .ToListAsync();
+
+            foreach (var summary in recentBusinesses)
+                summary.TenantUrl = _tenantUrls.BuildForSlug(summary.Slug);
 
             return ApiResponse<AdminBusinessAnalyticsResponse>.Ok(new AdminBusinessAnalyticsResponse
             {
@@ -738,6 +749,7 @@ public class AdminService : IAdminService
                     TotalStaff = _context.Users.Count(u => u.Role == UserRole.Staff && u.StaffBusinessId == b.Id),
                     ProgramCount = b.LoyaltyPrograms.Count(),
                     CreatedAt = b.CreatedAt,
+                    Slug = b.Slug,
                     // Subscription summary for the admin billing view.
                     PlanKey = b.CurrentSubscription != null && b.CurrentSubscription.Plan != null ? b.CurrentSubscription.Plan.Key : null,
                     PlanName = b.CurrentSubscription != null && b.CurrentSubscription.Plan != null ? b.CurrentSubscription.Plan.Name : null,
@@ -745,6 +757,12 @@ public class AdminService : IAdminService
                     SubscriptionEndsAt = b.CurrentSubscription != null ? b.CurrentSubscription.EndsAt : null,
                 })
                 .ToListAsync();
+
+            // Absolute tenant URL (java-house.punched.app). Null when the
+            // business has no usable slug — the admin UI shows "pending"
+            // instead of fabricating an address.
+            foreach (var summary in items)
+                summary.TenantUrl = _tenantUrls.BuildForSlug(summary.Slug);
 
             return ApiResponse<PaginatedResponse<AdminBusinessSummary>>.Ok(new PaginatedResponse<AdminBusinessSummary>
             {
@@ -780,6 +798,8 @@ public class AdminService : IAdminService
                 Location = b.Location,
                 OwnerName = b.Owner?.FullName ?? "Unknown",
                 OwnerEmail = b.Owner?.Email ?? "",
+                Slug = b.Slug,
+                TenantUrl = _tenantUrls.BuildForSlug(b.Slug),
                 TotalCustomers = await _context.LoyaltyCards.Where(c => c.BusinessId == b.Id).Select(c => c.CustomerId).Distinct().CountAsync(),
                 TotalStamps = await _context.LoyaltyCards.Where(c => c.BusinessId == b.Id).SumAsync(c => c.LifetimeStamps),
                 TotalRedemptions = await _context.Redemptions.CountAsync(r => r.BusinessId == b.Id),

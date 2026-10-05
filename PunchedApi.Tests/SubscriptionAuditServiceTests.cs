@@ -58,14 +58,14 @@ public class SubscriptionAuditServiceTests : IDisposable
     }
 
     [Fact]
-    public void Record_DoesNotThrow_WhenWriteFails()
+    public async Task Record_DoesNotThrow_WhenWriteFails()
     {
         // Disposing the context forces the internal write to fail; the service
         // must swallow the exception (audit failures never break the primary mutation).
         _db.Dispose();
-        var ex = Record.ExceptionAsync(() => _service.RecordAsync(
+        var ex = await Record.ExceptionAsync(() => _service.RecordAsync(
             "TIER_UPDATED", Guid.NewGuid(), targetBusinessId: null, targetPlanId: null,
-            payloadJson: "{}", reason: "r")).GetAwaiter().GetResult();
+            payloadJson: "{}", reason: "r"));
         Assert.Null(ex);
     }
 

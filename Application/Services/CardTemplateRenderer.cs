@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.RegularExpressions;
+using PunchedApi.Application.Assets;
 
 namespace PunchedApi.Application.Services;
 
@@ -29,9 +30,10 @@ public static partial class CardTemplateRenderer
     {
         "business.name", "business.logo", "business.description",
         "customer.name",
-        "campaign.name",
-        "card.name", "card.totalStamps", "card.completedStamps",
-        "reward.name",
+        "campaign.name", "program.name",
+        "card.name", "card.totalStamps", "card.completedStamps", "card.status",
+        "stamps.current", "stamps.required",
+        "reward.name", "reward.status",
         "stamps"
     };
 
@@ -40,6 +42,9 @@ public static partial class CardTemplateRenderer
 
     [GeneratedRegex("\\{\\{\\s*([a-zA-Z][a-zA-Z0-9_.]*)\\s*\\}\\}", RegexOptions.Compiled)]
     private static partial Regex VariableRegex();
+
+    [GeneratedRegex("/v1/card-assets/(?:me/)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/content", RegexOptions.Compiled)]
+    private static partial Regex CardAssetUrlRegex();
 
     /// <summary>
     /// Data source for rendering. All values are application-controlled.
@@ -54,10 +59,35 @@ public static partial class CardTemplateRenderer
         public string CardName { get; set; } = string.Empty;
         public int TotalStamps { get; set; } = 10;
         public int CompletedStamps { get; set; } = 4;
+        public string CardStatus { get; set; } = "active";
+        public string RewardStatus { get; set; } = "in-progress";
         public string RewardName { get; set; } = string.Empty;
         /// <summary>Filled-class / empty-class CSS names configured by the template author.</summary>
         public string FilledClass { get; set; } = "filled";
         public string EmptyClass { get; set; } = "empty";
+
+        /// <summary>
+        /// Short glyph rendered inside an unearned stamp slot. Null/empty leaves
+        /// the slot blank (the historical behaviour).
+        /// </summary>
+        public string? StampEmptyGlyph { get; set; }
+
+        /// <summary>Short glyph rendered inside an earned stamp slot.</summary>
+        public string? StampCompletedGlyph { get; set; }
+
+        /// <summary>
+        /// App-relative URL of the unearned stamp icon (an uploaded
+        /// <see cref="Domain.Entities.CardAsset"/>), or null when none is configured.
+        /// </summary>
+        public string? StampEmptyIconUrl { get; set; }
+
+        /// <summary>App-relative URL of the earned stamp icon, or null.</summary>
+        public string? StampCompletedIconUrl { get; set; }
+        public string StampFilledColor { get; set; } = "#059669";
+        public string StampEmptyColor { get; set; } = "#E5E7EB";
+
+        /// <summary>Creates a short-lived tenant/card-scoped delivery URL for referenced assets.</summary>
+        public Func<Guid, string>? CardAssetUrlFactory { get; set; }
     }
 
     /// <summary>
@@ -83,7 +113,13 @@ public static partial class CardTemplateRenderer
                 sb.Append(body
                     .Replace("{{position}}", position.ToString())
                     .Replace("{{status}}", filled ? context.FilledClass : context.EmptyClass)
-                    .Replace("{{filled}}", filled ? "true" : "false"));
+                    .Replace("{{filled}}", filled ? "true" : "false")
+                    .Replace("{{glyph}}", WebUtility.HtmlEncode(
+                        (filled ? context.StampCompletedGlyph : context.StampEmptyGlyph) ?? string.Empty))
+                    .Replace("{{icon}}", WebUtility.HtmlEncode(
+                        (filled ? context.StampCompletedIconUrl : context.StampEmptyIconUrl) ?? string.Empty))
+                    .Replace("{{iconTag}}", BuildStampIconTag(
+                        filled ? context.StampCompletedIconUrl : context.StampEmptyIconUrl)));
             }
             return sb.ToString();
         });
@@ -96,6 +132,16 @@ public static partial class CardTemplateRenderer
             return values.TryGetValue(key, out var value) ? WebUtility.HtmlEncode(value ?? string.Empty) : string.Empty;
         });
 
+        if (context.CardAssetUrlFactory != null)
+        {
+            html = CardAssetUrlRegex().Replace(html, match =>
+            {
+                return Guid.TryParse(match.Groups[1].Value, out var assetId)
+                    ? WebUtility.HtmlEncode(context.CardAssetUrlFactory(assetId))
+                    : string.Empty;
+            });
+        }
+
         return html;
     }
 
@@ -106,10 +152,15 @@ public static partial class CardTemplateRenderer
         ["business.description"] = c.BusinessDescription ?? string.Empty,
         ["customer.name"] = c.CustomerName,
         ["campaign.name"] = c.CampaignName,
+        ["program.name"] = c.CampaignName,
         ["card.name"] = c.CardName,
         ["card.totalStamps"] = c.TotalStamps.ToString(),
         ["card.completedStamps"] = c.CompletedStamps.ToString(),
-        ["reward.name"] = c.RewardName
+        ["card.status"] = c.CardStatus,
+        ["stamps.current"] = c.CompletedStamps.ToString(),
+        ["stamps.required"] = c.TotalStamps.ToString(),
+        ["reward.name"] = c.RewardName,
+        ["reward.status"] = c.RewardStatus
     };
 
     /// <summary>
@@ -126,8 +177,37 @@ public static partial class CardTemplateRenderer
               .Append(filled ? WebUtility.HtmlEncode(context.FilledClass) : WebUtility.HtmlEncode(context.EmptyClass))
               .Append("\" data-position=\"")
               .Append(position)
-              .Append("\"></span>");
+              .Append("\" style=\"display:inline-flex;width:100%;aspect-ratio:1;align-items:center;justify-content:center;overflow:hidden;border-radius:9999px;background-color:")
+              .Append(WebUtility.HtmlEncode(filled ? context.StampFilledColor : context.StampEmptyColor))
+              .Append(";\">");
+
+            var iconUrl = filled ? context.StampCompletedIconUrl : context.StampEmptyIconUrl;
+            if (!string.IsNullOrWhiteSpace(iconUrl))
+                sb.Append(BuildStampIconTag(iconUrl));
+            else
+                sb.Append(WebUtility.HtmlEncode((filled ? context.StampCompletedGlyph : context.StampEmptyGlyph) ?? string.Empty));
+
+            sb.Append("</span>");
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Builds the markup emitted by <c>{{iconTag}}</c> inside a
+    /// <c>{{#each stamps}}</c> block.
+    ///
+    /// The URL is application-controlled (derived from a validated
+    /// <see cref="Domain.Entities.CardAsset"/> id, never from an author string) and
+    /// is re-checked against <see cref="CardTemplateSanitizer.IsSafeUrl"/> before
+    /// being emitted, so this variable can never become an injection point. When no
+    /// icon is configured it resolves to the empty string and the author's glyph or
+    /// colour fallback is used instead.
+    /// </summary>
+    private static string BuildStampIconTag(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !CardTemplateSanitizer.IsSafeUrl(url))
+            return string.Empty;
+
+        return "<img src=\"" + WebUtility.HtmlEncode(url) + "\" alt=\"\" />";
     }
 }

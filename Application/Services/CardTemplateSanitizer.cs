@@ -59,6 +59,20 @@ public static partial class CardTemplateSanitizer
     [GeneratedRegex("^(?:https?:)?//[^\\s]+$|^#[\\w-]+$", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
     private static partial Regex SafeUrlRegex();
 
+    [GeneratedRegex("^\\{\\{\\s*business\\.logo\\s*\\}\\}$", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    private static partial Regex BusinessLogoVariableRegex();
+
+    /// <summary>
+    /// Exactly one app-relative URL shape is accepted: the asset-content route for
+    /// a single GUID-identified asset. This is deliberately tighter than a generic
+    /// "relative path" rule so a template can never point at an internal API, an
+    /// admin surface, or traverse the filesystem (<c>..</c> is not in the charset).
+    /// </summary>
+    [GeneratedRegex(
+        "^/(?:v1/)?card-assets/(?:me/)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/content$",
+        RegexOptions.Compiled)]
+    private static partial Regex SafeAssetUrlRegex();
+
     [GeneratedRegex("^data:image/(?:png|jpe?g|gif|webp);base64,[a-zA-Z0-9+/=]+$", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
     private static partial Regex SafeDataImageRegex();
 
@@ -82,6 +96,9 @@ public static partial class CardTemplateSanitizer
             var tagName = match.Groups[1].Value.ToLowerInvariant();
             if (!AllowedTags.Contains(tagName)) return string.Empty; // strip unknown tags, keep text
 
+            if (match.Value.StartsWith("</", StringComparison.Ordinal))
+                return tagName is "br" or "hr" or "img" ? string.Empty : $"</{tagName}>";
+
             var rawAttributes = match.Groups[2].Value;
             var selfClosing = match.Groups[3].Value.Length > 0 || tagName is "br" or "hr" or "img";
             var attributes = BuildAttributes(tagName, rawAttributes);
@@ -103,7 +120,8 @@ public static partial class CardTemplateSanitizer
             var value = attr.Groups[2].Value.Trim('"', '\'');
 
             if (!AllowedAttributes.Contains(name)) continue;
-            if (name is "href" or "src" && !IsSafeUrl(value)) continue;
+            if (name == "href" && !IsSafeUrl(value)) continue;
+            if (name == "src" && !IsSafeImageSource(value)) continue;
             if (name == "style")
             {
                 if (value.Length > 2000) continue;
@@ -118,8 +136,17 @@ public static partial class CardTemplateSanitizer
         return sb.ToString();
     }
 
-    private static bool IsSafeUrl(string url) =>
-        SafeUrlRegex().IsMatch(url) || SafeDataImageRegex().IsMatch(url);
+    /// <summary>
+    /// True when <paramref name="url"/> is an allowed value for a template
+    /// <c>src</c>/<c>href</c>: an absolute http(s) URL, a same-page anchor, an
+    /// inline <c>data:image/*</c> payload, or this application's own
+    /// GUID-scoped asset-content route.
+    /// </summary>
+    public static bool IsSafeUrl(string url) =>
+        SafeUrlRegex().IsMatch(url) || SafeDataImageRegex().IsMatch(url) || SafeAssetUrlRegex().IsMatch(url);
+
+    private static bool IsSafeImageSource(string url) =>
+        BusinessLogoVariableRegex().IsMatch(url) || SafeDataImageRegex().IsMatch(url) || SafeAssetUrlRegex().IsMatch(url);
 
     private static readonly HashSet<string> AllowedCssProperties = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -127,6 +154,7 @@ public static partial class CardTemplateSanitizer
         "border", "border-radius", "border-color", "border-width", "border-style", "border-collapse",
         "box-shadow", "color", "display", "flex", "flex-direction", "flex-wrap", "gap", "grid",
         "grid-template-columns", "grid-template-rows", "align-items", "justify-content", "font",
+        "position", "inset", "top", "right", "bottom", "left", "z-index",
         "font-family", "font-size", "font-weight", "font-style", "letter-spacing", "line-height",
         "margin", "margin-top", "margin-right", "margin-bottom", "margin-left", "max-width", "max-height",
         "min-width", "min-height", "object-fit", "opacity", "overflow", "padding", "padding-top",
@@ -150,6 +178,8 @@ public static partial class CardTemplateSanitizer
             var value = prop.Groups[2].Value.Trim();
             if (!AllowedCssProperties.Contains(name)) continue;
             if (value.Contains("url(", StringComparison.OrdinalIgnoreCase)) continue;
+            if (name.Equals("position", StringComparison.OrdinalIgnoreCase) &&
+                Regex.IsMatch(value, "^fixed(?:\\s*!important)?$", RegexOptions.IgnoreCase)) continue;
 
             sb.Append(name.ToLowerInvariant()).Append(':').Append(value).Append("; ");
         }

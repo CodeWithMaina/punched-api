@@ -75,3 +75,33 @@ appsettings.*.json.user
 *.p12
 *.crt
 *.cer
+
+# Local development credentials
+credentials.md
+
+# Transient EF/SQLite probe output
+phase*.sql
+
+# Other local config that commonly carries credentials
+secrets.json
+*.secrets.json
+azure-identity.json
+service-account*.json
+*.tfvars
+*.tfstate
+*.tfstate.*
+
+# Local tooling / agent scratch space
+.claude/
+.agents/
+tmp/
+*.bak
+*.orig
+*.rej
+
+# Local tooling databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3

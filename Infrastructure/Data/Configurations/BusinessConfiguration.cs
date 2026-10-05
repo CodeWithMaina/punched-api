@@ -46,11 +46,20 @@ public class BusinessConfiguration : IEntityTypeConfiguration<Business>
         builder.Property(e => e.LogoUrl)
             .HasMaxLength(500)
             .HasColumnName("logo_url");
+        builder.Property(e => e.LogoMediaId).HasColumnName("logo_media_id");
+        builder.Property(e => e.CoverMediaId).HasColumnName("cover_media_id");
 
         builder.Property(e => e.MpesaNumber)
             .IsRequired()
             .HasMaxLength(20)
             .HasColumnName("mpesa_number");
+
+        // Subdomain address label ("java-house" → java-house.punched.app).
+        // Nullable only for legacy rows pre-backfill; unique across live rows
+        // (PostgreSQL treats NULLs as distinct, so unprovisioned rows coexist).
+        builder.Property(e => e.Slug)
+            .HasMaxLength(63)
+            .HasColumnName("slug");
 
         builder.Property(e => e.OwnerId)
             .HasColumnName("owner_id");
@@ -112,6 +121,20 @@ public class BusinessConfiguration : IEntityTypeConfiguration<Business>
         builder.HasIndex(e => e.Category);
         builder.HasIndex(e => e.OwnerId);
         builder.HasIndex(e => new { e.OwnerId, e.IsDeleted });
+        builder.HasIndex(e => e.LogoMediaId);
+        builder.HasIndex(e => e.CoverMediaId);
+        // Subdomain slugs are globally unique — this index is the final
+        // arbiter behind the app-side availability checks (races).
+        builder.HasIndex(e => e.Slug).IsUnique();
+
+        builder.HasOne<Media>()
+            .WithMany()
+            .HasForeignKey(e => e.LogoMediaId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<Media>()
+            .WithMany()
+            .HasForeignKey(e => e.CoverMediaId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         // Owner relationship (optional)
         builder.HasOne(e => e.Owner)

@@ -1,5 +1,5 @@
 using Microsoft.EntityFrameworkCore;
-using PunchedApi.Domain.Entities;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
 
@@ -12,15 +12,20 @@ namespace PunchedApi.Application.Services;
 /// </summary>
 public class StampingMaintenanceService : IStampingMaintenanceService
 {
-    private const string WinBackTemplate = "WinBackNudge";
-    private const string ExpiryTemplate = "StampExpiry";
+    private const string WinBackTemplate = "loyalty.win_back_nudge";
+    private const string ExpiryTemplate = "loyalty.stamp_expired";
 
     private readonly ApplicationDbContext _context;
+    private readonly INotificationService _notificationService;
     private readonly ILogger<StampingMaintenanceService> _logger;
 
-    public StampingMaintenanceService(ApplicationDbContext context, ILogger<StampingMaintenanceService> logger)
+    public StampingMaintenanceService(
+        ApplicationDbContext context,
+        INotificationService notificationService,
+        ILogger<StampingMaintenanceService> logger)
     {
         _context = context;
+        _notificationService = notificationService;
         _logger = logger;
     }
 
@@ -58,42 +63,23 @@ public class StampingMaintenanceService : IStampingMaintenanceService
             if (alreadySent)
                 continue;
 
-            await CreateNudgeAsync(card.CustomerId, card.BusinessId, WinBackTemplate,
-                "WinBackNudge", Math.Max(1, card.StampsRequired - card.TotalStamps), now, cancellationToken);
-            sent++;
+            var result = await _notificationService.SendAsync(new NotificationRequest(
+                "loyalty.win_back_nudge",
+                card.CustomerId,
+                card.BusinessId,
+                new Dictionary<string, object?>
+                {
+                    ["stamps"] = Math.Max(1, card.StampsRequired - card.TotalStamps),
+                    ["businessName"] = string.Empty
+                },
+                $"winback:{card.Id}"), cancellationToken);
+            if (result.Accepted) sent++;
         }
 
         _logger.LogInformation(
             "Win-back run complete. Candidates={Candidates}, NudgesSent={Sent}, WinBackDays={Days}",
             candidates.Count, sent, winBackDays);
         return sent;
-    }
-
-    private async Task CreateNudgeAsync(Guid customerId, Guid? businessId, string templateType,
-        string notificationType, int stampsCount, DateTime now, CancellationToken ct)
-    {
-        await _context.Notifications.AddAsync(new Notification
-        {
-            Id = Guid.NewGuid(),
-            UserId = customerId,
-            BusinessId = businessId,
-            Type = notificationType,
-            StampsCount = stampsCount,
-            IsRead = false,
-            CreatedAt = now
-        }, ct);
-        await _context.NotificationLogs.AddAsync(new NotificationLog
-        {
-            Id = Guid.NewGuid(),
-            UserId = customerId,
-            BusinessId = businessId,
-            Channel = "in_app",
-            TemplateType = templateType,
-            Status = "sent",
-            SentAt = now,
-            CreatedAt = now
-        }, ct);
-        await _context.SaveChangesAsync(ct);
     }
 
     /// <inheritdoc />
@@ -138,8 +124,16 @@ public class StampingMaintenanceService : IStampingMaintenanceService
             if (alreadySent)
                 continue;
 
-            await CreateNudgeAsync(card.CustomerId, card.BusinessId, ExpiryTemplate,
-                "StampExpiry", card.TotalStamps, now, cancellationToken);
+            await _notificationService.SendAsync(new NotificationRequest(
+                "loyalty.stamp_expired",
+                card.CustomerId,
+                card.BusinessId,
+                new Dictionary<string, object?>
+                {
+                    ["stamps"] = card.TotalStamps,
+                    ["businessName"] = string.Empty
+                },
+                $"stamp-expired:{card.Id}"), cancellationToken);
         }
 
         if (expiredCount > 0)

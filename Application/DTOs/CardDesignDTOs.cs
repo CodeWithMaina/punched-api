@@ -1,13 +1,16 @@
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
+using PunchedApi.Application.Design;
 
 namespace PunchedApi.Application.DTOs;
 
 // ═══════════════════════════════════════════════════════════════
 //  CARD DESIGN DTOs
 //
-//  Admin-authored HTML templates. Business owners may LIST the designs
-//  available to them and SELECT one for a loyalty program; they cannot author
-//  HTML (plan §15).
+//  Two authoring paths exist:
+//   • Admin-authored HTML templates (raw template authoring, plan §15).
+//   • Business-authored HTML fragments or *structured configuration* (§5, §16).
+//     Both are validated/sanitized and saved through the same template renderer.
 // ═══════════════════════════════════════════════════════════════
 
 /// <summary>
@@ -66,6 +69,17 @@ public class CardDesignResponse
     [JsonPropertyName("isDefault")]
     public bool IsDefault { get; set; }
 
+    /// <summary>Validated structured presentation config (null for pure-HTML designs).</summary>
+    [JsonPropertyName("configJson")]
+    public string? ConfigJson { get; set; }
+
+    /// <summary>Highest recorded presentation version (0 = pre-versioning design).</summary>
+    [JsonPropertyName("currentVersion")]
+    public int CurrentVersion { get; set; }
+
+    [JsonPropertyName("updatedAt")]
+    public DateTime? UpdatedAt { get; set; }
+
     /// <summary>Number of loyalty programs currently selecting this design.</summary>
     [JsonPropertyName("assignedPrograms")]
     public int AssignedPrograms { get; set; }
@@ -120,6 +134,15 @@ public class PreviewCardDesignRequest
     [JsonPropertyName("cardDesignId")]
     public Guid? CardDesignId { get; set; }
 
+    /// <summary>
+    /// Or preview an unsaved structured configuration (live card-designer
+    /// preview). Validated with exactly the same rules used at save time, then
+    /// rendered through the production pipeline — so what the business sees
+    /// before saving IS what customers will see after saving (§15).
+    /// </summary>
+    [JsonPropertyName("config")]
+    public CardDesignConfig? Config { get; set; }
+
     /// <summary>Sample data overrides (all optional — realistic defaults used).</summary>
     [JsonPropertyName("businessName")]
     public string? BusinessName { get; set; }
@@ -168,4 +191,78 @@ public class PreviewCardDesignResponse
     /// <summary>Supported template variables — documented for authors.</summary>
     [JsonPropertyName("variables")]
     public List<string> Variables { get; set; } = new();
+}
+
+/// <summary>
+/// POST /v1/card-designs/me/designs — a business creating its own branded design
+/// from a sanitized HTML fragment or validated structured configuration (§5, §16).
+/// </summary>
+public class CreateBusinessCardDesignRequest
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "My Card Design";
+
+    /// <summary>Structured presentation config. Null ⇒ the safe default design (§17).</summary>
+    [JsonPropertyName("config")]
+    public CardDesignConfig? Config { get; set; }
+
+    /// <summary>Optional raw HTML fragment; validated and sanitized before storage.</summary>
+    [MaxLength(50000)]
+    [JsonPropertyName("htmlTemplate")]
+    public string? HtmlTemplate { get; set; }
+
+    /// <summary>Optional audit note recorded on the first design version.</summary>
+    [MaxLength(500)]
+    [JsonPropertyName("changeNote")]
+    public string? ChangeNote { get; set; }
+}
+
+/// <summary>PUT /v1/card-designs/me/designs/{id} — update name and/or config.</summary>
+public class UpdateBusinessCardDesignRequest
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    /// <summary>New structured config. Omit to keep the current presentation.</summary>
+    [JsonPropertyName("config")]
+    public CardDesignConfig? Config { get; set; }
+
+    /// <summary>Optional raw HTML fragment; validated and sanitized before storage.</summary>
+    [MaxLength(50000)]
+    [JsonPropertyName("htmlTemplate")]
+    public string? HtmlTemplate { get; set; }
+
+    /// <summary>Optional audit note recorded on the new design version.</summary>
+    [MaxLength(500)]
+    [JsonPropertyName("changeNote")]
+    public string? ChangeNote { get; set; }
+}
+
+/// <summary>
+/// One entry of a design's append-only presentation history. Metadata only —
+/// the immutable bodies live server-side.
+/// </summary>
+public class CardDesignVersionResponse
+{
+    [JsonPropertyName("versionNumber")]
+    public int VersionNumber { get; set; }
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("configJson")]
+    public string? ConfigJson { get; set; }
+
+    [JsonPropertyName("publishedAt")]
+    public DateTime PublishedAt { get; set; }
+
+    [JsonPropertyName("publishedByUserId")]
+    public Guid? PublishedByUserId { get; set; }
+
+    [JsonPropertyName("changeNote")]
+    public string? ChangeNote { get; set; }
+
+    /// <summary>True for the version currently served to customers.</summary>
+    [JsonPropertyName("isCurrent")]
+    public bool IsCurrent { get; set; }
 }

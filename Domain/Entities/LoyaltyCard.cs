@@ -65,11 +65,48 @@ public class LoyaltyCard : BaseEntity
     /// </summary>
     public DateTime? RewardExpiresAt { get; set; }
 
+    /// <summary>
+    /// FK to the <see cref="Entities.StampCard"/> template this customer is
+    /// progressing on. Null for legacy cards enrolled before card binding existed;
+    /// they fall back to the parent program's requirement.
+    ///
+    /// This is what makes the card's business rules authoritative instead of the
+    /// program's mutable scalar columns.
+    /// </summary>
+    public Guid? StampCardId { get; set; }
+
+    /// <summary>
+    /// The number of stamps this customer's <b>current</b> cycle requires —
+    /// snapshotted when the enrolment was created (or last explicitly migrated
+    /// by an audited rules change).
+    ///
+    /// 0 means "not snapshotted" (legacy row): readers must fall back to the
+    /// parent program's <see cref="LoyaltyProgram.StampsRequired"/>.
+    ///
+    /// The server never rewrites this value implicitly. Editing a card's
+    /// <see cref="Entities.StampCard.StampsRequired"/> does not touch existing
+    /// rows — see <see cref="StampCardRulesChange"/> and
+    /// <c>CardRulesPolicy</c>.
+    /// </summary>
+    public int RequiredStamps { get; set; }
+
+    /// <summary>
+    /// <see cref="Entities.StampCard.RulesVersion"/> this card was snapshotted at.
+    /// 0 for legacy rows. Lets an audit tell which rules revision a customer's
+    /// progress was earned under.
+    /// </summary>
+    public int RulesVersion { get; set; }
+
     // ── Navigation ──────────────────────────────────────────
     /// <summary>
     /// The customer who owns this card.
     /// </summary>
     public virtual User Customer { get; set; } = null!;
+
+    /// <summary>
+    /// The loyalty/ stamp card template this progress belongs to (null = legacy).
+    /// </summary>
+    public virtual StampCard? StampCard { get; set; }
 
     /// <summary>
     /// The business this card is for.

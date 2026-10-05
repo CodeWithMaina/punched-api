@@ -79,6 +79,14 @@ public class RegisterRequest
 
     [JsonPropertyName("sourceCampaign")]
     public string? SourceCampaign { get; set; }
+
+    /// <summary>
+    /// Optional tenant context (Phase 3): the business whose subdomain the user
+    /// registered from. A HINT only — the server re-resolves it and verifies
+    /// the membership before any tenant claim is issued.
+    /// </summary>
+    [JsonPropertyName("businessSlug")]
+    public string? BusinessSlug { get; set; }
 }
 
 /// <summary>
@@ -91,6 +99,10 @@ public class VerifyEmailRequest
 
     [JsonPropertyName("code")]
     public string Code { get; set; } = string.Empty;
+
+    /// <summary>Optional tenant context (server-verified; see RegisterRequest).</summary>
+    [JsonPropertyName("businessSlug")]
+    public string? BusinessSlug { get; set; }
 }
 
 /// <summary>
@@ -103,6 +115,22 @@ public class LoginRequest
 
     [JsonPropertyName("password")]
     public string Password { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional tenant context (Phase 3): the business subdomain the sign-in
+    /// happened on. Resolved server-side to a business id and validated against
+    /// the caller's membership before <c>biz</c>/<c>bizRole</c> are minted.
+    /// Never trusted as authorization.
+    /// </summary>
+    [JsonPropertyName("businessSlug")]
+    public string? BusinessSlug { get; set; }
+
+    /// <summary>
+    /// Optional explicit business id — validated against server-side membership
+    /// exactly like <see cref="BusinessSlug"/>; never trusted on its own.
+    /// </summary>
+    [JsonPropertyName("businessId")]
+    public Guid? BusinessId { get; set; }
 }
 
 /// <summary>
@@ -112,6 +140,15 @@ public class RefreshTokenRequest
 {
     [JsonPropertyName("refreshToken")]
     public string RefreshToken { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional tenant context for the origin the refresh came from. Tenant
+    /// claims are RECONSTRUCTED from this (membership re-verified server-side)
+    /// rather than carried on the refresh token itself — so no schema change
+    /// and no stale tenant context can outlive a membership change.
+    /// </summary>
+    [JsonPropertyName("businessSlug")]
+    public string? BusinessSlug { get; set; }
 }
 
 /// <summary>
@@ -228,6 +265,9 @@ public class UserProfileResponse
 
     [JsonPropertyName("avatarUrl")]
     public string? AvatarUrl { get; set; }
+
+    [JsonPropertyName("avatarMediaId")]
+    public Guid? AvatarMediaId { get; set; }
 
     [JsonPropertyName("dateOfBirth")]
     public DateOnly? DateOfBirth { get; set; }

@@ -5,6 +5,7 @@ using System.Threading.RateLimiting;
 using FluentValidation;
 using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -12,10 +13,13 @@ using Microsoft.OpenApi.Models;
 using PunchedApi.API.Middleware;
 using PunchedApi.Application.Attendance;
 using PunchedApi.Application.Attendance.Verification;
+using PunchedApi.Application.Assets;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.Loyalty;
 using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Modules;
+using PunchedApi.Application.Notifications;
+using PunchedApi.Application.Media;
 using PunchedApi.Application.Services;
 using PunchedApi.Application.Settings;
 using PunchedApi.Application.Validators;
@@ -23,9 +27,12 @@ using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
 using PunchedApi.Infrastructure.Data.Seeding;
+using PunchedApi.Infrastructure.Services.Payments;
 using PunchedApi.Infrastructure.Data.Seeding.Steps;
+using PunchedApi.Infrastructure.Notifications;
 using PunchedApi.Infrastructure.Repositories;
 using PunchedApi.Infrastructure.Services;
+using PunchedApi.Infrastructure.Services.Storage;
 using Serilog;
 
 // ═══════════════════════════════════════════════════════════════
@@ -109,7 +116,10 @@ try
         };
     });
 
-    builder.Services.AddAuthorization();
+    builder.Services.AddAuthorization(options =>
+    {
+        DenyByDefaultAuthorization.Configure(options);
+    });
 
     // ── Repositories & Unit of Work ─────────────────────────
     builder.Services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
@@ -142,6 +152,12 @@ try
 
     builder.Services.AddScoped<IUserService, UserService>();
     builder.Services.AddScoped<IBusinessService, BusinessService>();
+
+    // Business subdomain URLs (java-house.punched.app): slug generation,
+    // validation, and the one-time-per-boot legacy backfill.
+    builder.Services.AddScoped<IBusinessSlugGenerator, BusinessSlugGenerator>();
+    builder.Services.AddScoped<IBusinessSlugBackfill, BusinessSlugBackfill>();
+
     builder.Services.AddScoped<ILoyaltyService, LoyaltyService>();
             builder.Services.AddScoped<IStampService, StampService>();
 
@@ -160,14 +176,53 @@ try
     builder.Services.AddScoped<IStampCardService, StampCardService>();
     builder.Services.AddScoped<ICardDesignService, CardDesignService>();
     builder.Services.AddScoped<ICardDesignResolver, CardDesignResolver>();
+    // Card branding assets: local filesystem storage behind the ICardAssetStorage
+    // abstraction, so an object store can replace it without touching the service.
+    builder.Services.AddScoped<ICardAssetService, CardAssetService>();
+    builder.Services.AddSingleton<ICardAssetStorage, LocalCardAssetStorage>();
+    builder.Services.AddDataProtection().SetApplicationName("PunchedApi");
+    builder.Services.AddSingleton<ICardAssetDeliveryTokenService, CardAssetDeliveryTokenService>();
+    builder.Services.Configure<CardAssetSettings>(
+        builder.Configuration.GetSection(CardAssetSettings.SectionName));
+
+    // Centralized media: production always uses R2; the in-memory store is test-only.
+    builder.Services.Configure<MediaStorageOptions>(
+        builder.Configuration.GetSection(MediaStorageOptions.SectionName));
+    builder.Services.AddSingleton<IMediaKeyFactory, MediaKeyFactory>();
+    builder.Services.AddSingleton<IMediaUrlFactory, MediaUrlFactory>();
+    builder.Services.AddSingleton<IMediaValidator, MediaValidator>();
+    builder.Services.AddScoped<IMediaProcessor, MediaProcessor>();
+    builder.Services.AddScoped<IObjectStore, R2ObjectStore>();
+    builder.Services.AddHostedService<MediaProcessingWorker>();
+    builder.Services.AddHostedService<MediaCleanupWorker>();
+    builder.Services.AddScoped<IMediaService, MediaService>();
     builder.Services.AddScoped<PunchedApi.Application.Programs.IProgramRuleEngine, PunchedApi.Application.Programs.ProgramRuleEngine>();
     builder.Services.AddScoped<IIdempotencyService, IdempotencyService>();
     builder.Services.AddScoped<INotificationsService, NotificationsService>();
+
+    // ── Notification module (Phase 1: registry, preferences, in-app inbox) ──
+    // Producers touch INotificationService.SendAsync only; providers, the outbox
+    // worker and each external channel stay behind INotificationChannel, registered
+    // one AddScoped line at a time (email = Phase 4, sms = Phase 6, push = Phase 7).
+    builder.Services.AddScoped<INotificationService, NotificationService>();
+    builder.Services.AddScoped<IPreferenceResolver, PreferenceResolver>();
+    builder.Services.Configure<NotificationWorkerOptions>(
+        builder.Configuration.GetSection(NotificationWorkerOptions.SectionName));
+    builder.Services.Configure<SmsSettings>(builder.Configuration.GetSection(SmsSettings.SectionName));
+    builder.Services.Configure<VapidSettings>(builder.Configuration.GetSection(VapidSettings.SectionName));
+    builder.Services.AddScoped<NotificationOutboxStore>();
+    builder.Services.AddScoped<ITemplateRenderer, TemplateRenderer>();
+    builder.Services.AddScoped<INotificationSmtpDelivery, MailKitNotificationSmtpDelivery>();
+    builder.Services.AddScoped<INotificationChannel, EmailChannel>();
+    builder.Services.AddHttpClient<AfricaTalkingClient>();
+    builder.Services.AddScoped<INotificationChannel, SmsChannel>();
+    builder.Services.AddScoped<INotificationChannel, PushChannel>();
     builder.Services.AddScoped<IQrService, QrService>();
     builder.Services.AddScoped<ICustomerEnrollmentService, CustomerEnrollmentService>();
     builder.Services.AddScoped<IRedemptionService, RedemptionService>();
     builder.Services.AddScoped<IReferralService, ReferralService>();
     builder.Services.AddScoped<IAdminService, AdminService>();
+    builder.Services.AddScoped<AdminNotificationOperationsService>();
     builder.Services.AddScoped<IAnalyticsAggregationService, AnalyticsAggregationService>();
     builder.Services.AddScoped<ISegmentationService, SegmentationService>();
     builder.Services.AddScoped<IInsightService, InsightService>();
@@ -176,6 +231,8 @@ try
 
     // ── Booking (Phase 2/3) ─────────────────────────────────
     builder.Services.AddScoped<IAppointmentService, AppointmentService>();
+    builder.Services.AddSingleton(TimeProvider.System);
+    builder.Services.AddScoped<IReviewService, ReviewService>();
     builder.Services.AddScoped<AppointmentAvailabilityService>();
     builder.Services.AddScoped<IServiceCatalogService, ServiceCatalogService>();
 
@@ -198,6 +255,27 @@ try
     builder.Services.AddScoped<ISubscriptionLifecycleService, SubscriptionLifecycleService>();
     builder.Services.AddScoped<SubscriptionExpiryService>();
     builder.Services.AddScoped<IBillingGateway, FakeMpesaStkGateway>();
+    // ── Payments module (direct-to-business payments) ───────
+    // Business-owned payment accounts; no platform fees, splits or pooled funds.
+    builder.Services.Configure<PaymentOptions>(builder.Configuration.GetSection(PaymentOptions.SectionName));
+    builder.Services.Configure<DarajaOptions>(builder.Configuration.GetSection(DarajaOptions.SectionName));
+    builder.Services.AddHttpClient<DarajaClient>();
+    builder.Services.AddScoped<FakeDarajaClient>();
+    builder.Services.AddScoped<IDarajaClient>(sp =>
+    {
+        var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<DarajaOptions>>().Value;
+        var env = sp.GetRequiredService<IHostEnvironment>();
+        // Fake only in development with no real credentials — never fake production success.
+        if (env.IsDevelopment() && opts.AllowMockClient && string.IsNullOrEmpty(opts.ConsumerKey))
+            return sp.GetRequiredService<FakeDarajaClient>();
+        return sp.GetRequiredService<DarajaClient>();
+    });
+    builder.Services.AddSingleton<PunchedApi.Application.Services.PaymentCredentialProtector>();
+    builder.Services.AddScoped<IPaymentProvider, CashPaymentProvider>();
+    builder.Services.AddScoped<IPaymentProvider, DarajaStkProvider>();
+    builder.Services.AddScoped<IPaymentService, PaymentService>();
+    builder.Services.AddScoped<IPaymentConfigService, PaymentConfigService>();
+    builder.Services.AddScoped<IPaymentCallbackService, PaymentCallbackService>();
 builder.Services.Configure<BillingOptions>(builder.Configuration.GetSection(BillingOptions.SectionName));
 builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisioningService>();
 
@@ -211,6 +289,20 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<IBusinessContext, BusinessContext>();
     builder.Services.AddScoped<IPermissionService, PermissionService>();
+
+    // ── Tenant context (business subdomains: java-house.punched.app) ──
+    // Host chooses the page; the token chooses the data. None of these
+    // services grant access — membership/authorization stay server-side.
+    builder.Services.Configure<SessionCookieSettings>(builder.Configuration.GetSection(SessionCookieSettings.SectionName));
+    builder.Services.AddSingleton<ITenantHostResolver, TenantHostResolver>();
+    builder.Services.AddSingleton<ITenantUrlBuilder, TenantUrlBuilder>();
+    builder.Services.AddSingleton<ISessionCookieService, SessionCookieService>();
+    builder.Services.AddScoped<IBusinessMembershipResolver, BusinessMembershipResolver>();
+    // Active tenant for the request: written once by TenantConsistencyMiddleware
+    // (slug → business id from the page host), read by tenant-scoped services.
+    // Scoped so the context can never leak across requests or users.
+    builder.Services.AddScoped<TenantContext>();
+    builder.Services.AddScoped<ITenantContext>(sp => sp.GetRequiredService<TenantContext>());
 
     // ── Seed framework ─────────────────────────────────────
     builder.Services.AddSingleton<ISeedRandom, SeedRandom>();
@@ -236,6 +328,8 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
 
     // Periodic cleanup of expired tokens, QR tokens, and stale verification codes
     builder.Services.AddHostedService<CleanupService>();
+    builder.Services.AddHostedService<NotificationDeliveryWorker>();
+    builder.Services.AddHostedService<PaymentExpiryWorker>();
     builder.Services.AddHostedService<PayoutWorker>();
     builder.Services.AddHostedService<AnalyticsWorker>();
     builder.Services.AddHostedService<SubscriptionExpiryWorker>();
@@ -256,26 +350,34 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
         });
 
     // ── CORS ────────────────────────────────────────────────
+    // Origins are matched through CorsOriginPolicy so business subdomains can
+    // be allow-listed with a single-label wildcard (http://*.localhost:3000,
+    // https://*.punched.app). CorsPolicyBuilder.WithOrigins compares literals
+    // only and silently never matched those patterns, so NO tenant origin ever
+    // received Access-Control-Allow-Origin and every storefront request from
+    // java-house.localhost:3000 was blocked by the browser.
     var corsOrigins = builder.Configuration.GetSection("CorsOrigins").Get<string[]>()
-        ?? new[]
-        {
-            "http://localhost:3000",      // Next.js dev
-            "http://localhost:3001",      // Alternative dev port
-            "http://localhost:5091",      // Swagger/API local origin
-            "https://punched.app",        // Production
-            "https://www.punched.app"     // Production www
-        };
+        ?? CorsOriginPolicy.DefaultAllowedOrigins;
 
     builder.Services.AddCors(options =>
     {
-        options.AddPolicy("AllowFrontend", policy =>
-            policy.WithOrigins(corsOrigins)
+        options.AddPolicy(CorsOriginPolicy.PolicyName, policy =>
+            policy.SetIsOriginAllowed(origin => CorsOriginPolicy.IsAllowedOrigin(origin, corsOrigins))
                 .AllowAnyMethod()
                 .AllowAnyHeader()
                 .AllowCredentials());
     });
 
     // ── Rate Limiting (.NET 8 built-in) ─────────────────────
+    // Permit limits are configuration-driven (RateLimiting:<policy>:PermitLimit) with
+    // the production values below as defaults, so an environment can tune them without a
+    // code change. The Playwright E2E harness raises them because a browser-driven suite
+    // issues many auth calls from a single IP.
+    int RateLimit(string policy, int fallback) =>
+        int.TryParse(builder.Configuration[$"RateLimiting:{policy}:PermitLimit"], out var configured) && configured > 0
+            ? configured
+            : fallback;
+
     builder.Services.AddRateLimiter(options =>
     {
         // OTP / verification code requests: 3 per 15 minutes per IP
@@ -284,7 +386,7 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 3,
+                    PermitLimit = RateLimit("otp", 3),
                     Window = TimeSpan.FromMinutes(15),
                     QueueLimit = 0
                 }));
@@ -295,8 +397,26 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 5,
+                    PermitLimit = RateLimit("login", 5),
                     Window = TimeSpan.FromMinutes(30),
+                    QueueLimit = 0
+                }));
+
+        // Session refresh / cross-subdomain hydration: deliberately generous.
+        //
+        // Every origin silently exchanges the shared session cookie for its own
+        // access token the first time it is loaded (platform root, then each
+        // business subdomain the user visits), and a 401 anywhere retries once.
+        // These are legitimate, self-authenticating calls — NOT credential
+        // guesses — so they must not consume the "login" budget, and the budget
+        // is per-IP (a shop's shared Wi-Fi is one IP).
+        options.AddPolicy("refresh", httpContext =>
+            RateLimitPartition.GetFixedWindowLimiter(
+                httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = RateLimit("refresh", 300),
+                    Window = TimeSpan.FromMinutes(5),
                     QueueLimit = 0
                 }));
 
@@ -306,10 +426,21 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 1000,
+                    PermitLimit = RateLimit("general", 1000),
                     Window = TimeSpan.FromHours(1),
                                         QueueLimit = 0
                 }));
+
+        // Media upload grants: 30 per hour per authenticated user and IP.
+        options.AddPolicy("media-upload", httpContext =>
+        {
+            var userId = httpContext.User?.FindFirst("userId")?.Value ?? "anon";
+            var key = $"{httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown"}:{userId}";
+            return RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = RateLimit("media-upload", 30), Window = TimeSpan.FromHours(1), QueueLimit = 0
+            });
+        });
 
         // Manual phone lookup: 5 per hour per (IP + user)
         options.AddPolicy("manual-lookup", httpContext =>
@@ -320,7 +451,7 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 partitionKey,
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 5,
+                    PermitLimit = RateLimit("manual-lookup", 5),
                     Window = TimeSpan.FromHours(1),
                     QueueLimit = 0
                 });
@@ -335,7 +466,7 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 partitionKey,
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 20,
+                    PermitLimit = RateLimit("stamp-award", 20),
                     Window = TimeSpan.FromHours(1),
                     QueueLimit = 0
                 });
@@ -350,7 +481,7 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 partitionKey,
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 20,
+                    PermitLimit = RateLimit("stamp-enroll", 20),
                     Window = TimeSpan.FromHours(1),
                     QueueLimit = 0
                 });
@@ -366,7 +497,23 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
                 partitionKey,
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 60,
+                    PermitLimit = RateLimit("attendance-clock", 60),
+                    Window = TimeSpan.FromHours(1),
+                    QueueLimit = 0
+                });
+        });
+
+        // Card-asset uploads: 30 per hour per (IP + user). Bounds upload flooding
+        // and storage abuse independently of the general API bucket (§21).
+        options.AddPolicy("asset-upload", httpContext =>
+        {
+            var userId = httpContext.User?.FindFirst("userId")?.Value ?? "anon";
+            var partitionKey = $"{httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown"}:{userId}";
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey,
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = RateLimit("asset-upload", 30),
                     Window = TimeSpan.FromHours(1),
                     QueueLimit = 0
                 });
@@ -403,16 +550,19 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     builder.Services.AddOutputCache(options =>
     {
         // Short cache for analytics endpoints (30s) — vary by token + period/range.
+        // X-Punched-Tenant joins Authorization in the key: the same page URL can
+        // be requested for different businesses (request 8), and no
+        // tenant-specific response may ever be served from a shared entry.
         options.AddPolicy("analytics", builder =>
             builder.Expire(TimeSpan.FromSeconds(30))
-                   .SetVaryByHeader("Authorization")
+                   .SetVaryByHeader("Authorization, " + TenantConsistencyMiddleware.TenantHeader)
                    .SetVaryByQuery("period", "start", "end", "prev")
                    .Tag("analytics"));
 
-        // Very short cache for dashboard metrics (10s) — vary by token.
+        // Very short cache for dashboard metrics (10s) — vary by token + tenant host.
         options.AddPolicy("dashboard", builder =>
             builder.Expire(TimeSpan.FromSeconds(10))
-                   .SetVaryByHeader("Authorization")
+                   .SetVaryByHeader("Authorization, " + TenantConsistencyMiddleware.TenantHeader)
                    .Tag("dashboard"));
     });
 
@@ -473,6 +623,13 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
         await dbContext.Database.MigrateAsync();
         Log.Information("Database migrations applied successfully.");
 
+        // Assign subdomain slugs to any business still missing one (legacy
+        // rows, or rows inserted by an older app version during a rolling
+        // deploy). Idempotent; runs before the seeder so seeded slug
+        // availability checks see a fully provisioned table.
+        var slugBackfill = scope.ServiceProvider.GetRequiredService<IBusinessSlugBackfill>();
+        await slugBackfill.EnsureSlugsAsync();
+
         var seeder = scope.ServiceProvider.GetRequiredService<IDatabaseSeeder>();
         await seeder.RunAsync();
         var adminBootstrapper = scope.ServiceProvider.GetRequiredService<IAdminBootstrapper>();
@@ -501,10 +658,18 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
         });
     }
 
+    // CORS must answer before HTTPS redirection: a 307 on a preflight would
+    // drop the CORS headers and fail the browser request.
+    app.UseCors(CorsOriginPolicy.PolicyName);
     app.UseHttpsRedirection();
-    app.UseCors("AllowFrontend");
     app.UseRateLimiter();
     app.UseAuthentication();
+    // Host ↔ token consistency is UX-only: it detects a token minted for a
+    // different tenant than the page host and returns 409 TENANT_MISMATCH so
+    // the frontend can offer switch/re-auth. It never grants data access —
+    // module gating ([RequireModule]) + identity-scoped authorization stay
+    // authoritative. Runs after authentication so claims are available.
+    app.UseMiddleware<TenantConsistencyMiddleware>();
     // Module gating is enforced per-endpoint via [RequireModule] filters
     // (MODULE_SYSTEM_STATUS_AND_PLAN.md Step 4); no coarse middleware by design.
     app.UseAuthorization();
@@ -513,8 +678,12 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     app.MapControllers();
 
     // ── Health check endpoint ───────────────────────────────
-    app.MapGet("/", () => Results.Ok(new { status = "healthy", service = "Punched API", version = "1.0.0" }));
-    app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+    // Explicitly anonymous: the deny-by-default fallback policy protects every
+    // endpoint that does not opt out, and liveness probes carry no token.
+    app.MapGet("/", () => Results.Ok(new { status = "healthy", service = "Punched API", version = "1.0.0" }))
+        .AllowAnonymous();
+    app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
+        .AllowAnonymous();
 
     app.Run();
 }

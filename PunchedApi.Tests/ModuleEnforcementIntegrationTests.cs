@@ -130,6 +130,38 @@ public class ModuleEnforcementIntegrationTests : IDisposable
 
     // ── The matrix ──────────────────────────────────────────────
 
+    [Theory]
+    [InlineData("serviceCatalog")]
+    [InlineData("loyalty")]
+    public async Task PublicEndpointMetadata_DoesNotRequireAnOperatorBusiness(string moduleKey)
+    {
+        var http = new DefaultHttpContext();
+        http.SetEndpoint(new Endpoint(null,
+            new EndpointMetadataCollection(new Microsoft.AspNetCore.Authorization.AllowAnonymousAttribute()),
+            "Public storefront"));
+        var action = new ActionContext(http, new RouteData(), new ActionDescriptor());
+        var context = new AuthorizationFilterContext(action, new List<IFilterMetadata>());
+
+        await new RequireModuleAttribute(moduleKey).OnAuthorizationAsync(context);
+
+        Assert.Null(context.Result);
+    }
+
+    [Fact]
+    public async Task PublicActionMetadata_DoesNotRequireAnOperatorBusiness()
+    {
+        var descriptor = new ActionDescriptor
+        {
+            EndpointMetadata = new List<object> { new Microsoft.AspNetCore.Authorization.AllowAnonymousAttribute() }
+        };
+        var action = new ActionContext(new DefaultHttpContext(), new RouteData(), descriptor);
+        var context = new AuthorizationFilterContext(action, new List<IFilterMetadata>());
+
+        await new RequireModuleAttribute("serviceCatalog").OnAuthorizationAsync(context);
+
+        Assert.Null(context.Result);
+    }
+
     [Fact]
     public async Task EnterpriseBusiness_HasEveryCatalogModule()
     {

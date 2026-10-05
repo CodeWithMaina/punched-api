@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using System.Text.Json;
 using PunchedApi.Application.Analytics;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Modules;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -17,7 +19,11 @@ public partial class BusinessService : IBusinessService
     private readonly IBusinessScopeResolver _businessScopeResolver;
     private readonly ISubscriptionProvisioningService _subscriptionProvisioning;
     private readonly IModuleEntitlementService _moduleEntitlementService;
+    private readonly IBusinessSlugGenerator _slugGenerator;
     private readonly ILogger<BusinessService> _logger;
+
+    /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
+    private readonly ITenantContext? _tenant;
 
     public BusinessService(
         IUnitOfWork unitOfWork,
@@ -26,7 +32,9 @@ public partial class BusinessService : IBusinessService
         IBusinessScopeResolver businessScopeResolver,
         ISubscriptionProvisioningService subscriptionProvisioning,
         IModuleEntitlementService moduleEntitlementService,
-        ILogger<BusinessService> logger)
+        IBusinessSlugGenerator slugGenerator,
+        ILogger<BusinessService> logger,
+        ITenantContext? tenant = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
@@ -34,8 +42,13 @@ public partial class BusinessService : IBusinessService
         _businessScopeResolver = businessScopeResolver;
         _subscriptionProvisioning = subscriptionProvisioning;
         _moduleEntitlementService = moduleEntitlementService;
+        _slugGenerator = slugGenerator;
         _logger = logger;
+        _tenant = tenant;
     }
+
+    /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
+    private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
 
     /// <summary>
     /// Public, customer-safe business profile used by the business share link
@@ -45,6 +58,9 @@ public partial class BusinessService : IBusinessService
     /// </summary>
     public async Task<ApiResponse<PublicBusinessProfileResponse>> GetPublicProfileAsync(Guid businessId)
     {
+        // Tenant narrowing: on a tenant host only the active tenant's profile is exposed.
+        if (TenantBusinessId is Guid activeTenantId && businessId != activeTenantId)
+            return ApiResponse<PublicBusinessProfileResponse>.Fail("NOT_FOUND", "Business not found.");
         try
         {
             var business = await _context.Businesses
@@ -57,25 +73,60 @@ public partial class BusinessService : IBusinessService
                 return ApiResponse<PublicBusinessProfileResponse>.Fail("NOT_FOUND", "Business not found.");
 
             var moduleKeys = await _moduleEntitlementService.GetEffectiveModuleKeysAsync(businessId);
+            var logoVariantsJson = business.LogoMediaId is Guid logoMediaId
+                ? await _context.Media.AsNoTracking()
+                    .Where(media => media.Id == logoMediaId && media.BusinessId == businessId &&
+                                    media.Purpose == MediaPurposes.BusinessLogo && media.Status == MediaStatus.Ready &&
+                                    media.Visibility == MediaVisibility.Public)
+                    .Select(media => media.VariantsJson)
+                    .FirstOrDefaultAsync()
+                : null;
 
             var activeProgram = business.LoyaltyPrograms
                 .Where(p => p.IsActive && p.Status == ProgramStatus.Active)
                 .OrderByDescending(p => p.CreatedAt)
                 .FirstOrDefault();
 
+            var hasActiveReferralProgram = business.ReferralProgram is { IsActive: true };
+            var galleryRelationships = await _unitOfWork.BusinessMedia.FindAsync(x => x.BusinessId == businessId);
+            var galleryIds = galleryRelationships.Select(x => x.MediaId).ToList();
+            var readyGalleryIds = galleryIds.Count == 0
+                ? []
+                : (await _unitOfWork.Media.FindAsync(x => galleryIds.Contains(x.Id) && x.Status == MediaStatus.Ready))
+                    .Select(x => x.Id)
+                    .ToList();
+
+            // Customer-facing projection of the SAME effective entitlements used
+            // by [RequireModule]. Computed from data already in hand (no extra
+            // query), so the customer app learns its capabilities from the one
+            // business-profile request it already makes.
+            var capabilities = CustomerCapabilityCatalog.Resolve(
+                moduleKeys,
+                hasActiveLoyaltyProgram: activeProgram != null,
+                hasActiveReferralProgram: hasActiveReferralProgram);
+
             return ApiResponse<PublicBusinessProfileResponse>.Ok(new PublicBusinessProfileResponse
             {
                 Id = business.Id,
+                Slug = business.Slug,
                 Name = business.Name,
                 Category = business.Category,
                 Location = business.Location,
                 Description = business.Description,
                 LogoUrl = business.LogoUrl,
+                LogoMediaId = business.LogoMediaId,
+                LogoVariants = ParsePublicImageVariants(logoVariantsJson),
+                CoverMediaId = business.CoverMediaId,
+                GalleryMediaIds = readyGalleryIds,
                 PhoneNumber = business.PhoneNumber,
                 Email = business.Email,
-                HasAppointments = moduleKeys.Contains("appointments"),
-                HasLoyalty = moduleKeys.Contains("loyalty") && activeProgram != null,
-                HasReferralProgram = business.ReferralProgram is { IsActive: true },
+                // Kept for existing consumers (storefront shell); both now read
+                // from the same capability resolution.
+                HasAppointments = capabilities[CustomerCapabilityCatalog.Appointments],
+                HasLoyalty = capabilities[CustomerCapabilityCatalog.Loyalty],
+                HasReferralProgram = hasActiveReferralProgram,
+                Capabilities = capabilities.ToDictionary(
+                    entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase),
                 LoyaltyProgram = activeProgram == null ? null : new PublicLoyaltyProgramSummary
                 {
                     Name = activeProgram.Name,
@@ -89,6 +140,24 @@ public partial class BusinessService : IBusinessService
         {
             _logger.LogError(ex, "Error loading public profile for business {BusinessId}", businessId);
             return ApiResponse<PublicBusinessProfileResponse>.Fail("LOAD_FAILED", "Failed to load business profile.");
+        }
+    }
+
+    private static IReadOnlyList<ServiceImageVariantResponse> ParsePublicImageVariants(string? variantsJson)
+    {
+        if (string.IsNullOrWhiteSpace(variantsJson)) return [];
+        try
+        {
+            return (JsonSerializer.Deserialize<List<MediaVariantResponse>>(variantsJson) ?? [])
+                .Where(variant => variant.Format is "webp" or "jpeg")
+                .Select(variant => new ServiceImageVariantResponse
+                {
+                    Url = variant.Url, Width = variant.Width, Height = variant.Height, Format = variant.Format
+                }).ToList();
+        }
+        catch (JsonException)
+        {
+            return [];
         }
     }
 
@@ -111,12 +180,25 @@ public partial class BusinessService : IBusinessService
                 Description = request.Description?.Trim(),
                 LogoUrl = request.LogoUrl?.Trim(),
                 MpesaNumber = request.MpesaNumber.Trim(),
+                // Subdomain address (java-house.punched.app) — generated,
+                // collision-checked slug; see IBusinessSlugGenerator.
+                Slug = await _slugGenerator.GenerateAsync(request.Name),
                 OwnerId = ownerId,
                 CreatedAt = DateTime.UtcNow
             };
 
             await _unitOfWork.Businesses.AddAsync(business);
-            await _unitOfWork.SaveChangesAsync();
+            try
+            {
+                await _unitOfWork.SaveChangesAsync();
+            }
+            catch (DbUpdateException) when (business.Slug != null)
+            {
+                // Lost a unique-index race (two same-named creations at once) —
+                // retry once with a disambiguated slug before giving up.
+                business.Slug = BusinessSlugPolicy.Fallback(BusinessSlugPolicy.Slugify(request.Name));
+                await _unitOfWork.SaveChangesAsync();
+            }
             _businessScopeResolver.InvalidateOwner(ownerId);
 
             // Ensure the newly created business is not locked out of modules:
@@ -165,6 +247,114 @@ public partial class BusinessService : IBusinessService
         await _unitOfWork.SaveChangesAsync();
 
         return ApiResponse<BusinessResponse>.Ok(MapToResponse(business));
+    }
+
+    /// <summary>
+    /// Owner-driven slug change (settings → Business URL). Validates format,
+    /// reserved names and availability server-side, then archives the previous
+    /// slug to business_slug_history so previously shared subdomain URLs keep
+    /// resolving (and redirect to the new address) — see ResolveBySlugAsync.
+    /// </summary>
+    public async Task<ApiResponse<BusinessResponse>> UpdateMyBusinessSlugAsync(Guid ownerId, UpdateBusinessSlugRequest request)
+    {
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        if (business == null)
+            return ApiResponse<BusinessResponse>.Fail("NOT_FOUND", "No business found for this account.");
+
+        var (ok, slug, code, message) = _slugGenerator.Validate(request.Slug);
+        if (!ok)
+            return ApiResponse<BusinessResponse>.Fail(code, message);
+
+        if (string.Equals(business.Slug, slug, StringComparison.Ordinal))
+            return ApiResponse<BusinessResponse>.Ok(MapToResponse(business));
+
+        if (!await _slugGenerator.IsAvailableAsync(slug, business.Id))
+            return ApiResponse<BusinessResponse>.Fail("SLUG_TAKEN", "That address is already taken. Please choose another.");
+
+        // Archive the outgoing slug so existing links keep working.
+        if (!string.IsNullOrEmpty(business.Slug) &&
+            !await _context.BusinessSlugHistories.AnyAsync(h => h.Slug == business.Slug && h.BusinessId == business.Id))
+        {
+            _context.BusinessSlugHistories.Add(new BusinessSlugHistory
+            {
+                Id = Guid.NewGuid(),
+                Slug = business.Slug!,
+                BusinessId = business.Id,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        // Reclaiming one of our own former slugs: drop its history row so
+        // resolve() doesn't report a redirect from the canonical address.
+        var reclaimed = await _context.BusinessSlugHistories
+            .Where(h => h.Slug == slug && h.BusinessId == business.Id)
+            .ToListAsync();
+        _context.BusinessSlugHistories.RemoveRange(reclaimed);
+
+        business.Slug = slug;
+        _unitOfWork.Businesses.Update(business);
+
+        try
+        {
+            await _unitOfWork.SaveChangesAsync();
+        }
+        catch (DbUpdateException)
+        {
+            // Lost a unique-index race with another owner picking the same
+            // address between our availability check and this save.
+            return ApiResponse<BusinessResponse>.Fail("SLUG_TAKEN", "That address is already taken. Please choose another.");
+        }
+
+        return ApiResponse<BusinessResponse>.Ok(MapToResponse(business));
+    }
+
+    /// <summary>
+    /// Server-side source of truth for host → tenant mapping: resolves a
+    /// subdomain address to its business. Checks live slugs first, then the
+    /// superseded-slug history (moved=true + canonical slug tells the frontend
+    /// to redirect old URLs). Soft-deleted businesses stop resolving (global
+    /// query filter). Slug-shaped garbage is rejected without a database hit.
+    /// </summary>
+    public async Task<ApiResponse<TenantResolutionResponse>> ResolveBySlugAsync(string slug)
+    {
+        var candidate = (slug ?? string.Empty).Trim().ToLowerInvariant();
+        if (candidate.Length == 0 || !BusinessSlugPolicy.IsValidFormat(candidate))
+            return ApiResponse<TenantResolutionResponse>.Fail("NOT_FOUND", "No business found at this address.");
+
+        var business = await _context.Businesses
+            .AsNoTracking()
+            .FirstOrDefaultAsync(b => b.Slug == candidate);
+
+        if (business != null)
+        {
+            return ApiResponse<TenantResolutionResponse>.Ok(new TenantResolutionResponse
+            {
+                BusinessId = business.Id,
+                // Matched on a non-empty candidate, so Slug is non-null here;
+                // ?? guards the DTO contract regardless.
+                Slug = business.Slug ?? string.Empty,
+                Name = business.Name,
+                Moved = false
+            });
+        }
+
+        var moved = await
+            (from h in _context.BusinessSlugHistories.AsNoTracking()
+             join b in _context.Businesses.AsNoTracking() on h.BusinessId equals b.Id
+             where h.Slug == candidate
+             select new { b.Id, b.Slug, b.Name })
+            .FirstOrDefaultAsync();
+
+        if (moved == null || string.IsNullOrEmpty(moved.Slug))
+            return ApiResponse<TenantResolutionResponse>.Fail("NOT_FOUND", "No business found at this address.");
+
+        return ApiResponse<TenantResolutionResponse>.Ok(new TenantResolutionResponse
+        {
+            BusinessId = moved.Id,
+            Slug = moved.Slug,
+            Name = moved.Name,
+            Moved = true
+        });
     }
 
     public async Task<ApiResponse<BusinessResponse>> GetBusinessByIdAsync(Guid businessId)
@@ -541,6 +731,7 @@ public partial class BusinessService : IBusinessService
     private static BusinessResponse MapToResponse(Business b) => new()
     {
         Id = b.Id,
+        Slug = b.Slug,
         Name = b.Name,
         Category = b.Category,
         Location = b.Location,
@@ -548,6 +739,8 @@ public partial class BusinessService : IBusinessService
         Email = b.Email,
         Description = b.Description,
         LogoUrl = b.LogoUrl,
+        LogoMediaId = b.LogoMediaId,
+        CoverMediaId = b.CoverMediaId,
         OwnerId = b.OwnerId,
         DefaultDailyGoal = b.DefaultDailyGoal,
         DailyGoalType = string.IsNullOrWhiteSpace(b.DailyGoalType) ? "stamps" : b.DailyGoalType.Trim().ToLowerInvariant(),
@@ -681,6 +874,9 @@ public partial class BusinessService : IBusinessService
             var user = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId);
             if (user == null || user.StaffBusinessId == null)
                 return ApiResponse<StaffBusinessResponse>.Fail("NOT_LINKED", "You are not linked to any business. Ask a business owner to add you.");
+            // Tenant narrowing: staff linked to another tenant appear unlinked on this host.
+            if (TenantBusinessId is Guid tenantId && user.StaffBusinessId != tenantId)
+                return ApiResponse<StaffBusinessResponse>.Fail("NOT_LINKED", "You are not linked to any business. Ask a business owner to add you.");
 
             var business = await _unitOfWork.Businesses.GetByIdAsync(user.StaffBusinessId.Value);
             if (business == null)
@@ -705,6 +901,9 @@ public partial class BusinessService : IBusinessService
         {
             var user = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId);
             if (user == null || user.StaffBusinessId == null)
+                return ApiResponse<StaffAnalyticsResponse>.Fail("NOT_LINKED", "You are not linked to any business.");
+            // Tenant narrowing: staff linked to another tenant appear unlinked on this host.
+            if (TenantBusinessId is Guid tenantId && user.StaffBusinessId != tenantId)
                 return ApiResponse<StaffAnalyticsResponse>.Fail("NOT_LINKED", "You are not linked to any business.");
 
             var business = await _context.Businesses
@@ -2261,9 +2460,13 @@ public partial class BusinessService : IBusinessService
                 .Union(referralIds)
                 .Union(enrollmentIds);
 
-            var businesses = await _context.Businesses
+            var businessQuery = _context.Businesses
                 .AsNoTracking()
-                .Where(b => union.Contains(b.Id) && !b.IsDeleted)
+                .Where(b => union.Contains(b.Id) && !b.IsDeleted);
+            if (TenantBusinessId is Guid tenantId)
+                businessQuery = businessQuery.Where(b => b.Id == tenantId);
+
+            var businesses = await businessQuery
                 .OrderBy(b => b.Name)
                 .ToListAsync();
 

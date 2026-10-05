@@ -23,6 +23,26 @@ public class NotificationLogConfiguration : IEntityTypeConfiguration<Notificatio
         builder.Property(x => x.Error).HasColumnName("error").HasMaxLength(500);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
 
+        builder.Property(x => x.PayloadJson)
+            .HasColumnName("payload_json")
+            .HasColumnType("jsonb")
+            .HasDefaultValue("{}");
+        builder.Property(x => x.DeliveryAttemptsJson)
+            .HasColumnName("delivery_attempts_json")
+            .HasColumnType("jsonb");
+        builder.Property(x => x.Attempts)
+            .HasColumnName("attempts")
+            .HasDefaultValue(0);
+        builder.Property(x => x.NextAttemptAt)
+            .HasColumnName("next_attempt_at")
+            .HasDefaultValueSql("now()");
+        builder.Property(x => x.IdempotencyKey)
+            .HasColumnName("idempotency_key")
+            .HasMaxLength(200);
+        builder.Property(x => x.UpdatedAt)
+            .HasColumnName("updated_at")
+            .HasDefaultValueSql("now()");
+
         builder.HasOne<User>()
             .WithMany()
             .HasForeignKey(x => x.UserId)
@@ -36,5 +56,17 @@ public class NotificationLogConfiguration : IEntityTypeConfiguration<Notificatio
         builder.HasIndex(x => new { x.UserId, x.SentAt });
         builder.HasIndex(x => new { x.BusinessId, x.TemplateType });
         builder.HasIndex(x => new { x.Status, x.SentAt });
+        builder.HasIndex(x => x.IdempotencyKey)
+            .HasDatabaseName("ux_notifications_idempotency")
+            .IsUnique()
+            .HasFilter("idempotency_key IS NOT NULL");
+        builder.HasIndex(x => new { x.Status, x.NextAttemptAt, x.CreatedAt })
+            .HasDatabaseName("ix_notifications_outbox_claim")
+            .HasFilter("status = 'pending'");
+        builder.HasIndex(x => x.UpdatedAt)
+            .HasDatabaseName("ix_notifications_updated_at");
+        builder.HasIndex(x => new { x.Status, x.UpdatedAt, x.Id })
+            .HasDatabaseName("ix_notifications_failed_updated_id")
+            .HasFilter("status = 'failed'");
     }
 }

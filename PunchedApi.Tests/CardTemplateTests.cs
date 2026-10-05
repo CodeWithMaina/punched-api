@@ -11,6 +11,13 @@ public class CardTemplateSanitizerAndRendererTests
     // ── Sanitization ────────────────────────────────────────
 
     [Fact]
+    public void Sanitize_PreservesNestedClosingTags()
+    {
+        const string template = "<section><header><div>Brand</div></header><article><h2>Rewards</h2><p>Earn <strong>stamps</strong></p></article></section>";
+        Assert.Equal(template, CardTemplateSanitizer.Sanitize(template));
+    }
+
+    [Fact]
     public void Sanitize_StripsScriptTagsAndContent()
     {
         var result = CardTemplateSanitizer.Sanitize("<div>Hello<script>alert(1)</script></div>");
@@ -47,13 +54,17 @@ public class CardTemplateSanitizerAndRendererTests
     }
 
     [Fact]
-    public void Sanitize_AllowsHttpsAndDataImageUrls()
+    public void Sanitize_AllowsApprovedImages_AndBlocksArbitraryRemoteImageSources()
     {
         var html = "<img src=\"https://cdn.test/logo.png\" alt=\"logo\" />" +
-                   "<img src=\"data:image/png;base64,iVBORw0KGgo=\" />";
+                   "<img src=\"data:image/png;base64,iVBORw0KGgo=\" />" +
+                   "<img src=\"{{business.logo}}\" />" +
+                   "<img src=\"/v1/card-assets/00000000-0000-0000-0000-000000000001/content\" />";
         var result = CardTemplateSanitizer.Sanitize(html);
-        Assert.Contains("https://cdn.test/logo.png", result);
+        Assert.DoesNotContain("https://cdn.test/logo.png", result);
         Assert.Contains("data:image/png;base64,iVBORw0KGgo=", result);
+        Assert.Contains("{{business.logo}}", result);
+        Assert.Contains("/v1/card-assets/00000000-0000-0000-0000-000000000001/content", result);
     }
 
     [Fact]
@@ -152,9 +163,11 @@ public class CardTemplateSanitizerAndRendererTests
     public void Render_StampsVariableEmitsSafeGeneratedMarkup()
     {
         var html = CardTemplateRenderer.Render("<div class=\"stamps\">{{stamps}}</div>", SampleContext());
-        Assert.Contains("<span class=\"stamp filled\" data-position=\"1\"></span>", html);
-        Assert.Contains("<span class=\"stamp empty\" data-position=\"10\"></span>", html);
+        Assert.Contains("<span class=\"stamp filled\" data-position=\"1\"", html);
+        Assert.Contains("<span class=\"stamp empty\" data-position=\"10\"", html);
         Assert.Equal(10, System.Text.RegularExpressions.Regex.Matches(html, "<span class=\"stamp ").Count);
+        Assert.Equal(4, System.Text.RegularExpressions.Regex.Matches(html, "class=\"stamp filled\"").Count);
+        Assert.Contains("aspect-ratio:1", html);
     }
 
     [Fact]
@@ -163,8 +176,8 @@ public class CardTemplateSanitizerAndRendererTests
         var expected = new[]
         {
             "business.name", "business.logo", "business.description", "customer.name",
-            "campaign.name", "card.name", "card.totalStamps", "card.completedStamps",
-            "reward.name", "stamps"
+            "campaign.name", "program.name", "card.name", "card.totalStamps", "card.completedStamps", "card.status",
+            "stamps.current", "stamps.required", "reward.name", "reward.status", "stamps"
         };
         Assert.Equal(expected, CardTemplateRenderer.AvailableVariables);
     }

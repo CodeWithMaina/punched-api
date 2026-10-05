@@ -49,4 +49,29 @@ public interface IAttendanceLocationService
     /// <summary>Owner per-staff drill-down history; staff id is business-scoped (§10.2).</summary>
     Task<ApiResponse<PaginatedResponse<AttendanceHistoryItem>>> GetStaffHistoryAsync(
         Guid ownerUserId, Guid staffUserId, AttendanceHistoryQuery query);
+
+    /// <summary>
+    /// Business-wide attendance ledger with date / staff / event filtering and
+    /// DB-first pagination. Rows carry the staff identity and, for manual
+    /// entries, the recording actor.
+    /// </summary>
+    Task<ApiResponse<PaginatedResponse<BusinessAttendanceRecord>>> GetRecordsAsync(
+        Guid ownerUserId, BusinessAttendanceRecordsQuery? query);
+
+    /// <summary>
+    /// Owner clocks a staff member IN manually (someone forgot to scan the
+    /// entrance badge). Records an <c>AttendanceEventSource.Manual</c> CLOCK_IN
+    /// event + opens a session, attributing the actor to the owner. Duplicate
+    /// active sessions are refused with <c>ALREADY_CLOCKED_IN</c>.
+    /// </summary>
+    Task<ApiResponse<OwnerAttendanceClockResponse>> OwnerClockInAsync(
+        Guid ownerUserId, Guid staffUserId, OwnerAttendanceClockRequest request);
+
+    /// <summary>
+    /// Owner clocks a staff member OUT manually (someone left without scanning
+    /// out). Closes the staff member's open session and records a Manual
+    /// CLOCK_OUT event. No open session ⇒ <c>NOT_CLOCKED_IN</c>.
+    /// </summary>
+    Task<ApiResponse<OwnerAttendanceClockResponse>> OwnerClockOutAsync(
+        Guid ownerUserId, Guid staffUserId, OwnerAttendanceClockRequest request);
 }

@@ -62,6 +62,37 @@ public class UpdateBusinessRequest
     public string? MpesaNumber { get; set; }
 }
 
+/// <summary>
+/// Owner-driven subdomain slug change (PUT /v1/businesses/me/slug).
+/// </summary>
+public class UpdateBusinessSlugRequest
+{
+    [JsonPropertyName("slug")]
+    public string Slug { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Host → tenant resolution result (GET /v1/businesses/by-slug/{slug}).
+/// <see cref="Moved"/> means the address is a superseded slug: the frontend
+/// should redirect the visitor to the canonical <see cref="Slug"/> URL.
+/// </summary>
+public class TenantResolutionResponse
+{
+    [JsonPropertyName("businessId")]
+    public Guid BusinessId { get; set; }
+
+    /// <summary>The business's canonical (current) slug.</summary>
+    [JsonPropertyName("slug")]
+    public string Slug { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>True when the requested address only redirects here.</summary>
+    [JsonPropertyName("moved")]
+    public bool Moved { get; set; }
+}
+
 /// <summary>Sets the business-level default daily goal for staff.</summary>
 public class UpdateBusinessDailyGoalRequest
 {
@@ -93,6 +124,14 @@ public class BusinessResponse
     [JsonPropertyName("id")]
     public Guid Id { get; set; }
 
+    /// <summary>
+    /// Subdomain address label ("java-house" → java-house.punched.app).
+    /// Null only for a legacy row that the startup backfill has not yet
+    /// provisioned; every active business has one.
+    /// </summary>
+    [JsonPropertyName("slug")]
+    public string? Slug { get; set; }
+
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
@@ -113,6 +152,15 @@ public class BusinessResponse
 
     [JsonPropertyName("logoUrl")]
     public string? LogoUrl { get; set; }
+
+    [JsonPropertyName("logoMediaId")]
+    public Guid? LogoMediaId { get; set; }
+
+    [JsonPropertyName("coverMediaId")]
+    public Guid? CoverMediaId { get; set; }
+
+    [JsonPropertyName("galleryMediaIds")]
+    public IReadOnlyList<Guid> GalleryMediaIds { get; set; } = [];
 
     [JsonPropertyName("ownerId")]
     public Guid? OwnerId { get; set; }
@@ -139,6 +187,7 @@ public class BusinessResponse
 
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
+
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -262,6 +311,14 @@ public class UpsertLoyaltyProgramRequest
     /// <summary>Welcome stamps granted automatically to a new customer on enrollment (0-100).</summary>
     [JsonPropertyName("defaultEnrollmentStamps")]
     public int DefaultEnrollmentStamps { get; set; }
+
+    /// <summary>Optional program design selection; omitted values preserve an existing assignment.</summary>
+    [JsonPropertyName("cardDesignId")]
+    public Guid? CardDesignId { get; set; }
+
+    /// <summary>Explicitly return this program to the platform default.</summary>
+    [JsonPropertyName("clearCardDesign")]
+    public bool ClearCardDesign { get; set; }
 }
 
 public class LoyaltyProgramResponse
@@ -305,6 +362,9 @@ public class LoyaltyProgramResponse
     [JsonPropertyName("programType")]
     public string ProgramType { get; set; } = "stamp";
 
+    [JsonPropertyName("imageMediaId")]
+    public Guid? ImageMediaId { get; set; }
+
     /// <summary>Structured configuration when the program uses the flexible model.</summary>
     [JsonPropertyName("config")]
     public ProgramConfig? Config { get; set; }
@@ -325,6 +385,15 @@ public class LoyaltyProgramResponse
     /// <summary>Display name of the selected design, when one is selected.</summary>
     [JsonPropertyName("cardDesignName")]
     public string? CardDesignName { get; set; }
+
+    [JsonPropertyName("cardDesignHtml")]
+    public string? CardDesignHtml { get; set; }
+
+    [JsonPropertyName("cardDesignIsDefault")]
+    public bool CardDesignIsDefault { get; set; }
+
+    [JsonPropertyName("cardDesignVersion")]
+    public int CardDesignVersion { get; set; }
 
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
@@ -358,6 +427,9 @@ public class CustomerProgramResponse
     [JsonPropertyName("rewardExpirationHours")]
     public int RewardExpirationHours { get; set; }
 
+    [JsonPropertyName("defaultEnrollmentStamps")]
+    public int DefaultEnrollmentStamps { get; set; }
+
     /// <summary>Earning model key (see <c>ProgramTypes</c>).</summary>
     [JsonPropertyName("programType")]
     public string ProgramType { get; set; } = "stamp";
@@ -368,6 +440,21 @@ public class CustomerProgramResponse
     /// <summary>True when the calling customer already holds a card in this program.</summary>
     [JsonPropertyName("isEnrolled")]
     public bool IsEnrolled { get; set; }
+
+    [JsonPropertyName("cardDesignId")]
+    public Guid? CardDesignId { get; set; }
+
+    [JsonPropertyName("cardDesignName")]
+    public string? CardDesignName { get; set; }
+
+    [JsonPropertyName("cardDesignVersion")]
+    public int CardDesignVersion { get; set; }
+
+    [JsonPropertyName("cardDesignIsDefault")]
+    public bool CardDesignIsDefault { get; set; }
+
+    [JsonPropertyName("cardDesignHtml")]
+    public string? CardDesignHtml { get; set; }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -454,6 +541,9 @@ public class EnrollCardRequest
 {
     [JsonPropertyName("businessId")]
     public Guid BusinessId { get; set; }
+
+    [JsonPropertyName("programId")]
+    public Guid? ProgramId { get; set; }
 }
 
 public class LoyaltyCardResponse
@@ -495,6 +585,20 @@ public class LoyaltyCardResponse
     public DateTime? RewardExpiresAt { get; set; }
 
     /// <summary>
+    /// The effective required-stamp count for THIS customer's current cycle —
+    /// resolved server-side from their enrollment snapshot (CardRulesPolicy),
+    /// not from the program's mutable configuration. Additive to
+    /// <c>program.stampsRequired</c>, which remains the program-level
+    /// configuration view.
+    /// </summary>
+    [JsonPropertyName("stampsRequired")]
+    public int StampsRequired { get; set; }
+
+    /// <summary>The effective reward description for this customer's current cycle.</summary>
+    [JsonPropertyName("rewardDescription")]
+    public string RewardDescription { get; set; } = string.Empty;
+
+    /// <summary>
     /// Number of stamps on this card that are still LOCKED (pending verification) —
     /// welcome/default stamps granted on enrollment that have not yet been validated
     /// by a real business stamping action.
@@ -518,13 +622,16 @@ public class LoyaltyCardResponse
     [JsonPropertyName("cardDesignName")]
     public string? CardDesignName { get; set; }
 
+    [JsonPropertyName("cardDesignVersion")]
+    public int CardDesignVersion { get; set; }
+
     /// <summary>True when the platform default design is applied.</summary>
     [JsonPropertyName("cardDesignIsDefault")]
     public bool CardDesignIsDefault { get; set; }
 
     /// <summary>
     /// The fully rendered card HTML (single shared rendering pipeline). Render
-    /// inside a sandboxed iframe. Null/empty ⇒ use the built-in React card.
+    /// inside the shared sandboxed iframe. Null/empty indicates a renderer error.
     /// </summary>
     [JsonPropertyName("cardDesignHtml")]
     public string? CardDesignHtml { get; set; }
@@ -547,6 +654,10 @@ public class PublicBusinessProfileResponse
     [JsonPropertyName("id")]
     public Guid Id { get; set; }
 
+    /// <summary>Subdomain address label (null only pre-backfill for legacy rows).</summary>
+    [JsonPropertyName("slug")]
+    public string? Slug { get; set; }
+
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
@@ -561,6 +672,18 @@ public class PublicBusinessProfileResponse
 
     [JsonPropertyName("logoUrl")]
     public string? LogoUrl { get; set; }
+
+    [JsonPropertyName("logoMediaId")]
+    public Guid? LogoMediaId { get; set; }
+
+    [JsonPropertyName("logoVariants")]
+    public IReadOnlyList<ServiceImageVariantResponse> LogoVariants { get; set; } = [];
+
+    [JsonPropertyName("coverMediaId")]
+    public Guid? CoverMediaId { get; set; }
+
+    [JsonPropertyName("galleryMediaIds")]
+    public IReadOnlyList<Guid> GalleryMediaIds { get; set; } = [];
 
     [JsonPropertyName("phoneNumber")]
     public string? PhoneNumber { get; set; }
@@ -579,6 +702,27 @@ public class PublicBusinessProfileResponse
     /// <summary>Whether the business runs an active referral program.</summary>
     [JsonPropertyName("hasReferralProgram")]
     public bool HasReferralProgram { get; set; }
+
+    /// <summary>
+    /// The capabilities this business currently exposes TO CUSTOMERS
+    /// (<see cref="PunchedApi.Application.Modules.CustomerCapabilityCatalog"/>).
+    ///
+    /// <para>This is the customer-facing projection of the business's EFFECTIVE
+    /// module entitlements: plan grants, purchases, trials, admin-granted
+    /// access and promotions all resolve into it. It deliberately carries no
+    /// subscription, billing, plan or invoice information — the customer app
+    /// only ever needs "can this customer use this?", never "what bought it?".
+    /// </para>
+    ///
+    /// <para>Business/internal modules (attendance, analytics, staff,
+    /// settings, customer management, card-design authoring, programs) are
+    /// never represented here, so an internal module cannot leak into the
+    /// customer experience. The dictionary ALWAYS contains every known
+    /// capability key (false when unavailable) so the client can render from a
+    /// fixed shape.</para>
+    /// </summary>
+    [JsonPropertyName("capabilities")]
+    public Dictionary<string, bool> Capabilities { get; set; } = new();
 
     /// <summary>Active loyalty program summary (null when loyalty is disabled/no active program).</summary>
     [JsonPropertyName("loyaltyProgram")]
@@ -1062,6 +1206,9 @@ public class NotificationDto
 
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
+
+    [JsonPropertyName("payload")]
+    public Dictionary<string, object?> Payload { get; set; } = new();
 }
 
 /// <summary>

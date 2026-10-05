@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using AutoMapper;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Entities;
@@ -19,6 +20,9 @@ public class AuthService : IAuthService
     private readonly IMapper _mapper;
     private readonly ILogger<AuthService> _logger;
     private readonly ISubscriptionProvisioningService _subscriptionProvisioning;
+    private readonly IBusinessSlugGenerator _slugGenerator;
+    private readonly IBusinessMembershipResolver _membershipResolver;
+    private readonly ITenantHostResolver _tenantResolver;
 
     // ── Constants ────────────────────────────────────────────
     private const int MaxFailedLoginAttempts = 5;
@@ -34,7 +38,10 @@ public class AuthService : IAuthService
         IEmailService emailService,
         IMapper mapper,
         ILogger<AuthService> logger,
-        ISubscriptionProvisioningService subscriptionProvisioning)
+        ISubscriptionProvisioningService subscriptionProvisioning,
+        IBusinessSlugGenerator slugGenerator,
+        IBusinessMembershipResolver membershipResolver,
+        ITenantHostResolver tenantResolver)
     {
         _unitOfWork = unitOfWork;
         _jwtService = jwtService;
@@ -42,6 +49,9 @@ public class AuthService : IAuthService
         _mapper = mapper;
         _logger = logger;
         _subscriptionProvisioning = subscriptionProvisioning;
+        _slugGenerator = slugGenerator;
+        _membershipResolver = membershipResolver;
+        _tenantResolver = tenantResolver;
     }
 
     /// <inheritdoc />
@@ -201,13 +211,27 @@ public class AuthService : IAuthService
                 Description = request.BusinessDescription?.Trim(),
                 LogoUrl = request.LogoUrl?.Trim(),
                 MpesaNumber = request.BusinessMpesaNumber.Trim(),
+                // Subdomain address (java-house.punched.app) — generated,
+                // collision-checked slug; see IBusinessSlugGenerator.
+                Slug = await _slugGenerator.GenerateAsync(request.BusinessName),
                 OwnerId = user.Id,
                 CreatedAt = DateTime.UtcNow
             };
             await _unitOfWork.Businesses.AddAsync(business);
 
-            // Atomic commit — all three records are persisted or none are.
-            await _unitOfWork.SaveChangesAsync();
+            try
+            {
+                // Atomic commit — all three records are persisted or none are.
+                await _unitOfWork.SaveChangesAsync();
+            }
+            catch (DbUpdateException) when (business.Slug != null)
+            {
+                // Lost a unique-index race (two same-named signups at once) —
+                // retry once with a disambiguated slug. A second failure
+                // escapes to the outer catch as REGISTRATION_FAILED.
+                business.Slug = BusinessSlugPolicy.Fallback(BusinessSlugPolicy.Slugify(request.BusinessName));
+                await _unitOfWork.SaveChangesAsync();
+            }
 
             // Give the new business immediate module access (default Starter plan)
             // so it is not locked out. Best-effort: no-op if the Starter plan is
@@ -224,6 +248,7 @@ public class AuthService : IAuthService
                 Business = new BusinessResponse
                 {
                     Id = business.Id,
+                    Slug = business.Slug,
                     Name = business.Name,
                     Category = business.Category,
                     Location = business.Location,
@@ -332,8 +357,10 @@ public class AuthService : IAuthService
                         "This account has been disabled.");
                     }
 
-            // Generate tokens
-            var accessToken = _jwtService.GenerateAccessToken(userAuth, user);
+            // Generate tokens. Tenant claims are minted only when the caller's
+            // membership of the tenant host is verified server-side.
+            var tenant = await ResolveTenantContextAsync(user, request.BusinessSlug);
+            var accessToken = _jwtService.GenerateAccessToken(userAuth, user, tenant?.BusinessId, tenant?.BizRole);
             var refreshTokenValue = _jwtService.GenerateRefreshToken();
 
             // Store refresh token
@@ -459,8 +486,10 @@ public class AuthService : IAuthService
                         "This account has been disabled.");
                     }
 
-            // Generate tokens
-            var accessToken = _jwtService.GenerateAccessToken(userAuth, user);
+            // Generate tokens. Tenant-aware: signing in on java-house.punched.app
+            // issues biz/bizRole claims once membership is verified.
+            var tenant = await ResolveTenantContextAsync(user, request.BusinessSlug, request.BusinessId);
+            var accessToken = _jwtService.GenerateAccessToken(userAuth, user, tenant?.BusinessId, tenant?.BizRole);
             var refreshTokenValue = _jwtService.GenerateRefreshToken();
 
             var refreshToken = new RefreshToken
@@ -500,7 +529,7 @@ public class AuthService : IAuthService
     /// 2. Validate not expired or revoked.
     /// 3. Revoke old token, issue new pair.
     /// </remarks>
-    public async Task<ApiResponse<TokenResponse>> RefreshTokenAsync(string refreshTokenValue)
+    public async Task<ApiResponse<TokenResponse>> RefreshTokenAsync(string refreshTokenValue, string? businessSlug = null)
     {
         try
         {
@@ -557,8 +586,11 @@ public class AuthService : IAuthService
             storedToken.RevokedAt = DateTime.UtcNow;
             _unitOfWork.RefreshTokens.Update(storedToken);
 
-            // Generate new tokens
-            var newAccessToken = _jwtService.GenerateAccessToken(userAuth, user);
+            // Generate new tokens. Tenant context is RECONSTRUCTED from the
+            // requesting origin and re-verified against live membership, so a
+            // refresh can neither drop nor forge biz/bizRole.
+            var tenant = await ResolveTenantContextAsync(user, businessSlug);
+            var newAccessToken = _jwtService.GenerateAccessToken(userAuth, user, tenant?.BusinessId, tenant?.BizRole);
             var newRefreshTokenValue = _jwtService.GenerateRefreshToken();
 
             var newRefreshToken = new RefreshToken
@@ -586,6 +618,49 @@ public class AuthService : IAuthService
             return ApiResponse<TokenResponse>.Fail(
                 "TOKEN_REFRESH_FAILED",
                 "An unexpected error occurred during token refresh.");
+        }
+    }
+
+    /// <summary>
+    /// Resolves the optional tenant context supplied at an auth entry point.
+    ///
+    /// The client sends a HINT (the tenant subdomain, or an explicit business
+    /// id); this method resolves it to a business and verifies the caller's
+    /// membership against the authoritative server-side relationships through
+    /// <see cref="IBusinessMembershipResolver"/> (Owner → <c>Business.OwnerId</c>,
+    /// Staff → <c>User.StaffBusinessId</c>, Customer → active enrollment).
+    ///
+    /// Returns null whenever the tenant cannot be verified: authentication
+    /// itself never fails because of tenant context — the token is simply
+    /// minted without tenant claims, exactly like a legacy token.
+    /// </summary>
+    private async Task<(Guid BusinessId, string BizRole)?> ResolveTenantContextAsync(
+        User user,
+        string? businessSlug,
+        Guid? explicitBusinessId = null)
+    {
+        try
+        {
+            var businessId = explicitBusinessId;
+
+            if (businessId is null && !string.IsNullOrWhiteSpace(businessSlug))
+                businessId = await _tenantResolver.ResolveBusinessIdAsync(businessSlug);
+
+            if (businessId is null || businessId == Guid.Empty)
+                return null;
+
+            var membership = await _membershipResolver.ResolveAsync(user.Id, businessId.Value);
+            if (!membership.IsActive || string.IsNullOrWhiteSpace(membership.BizRole))
+                return null;
+
+            return (businessId.Value, membership.BizRole!);
+        }
+        catch (Exception ex)
+        {
+            // Tenant enrichment is best-effort: a resolution failure must never
+            // block an otherwise valid sign-in or refresh.
+            _logger.LogWarning(ex, "Tenant context resolution failed for user {UserId}", user.Id);
+            return null;
         }
     }
 

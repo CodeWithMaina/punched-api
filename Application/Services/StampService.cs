@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Loyalty;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -17,9 +19,8 @@ public class StampService : IStampService
     private readonly ApplicationDbContext _context;
     private readonly ISseService _sseService;
     private readonly IReferralService _referralService;
-    private readonly IEmailService _emailService;
         private readonly IAnalyticsAggregationService _analyticsAggregationService;
-    private readonly INotificationsService _notificationsService;
+    private readonly INotificationService _notificationService;
         private readonly IBusinessScopeResolver _businessScopeResolver;
     private readonly IPermissionService _permissionService;
     private readonly IIdempotencyService _idempotencyService;
@@ -30,9 +31,8 @@ public class StampService : IStampService
         ApplicationDbContext context,
         ISseService sseService,
         IReferralService referralService,
-        IEmailService emailService,
         IAnalyticsAggregationService analyticsAggregationService,
-        INotificationsService notificationsService,
+        INotificationService notificationService,
         IBusinessScopeResolver businessScopeResolver,
         IPermissionService permissionService,
         IIdempotencyService idempotencyService,
@@ -42,9 +42,8 @@ public class StampService : IStampService
         _context = context;
         _sseService = sseService;
         _referralService = referralService;
-        _emailService = emailService;
         _analyticsAggregationService = analyticsAggregationService;
-        _notificationsService = notificationsService;
+        _notificationService = notificationService;
                 _businessScopeResolver = businessScopeResolver;
         _permissionService = permissionService;
         _idempotencyService = idempotencyService;
@@ -70,8 +69,8 @@ public class StampService : IStampService
                     if (lookup.Conflict)
                         return ApiResponse<StampAwardedResponse>.Fail("IDEMPOTENCY_CONFLICT",
                             "Idempotency key already used with a different request body.");
-                    var replay = JsonSerializer.Deserialize<ApiResponse<StampAwardedResponse>>(lookup.ResponseJson);
-                    if (replay != null) return replay;
+                    var replay = JsonSerializer.Deserialize<ApiResponse<StampAwardedResponse>>(lookup.ResponseJson ?? "{}");
+                    if (replay is not null) return replay;
                 }
             }
 
@@ -119,6 +118,7 @@ public class StampService : IStampService
                     $"stampCount exceeds this program's MaxStampsPerVisit ({card.Program.MaxStampsPerVisit}).");
 
             int lastStampNumber = 0;
+            Guid? lastAwardedStampId = null;
             bool rewardReady = false;
             Guid? redemptionId = null;
 
@@ -190,6 +190,7 @@ public class StampService : IStampService
                         UnlockedAt = now, // verified immediately via QR scan
                         CreatedAt = now
                     };
+                    lastAwardedStampId = stamp.Id;
                     await _unitOfWork.Stamps.AddAsync(stamp);
                 }
 
@@ -247,7 +248,16 @@ public class StampService : IStampService
 
                     if (stampsToday == dailyGoal.Value)
                     {
-                                                await _notificationsService.CreateGoalReachedAsync(actor.Id, scopedBusinessId, stampsToday);
+                        await SendNotificationSafelyAsync(new NotificationRequest(
+                            "loyalty.goal_reached",
+                            actor.Id,
+                            scopedBusinessId,
+                            new Dictionary<string, object?>
+                            {
+                                ["businessName"] = card.Business.Name,
+                                ["stamps"] = stampsToday
+                            },
+                            $"stamp:{lastAwardedStampId}:goal-reached"));
                     }
                 }
             }
@@ -399,7 +409,20 @@ public class StampService : IStampService
         }
     }
 
-        private static string HashToken(string token)
+    private async Task SendNotificationSafelyAsync(NotificationRequest request)
+    {
+        try
+        {
+            await _notificationService.SendAsync(request);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Notification {NotificationType} could not be queued for recipient {RecipientUserId}.",
+                request.Type, request.RecipientUserId);
+        }
+    }
+
+    private static string HashToken(string token)
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(token));
         return Convert.ToHexString(bytes).ToLowerInvariant();
@@ -491,7 +514,7 @@ public class StampService : IStampService
         {
             var tokenHash = HashToken(request.Token);
             var resolver = await ResolveActorAsync(userId);
-            if (!resolver.Success) return PropagateFailure<ResolveQrResponse>(resolver);
+            if (!resolver.Success || resolver.Data is null) return PropagateFailure<ResolveQrResponse>(resolver);
 
             var scopedBusinessId = resolver.Data.ScopedBusinessId;
             if (request.BusinessId != scopedBusinessId)
@@ -516,14 +539,15 @@ public class StampService : IStampService
             if (card == null)
                 return ApiResponse<ResolveQrResponse>.Fail("NOT_ENROLLED", "Customer is not enrolled in this business's loyalty program.");
 
-            var remaining = Math.Max(0, card.Program.StampsRequired - card.TotalStamps);
+            var requiredStamps = CardRulesPolicy.ResolveEffectiveRequiredStamps(card, card.Program, card.StampCard);
+            var remaining = Math.Max(0, requiredStamps - card.TotalStamps);
             return ApiResponse<ResolveQrResponse>.Ok(new ResolveQrResponse
             {
                 CustomerId = card.CustomerId,
                 CustomerFirstName = card.Customer.FullName,
                 CardId = card.Id,
                 TotalStamps = card.TotalStamps,
-                StampsRequired = card.Program.StampsRequired,
+                StampsRequired = requiredStamps,
                 StampsRemaining = remaining,
                 RewardReady = remaining == 0,
                 ProgramName = card.Program.Name,
@@ -576,6 +600,17 @@ public class StampService : IStampService
 
             var now = DateTime.UtcNow;
             int before = card.TotalStamps;
+            var adjustment = new StampAdjustment
+            {
+                Id = Guid.NewGuid(),
+                CardId = card.Id,
+                AdjustedByUserId = actor.Id,
+                AdjustedByRole = actor.Role.ToString(),
+                Delta = request.Delta,
+                Reason = request.Reason,
+                Note = request.Note,
+                CreatedAt = now
+            };
 
             await using var transaction = await _context.Database.BeginTransactionAsync();
             try
@@ -590,17 +625,7 @@ public class StampService : IStampService
                 card.LastStampAt = now;
                 _unitOfWork.LoyaltyCards.Update(card);
 
-                await _unitOfWork.StampAdjustments.AddAsync(new StampAdjustment
-                {
-                    Id = Guid.NewGuid(),
-                    CardId = card.Id,
-                    AdjustedByUserId = actor.Id,
-                    AdjustedByRole = actor.Role.ToString(),
-                    Delta = request.Delta,
-                    Reason = request.Reason,
-                    Note = request.Note,
-                    CreatedAt = now
-                });
+                await _unitOfWork.StampAdjustments.AddAsync(adjustment);
 
                 await _unitOfWork.ApiEventLogs.AddAsync(new ApiEventLog
                 {
@@ -647,7 +672,12 @@ public class StampService : IStampService
                 StampedAt = now,
                 Message = $"Your card was corrected by {card.Business.Name}."
             });
-            await _notificationsService.CreateAsync(card.CustomerId, scopedBusinessId, "CardCorrected");
+            await SendNotificationSafelyAsync(new NotificationRequest(
+                "loyalty.card_corrected",
+                card.CustomerId,
+                scopedBusinessId,
+                new Dictionary<string, object?> { ["businessName"] = card.Business.Name },
+                $"stamp-adjustment:{adjustment.Id}:card-corrected"));
 
             return ApiResponse<StampAdjustmentResponse>.Ok(new StampAdjustmentResponse
             {
@@ -674,7 +704,7 @@ public class StampService : IStampService
         try
         {
             var resolver = await ResolveActorAsync(userId);
-            if (!resolver.Success) return PropagateFailure<ManualLookupResponse>(resolver);
+            if (!resolver.Success || resolver.Data is null) return PropagateFailure<ManualLookupResponse>(resolver);
 
             var scopedBusinessId = resolver.Data.ScopedBusinessId;
             if (request.BusinessId != scopedBusinessId)
@@ -756,8 +786,8 @@ public class StampService : IStampService
                 if (lookup.Conflict)
                     return ApiResponse<StampAwardedResponse>.Fail("IDEMPOTENCY_CONFLICT",
                         "Idempotency key already used with a different request body.");
-                var replay = JsonSerializer.Deserialize<ApiResponse<StampAwardedResponse>>(lookup.ResponseJson);
-                if (replay != null) return replay;
+                var replay = JsonSerializer.Deserialize<ApiResponse<StampAwardedResponse>>(lookup.ResponseJson ?? "{}");
+                if (replay is not null) return replay;
             }
         }
 
@@ -836,6 +866,7 @@ public class StampService : IStampService
                         EnrolledAt = now,
                         CreatedAt = now
                     };
+                    LoyaltyCardSnapshot.Apply(card, program, await LoyaltyCardSnapshot.ResolveDefaultStampCardAsync(_unitOfWork, program.Id), now);
                     await _unitOfWork.LoyaltyCards.AddAsync(card);
                     await _unitOfWork.SaveChangesAsync();
                 }
@@ -848,6 +879,9 @@ public class StampService : IStampService
                     .FirstAsync(c => c.Id == card.Id);
 
                 var beforeStamps = card.TotalStamps;
+                // Completion is measured against THIS customer's snapshotted rule,
+                // not the program's current configuration (§36).
+                var requiredStamps = CardRulesPolicy.ResolveEffectiveRequiredStamps(card, card.Program, card.StampCard);
                 if (stamps > card.Program.MaxStampsPerVisit)
                     return ApiResponse<StampAwardedResponse>.Fail("STAMP_LIMIT_EXCEEDED",
                         $"stamps exceeds this program's MaxStampsPerVisit ({card.Program.MaxStampsPerVisit}).");
@@ -861,7 +895,7 @@ public class StampService : IStampService
                     card.LifetimeStamps++;
                     card.LastStampAt = now;
                     lastStampNumber = card.LifetimeStamps;
-                    rewardReady = card.TotalStamps >= card.Program.StampsRequired;
+                    rewardReady = card.TotalStamps >= requiredStamps;
 
                     if (rewardReady)
                     {
@@ -934,7 +968,7 @@ public class StampService : IStampService
                     CardId = card.Id,
                     StampNumber = lastStampNumber,
                     TotalStamps = rewardReady ? 0 : card.TotalStamps,
-                    StampsRequired = card.Program.StampsRequired,
+                    StampsRequired = requiredStamps,
                     RewardReady = rewardReady,
                     StampedAt = now,
                     RedemptionId = redemptionId
@@ -950,7 +984,7 @@ public class StampService : IStampService
                     CustomerName = card.Customer.FullName,
                     StampNumber = lastStampNumber,
                     TotalStamps = rewardReady ? 0 : card.TotalStamps,
-                    StampsRequired = card.Program.StampsRequired,
+                    StampsRequired = requiredStamps,
                     RewardReady = rewardReady,
                     RewardDescription = card.Program.RewardDescription,
                     StampedAt = now
@@ -999,7 +1033,7 @@ public class StampService : IStampService
 public async Task<ApiResponse<StampActivityPage>> GetActivityAsync(Guid actorUserId, StampActivityQuery query)
     {
         var resolver = await ResolveActorAsync(actorUserId);
-        if (!resolver.Success) return PropagateFailure<StampActivityPage>(resolver);
+        if (!resolver.Success || resolver.Data is null) return PropagateFailure<StampActivityPage>(resolver);
 
         var businessId = resolver.Data.ScopedBusinessId;
         var page = Math.Max(1, query.Page);
@@ -1048,8 +1082,8 @@ public async Task<ApiResponse<StampActivityPage>> GetActivityAsync(Guid actorUse
                 StampNumber = s.StampNumber,
                 Source = s.Source,
                 AwardedByUserId = s.AwardedByUserId,
-                AwardedByName = awarded.Name,
-                AwardedByRole = awarded.Role,
+                AwardedByName = awarded?.Name ?? "—",
+                AwardedByRole = awarded?.Role,
                 StampedAt = s.StampedAt
             };
         }).ToList();

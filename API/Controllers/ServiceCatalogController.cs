@@ -26,6 +26,46 @@ public class ServiceCatalogController : ControllerBase
         _catalogService = catalogService;
     }
 
+    [HttpGet("admin")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> GetAdminServices([FromQuery] Guid? businessId)
+    {
+        var result = await _catalogService.GetAdminServicesAsync(businessId);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    [HttpPost("admin/{businessId:guid}")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> CreateForBusiness(Guid businessId, [FromBody] CreateServiceRequest request)
+    {
+        var result = await _catalogService.CreateForBusinessAsync(businessId, request);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    [HttpPatch("admin/{businessId:guid}/{id:guid}")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> UpdateForBusiness(Guid businessId, Guid id, [FromBody] UpdateServiceRequest request)
+    {
+        var result = await _catalogService.UpdateForBusinessAsync(businessId, id, request);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    [HttpDelete("admin/{businessId:guid}/{id:guid}")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> DeleteForBusiness(Guid businessId, Guid id)
+    {
+        var result = await _catalogService.DeleteForBusinessAsync(businessId, id);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    [HttpGet("{businessId:guid}/{id:guid}")]
+    [AllowAnonymous]
+    public async Task<IActionResult> GetPublicService(Guid businessId, Guid id)
+    {
+        var result = await _catalogService.GetPublicServiceAsync(businessId, id);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
     /// <summary>Owner: list all of the owner's business services (including inactive).</summary>
     [HttpGet("me")]
     [Authorize(Roles = "Business")]
@@ -139,6 +179,10 @@ public class ServiceCatalogController : ControllerBase
         {
             "NOT_FOUND" or "SERVICE_NOT_FOUND" or "STAFF_NOT_FOUND" or "CUSTOMER_NOT_FOUND" => NotFound(result),
             "FORBIDDEN" => StatusCode(StatusCodes.Status403Forbidden, result),
+            // The public catalogue path enforces the module gate itself (the
+            // attribute cannot: see ServiceCatalogService). Surfaced as 403 so
+            // the storefront reads it the same way as any other blocked module.
+            "MODULE_DISABLED" => StatusCode(StatusCodes.Status403Forbidden, result),
             "OVERBOOKING" or "SLOT_UNAVAILABLE" or "INVALID_STATUS_TRANSITION" => Conflict(result),
             _ => BadRequest(result)   // STAFF_NOT_AVAILABLE, VALIDATION_ERROR, BUSINESS_NOT_FOUND, fallback
         };

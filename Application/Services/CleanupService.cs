@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
 
@@ -21,11 +23,16 @@ public sealed class CleanupService : BackgroundService
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<CleanupService> _logger;
+    private readonly NotificationWorkerOptions _notificationOptions;
 
-    public CleanupService(IServiceScopeFactory scopeFactory, ILogger<CleanupService> logger)
+    public CleanupService(
+        IServiceScopeFactory scopeFactory,
+        ILogger<CleanupService> logger,
+        IOptions<NotificationWorkerOptions>? notificationOptions = null)
     {
         _scopeFactory = scopeFactory;
         _logger       = logger;
+        _notificationOptions = notificationOptions?.Value ?? new NotificationWorkerOptions();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -62,10 +69,32 @@ public sealed class CleanupService : BackgroundService
         var verifyCleared   = await CleanVerificationCodesAsync(db, now, ct);
         var idempotencyDeleted = await CleanIdempotencyKeysAsync(db, now, ct);
         var cardsExpired = await CleanExpiredStampsAsync(ct);
+        var notificationsDeleted = await CleanNotificationsAsync(
+            db, now, _notificationOptions, ct);
 
         _logger.LogInformation(
-            "Cleanup complete — QrTokens deleted: {Qr}, RefreshTokens deleted: {Refresh}, VerificationCodes cleared: {Verify}, IdempotencyKeys deleted: {Idem}, Cards expired: {Expired}",
-            qrDeleted, refreshDeleted, verifyCleared, idempotencyDeleted, cardsExpired);
+            "Cleanup complete — QrTokens deleted: {Qr}, RefreshTokens deleted: {Refresh}, VerificationCodes cleared: {Verify}, IdempotencyKeys deleted: {Idem}, Cards expired: {Expired}, Notifications deleted: {Notifications}",
+            qrDeleted, refreshDeleted, verifyCleared, idempotencyDeleted, cardsExpired, notificationsDeleted);
+    }
+
+    public static async Task<int> CleanNotificationsAsync(
+        ApplicationDbContext db,
+        DateTime now,
+        NotificationWorkerOptions options,
+        CancellationToken ct)
+    {
+        var inboxCutoff = now.AddDays(-Math.Max(1, options.InboxRetentionDays));
+        var ledgerCutoff = now.AddDays(-Math.Max(1, options.LedgerRetentionDays));
+        var failedCutoff = now.AddDays(-Math.Max(1, options.FailedLedgerRetentionDays));
+
+        var inboxDeleted = await db.Notifications
+            .Where(row => row.CreatedAt < inboxCutoff && (row.IsRead || row.ArchivedAt != null))
+            .ExecuteDeleteAsync(ct);
+        var ledgerDeleted = await db.NotificationLogs
+            .Where(row => (row.Status == "sent" && row.UpdatedAt < ledgerCutoff)
+                || (row.Status == "failed" && row.UpdatedAt < failedCutoff))
+            .ExecuteDeleteAsync(ct);
+        return inboxDeleted + ledgerDeleted;
     }
 
     // ── Idempotency Keys ─────────────────────────────────────────────────────

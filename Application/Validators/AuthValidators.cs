@@ -73,14 +73,35 @@ public class LoginRequestValidator : AbstractValidator<LoginRequest>
 }
 
 /// <summary>
-/// Validates RefreshTokenRequest: non-empty token.
+/// Validates RefreshTokenRequest: the token is OPTIONAL in the body.
+///
+/// <para>Phase 2 made the shared cross-subdomain session cookie a first-class
+/// source: a fresh origin (the platform root, or any business subdomain the user
+/// visits) has no origin-local token in localStorage and exchanges the cookie
+/// instead. The controller resolves the token as
+/// <c>body.RefreshToken ?? sessionCookie</c>.</para>
+///
+/// <para>Requiring a non-empty body token here (the previous behaviour) made
+/// that fallback unreachable — every cookie-only hydration was rejected with
+/// HTTP 400 before the action ever ran, so signing in on the root domain left
+/// every tenant subdomain looking signed out. A request that supplies NEITHER
+/// source is still rejected, by the controller, with 401
+/// <c>INVALID_REFRESH_TOKEN</c>.</para>
 /// </summary>
 public class RefreshTokenRequestValidator : AbstractValidator<RefreshTokenRequest>
 {
     public RefreshTokenRequestValidator()
     {
+        // 64 random bytes → 88 base64 chars; the bound is just an input guard.
         RuleFor(x => x.RefreshToken)
-            .NotEmpty().WithMessage("Refresh token is required.");
+            .MaximumLength(512).WithMessage("Refresh token is invalid.")
+            .When(x => !string.IsNullOrWhiteSpace(x.RefreshToken));
+
+        // Optional tenant context. Bounded to a DNS label (see BusinessSlugPolicy);
+        // membership is re-verified server-side, never trusted from here.
+        RuleFor(x => x.BusinessSlug)
+            .MaximumLength(63).WithMessage("Business slug is invalid.")
+            .When(x => !string.IsNullOrWhiteSpace(x.BusinessSlug));
     }
 }
 

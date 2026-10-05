@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Loyalty;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -14,18 +15,29 @@ public partial class ReferralService : IReferralService
     private readonly ApplicationDbContext _context;
     private readonly ILogger<ReferralService> _logger;
     private readonly PunchedApi.Application.Loyalty.ILoyaltyEventBus _loyaltyEvents;
+    private readonly ITenantUrlBuilder _tenantUrls;
+
+    /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
+    private readonly ITenantContext? _tenant;
 
     public ReferralService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
         ILogger<ReferralService> logger,
-        PunchedApi.Application.Loyalty.ILoyaltyEventBus loyaltyEvents)
+        PunchedApi.Application.Loyalty.ILoyaltyEventBus loyaltyEvents,
+        ITenantUrlBuilder tenantUrls,
+        ITenantContext? tenant = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
         _logger = logger;
         _loyaltyEvents = loyaltyEvents;
+        _tenantUrls = tenantUrls;
+        _tenant = tenant;
     }
+
+    /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
+    private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
 
     // ═══════════════════════════════════════════════════════════
     //  REFERRAL PROGRAM (Business Owner)
@@ -94,6 +106,9 @@ public partial class ReferralService : IReferralService
 
     public async Task<ApiResponse<ReferralLinkResponse>> GenerateLinkAsync(Guid customerId, GenerateReferralLinkRequest request)
     {
+        // Tenant narrowing: on a tenant host links may only be generated for the active tenant.
+        if (TenantBusinessId is Guid activeTenantId && request.BusinessId != activeTenantId)
+            return ApiResponse<ReferralLinkResponse>.Fail("FORBIDDEN", "This business is not available on this site.");
         try
         {
             // Verify business exists and has a referral program
@@ -119,7 +134,7 @@ public partial class ReferralService : IReferralService
                 .FirstOrDefaultAsync(rl => rl.ReferrerId == customerId && rl.BusinessId == request.BusinessId);
 
             if (existing != null)
-                return ApiResponse<ReferralLinkResponse>.Ok(MapLink(existing));
+                return ApiResponse<ReferralLinkResponse>.Ok(MapLink(existing, _tenantUrls));
 
             // Generate unique code
             var code = await GenerateUniqueCodeAsync();
@@ -139,7 +154,7 @@ public partial class ReferralService : IReferralService
             await _unitOfWork.SaveChangesAsync();
 
             link.Business = business;
-            return ApiResponse<ReferralLinkResponse>.Ok(MapLink(link));
+            return ApiResponse<ReferralLinkResponse>.Ok(MapLink(link, _tenantUrls));
         }
         catch (Exception ex)
         {
@@ -150,25 +165,33 @@ public partial class ReferralService : IReferralService
 
     public async Task<ApiResponse<List<ReferralLinkResponse>>> GetMyLinksAsync(Guid customerId)
     {
-        var links = await _context.ReferralLinks
+        var linkQuery = _context.ReferralLinks
             .Include(rl => rl.Business)
-            .Where(rl => rl.ReferrerId == customerId)
+            .Where(rl => rl.ReferrerId == customerId);
+        if (TenantBusinessId is Guid tenantId)
+            linkQuery = linkQuery.Where(rl => rl.BusinessId == tenantId);
+
+        var links = await linkQuery
             .OrderByDescending(rl => rl.CreatedAt)
             .ToListAsync();
 
-        return ApiResponse<List<ReferralLinkResponse>>.Ok(links.Select(MapLink).ToList());
+        return ApiResponse<List<ReferralLinkResponse>>.Ok(links.Select(l => MapLink(l, _tenantUrls)).ToList());
     }
 
     public async Task<ApiResponse<ReferralLinkResponse>> GetLinkForBusinessAsync(Guid customerId, Guid businessId)
     {
-        var link = await _context.ReferralLinks
+        var linkQuery = _context.ReferralLinks
             .Include(rl => rl.Business)
-            .FirstOrDefaultAsync(rl => rl.ReferrerId == customerId && rl.BusinessId == businessId);
+            .Where(rl => rl.ReferrerId == customerId && rl.BusinessId == businessId);
+        if (TenantBusinessId is Guid tenantId)
+            linkQuery = linkQuery.Where(rl => rl.BusinessId == tenantId);
+
+        var link = await linkQuery.FirstOrDefaultAsync();
 
         if (link == null)
             return ApiResponse<ReferralLinkResponse>.Fail("NOT_FOUND", "No referral link found for this business.");
 
-        return ApiResponse<ReferralLinkResponse>.Ok(MapLink(link));
+        return ApiResponse<ReferralLinkResponse>.Ok(MapLink(link, _tenantUrls));
     }
 
     public async Task<ApiResponse<bool>> TrackLinkOpenAsync(string code)
@@ -261,6 +284,12 @@ public partial class ReferralService : IReferralService
                     EnrolledAt = now,
                     CreatedAt = now
                 };
+                // Same enrollment snapshot rule as LoyaltyService.EnrollAsync (§36).
+                LoyaltyCardSnapshot.Apply(
+                    card,
+                    activeProgram,
+                    await LoyaltyCardSnapshot.ResolveDefaultStampCardAsync(_unitOfWork, activeProgram.Id),
+                    now);
                 await _unitOfWork.LoyaltyCards.AddAsync(card);
                 enrolled = true;
 
@@ -304,11 +333,15 @@ public partial class ReferralService : IReferralService
 
     public async Task<ApiResponse<List<ReferralResponse>>> GetMyReferralsAsync(Guid customerId)
     {
-        var referrals = await _context.Referrals
+        var referralQuery = _context.Referrals
             .Include(r => r.Referee)
             .Include(r => r.Referrer)
             .Include(r => r.Business)
-            .Where(r => r.ReferrerId == customerId)
+            .Where(r => r.ReferrerId == customerId);
+        if (TenantBusinessId is Guid tenantId)
+            referralQuery = referralQuery.Where(r => r.BusinessId == tenantId);
+
+        var referrals = await referralQuery
             .OrderByDescending(r => r.CreatedAt)
             .ToListAsync();
 
@@ -328,11 +361,15 @@ public partial class ReferralService : IReferralService
 
     public async Task<ApiResponse<List<ReferralResponse>>> GetIncomingReferralsAsync(Guid customerId)
     {
-        var referrals = await _context.Referrals
+        var incomingQuery = _context.Referrals
             .Include(r => r.Referee)
             .Include(r => r.Referrer)
             .Include(r => r.Business)
-            .Where(r => r.RefereeId == customerId)
+            .Where(r => r.RefereeId == customerId);
+        if (TenantBusinessId is Guid tenantId)
+            incomingQuery = incomingQuery.Where(r => r.BusinessId == tenantId);
+
+        var referrals = await incomingQuery
             .OrderByDescending(r => r.CreatedAt)
             .ToListAsync();
 
@@ -341,7 +378,9 @@ public partial class ReferralService : IReferralService
 
     public async Task<ApiResponse<ReferralStatsResponse>> GetMyStatsAsync(Guid customerId)
     {
-        var referrals = await _unitOfWork.Referrals.FindAsync(r => r.ReferrerId == customerId);
+        var tenantId = TenantBusinessId;
+        var referrals = await _unitOfWork.Referrals.FindAsync(
+            r => r.ReferrerId == customerId && (tenantId == null || r.BusinessId == tenantId));
         var list = referrals.ToList();
 
         return ApiResponse<ReferralStatsResponse>.Ok(new ReferralStatsResponse
@@ -588,7 +627,7 @@ public partial class ReferralService : IReferralService
         CreatedAt = program.CreatedAt
     };
 
-    private static ReferralLinkResponse MapLink(ReferralLink link) => new()
+    private static ReferralLinkResponse MapLink(ReferralLink link, ITenantUrlBuilder tenantUrls) => new()
     {
         Id = link.Id,
         ReferrerId = link.ReferrerId,
@@ -596,7 +635,10 @@ public partial class ReferralService : IReferralService
         BusinessName = link.Business?.Name ?? string.Empty,
         BusinessLogoUrl = link.Business?.LogoUrl,
         Code = link.Code,
-        ReferralUrl = $"https://punched.app/refer/{link.Code}",
+        // Tenant-branded share link (java-house.punched.app/refer/{code});
+        // falls back to the platform root when the business has no slug.
+        ReferralUrl = tenantUrls.BuildForSlug(link.Business?.Slug, $"/refer/{link.Code}")
+            ?? tenantUrls.BuildRoot($"/refer/{link.Code}"),
         SuccessfulReferrals = link.SuccessfulReferrals,
         OpenCount = link.OpenCount,
         FirstOpenedAt = link.FirstOpenedAt,
