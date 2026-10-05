@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using System.Text.Json;
 using PunchedApi.Application.Analytics;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Modules;
@@ -72,6 +73,14 @@ public partial class BusinessService : IBusinessService
                 return ApiResponse<PublicBusinessProfileResponse>.Fail("NOT_FOUND", "Business not found.");
 
             var moduleKeys = await _moduleEntitlementService.GetEffectiveModuleKeysAsync(businessId);
+            var logoVariantsJson = business.LogoMediaId is Guid logoMediaId
+                ? await _context.Media.AsNoTracking()
+                    .Where(media => media.Id == logoMediaId && media.BusinessId == businessId &&
+                                    media.Purpose == MediaPurposes.BusinessLogo && media.Status == MediaStatus.Ready &&
+                                    media.Visibility == MediaVisibility.Public)
+                    .Select(media => media.VariantsJson)
+                    .FirstOrDefaultAsync()
+                : null;
 
             var activeProgram = business.LoyaltyPrograms
                 .Where(p => p.IsActive && p.Status == ProgramStatus.Active)
@@ -106,6 +115,7 @@ public partial class BusinessService : IBusinessService
                 Description = business.Description,
                 LogoUrl = business.LogoUrl,
                 LogoMediaId = business.LogoMediaId,
+                LogoVariants = ParsePublicImageVariants(logoVariantsJson),
                 CoverMediaId = business.CoverMediaId,
                 GalleryMediaIds = readyGalleryIds,
                 PhoneNumber = business.PhoneNumber,
@@ -130,6 +140,24 @@ public partial class BusinessService : IBusinessService
         {
             _logger.LogError(ex, "Error loading public profile for business {BusinessId}", businessId);
             return ApiResponse<PublicBusinessProfileResponse>.Fail("LOAD_FAILED", "Failed to load business profile.");
+        }
+    }
+
+    private static IReadOnlyList<ServiceImageVariantResponse> ParsePublicImageVariants(string? variantsJson)
+    {
+        if (string.IsNullOrWhiteSpace(variantsJson)) return [];
+        try
+        {
+            return (JsonSerializer.Deserialize<List<MediaVariantResponse>>(variantsJson) ?? [])
+                .Where(variant => variant.Format is "webp" or "jpeg")
+                .Select(variant => new ServiceImageVariantResponse
+                {
+                    Url = variant.Url, Width = variant.Width, Height = variant.Height, Format = variant.Format
+                }).ToList();
+        }
+        catch (JsonException)
+        {
+            return [];
         }
     }
 

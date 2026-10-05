@@ -10,24 +10,29 @@ namespace PunchedApi.Application.Services;
 /// <summary>
 /// Business-facing management of stamp cards (children of loyalty programs).
 ///
-/// Card design *authoring* lives in <see cref="CardDesignService"/> (Admin only);
-/// this service only validates that a business may assign an available design to
-/// one of its stamp cards.
+/// Card design is selected on the parent <see cref="LoyaltyProgram"/>. This
+/// service manages only the child card's reward and progress rules.
 /// </summary>
 public class StampCardService : IStampCardService
 {
     private readonly IUnitOfWork _unitOfWork;
-    private readonly ICardDesignService _cardDesignService;
     private readonly ILogger<StampCardService> _logger;
+
+    public StampCardService(
+        IUnitOfWork unitOfWork,
+        ILogger<StampCardService> logger)
+    {
+        _unitOfWork = unitOfWork;
+        _logger = logger;
+    }
 
     public StampCardService(
         IUnitOfWork unitOfWork,
         ICardDesignService cardDesignService,
         ILogger<StampCardService> logger)
+        : this(unitOfWork, logger)
     {
-        _unitOfWork = unitOfWork;
-        _cardDesignService = cardDesignService;
-        _logger = logger;
+        _ = cardDesignService;
     }
 
     // ── Helpers ─────────────────────────────────────────────
@@ -163,6 +168,10 @@ public class StampCardService : IStampCardService
             if (program == null)
                 return ApiResponse<StampCardResponse>.Fail("NOT_FOUND", "Loyalty program not found.");
 
+            if (request.CardDesignId.HasValue)
+                return ApiResponse<StampCardResponse>.Fail(
+                    "PROGRAM_DESIGN_ONLY", "Select the card design on the loyalty program, not an individual stamp card.");
+
             var rulesError = ValidateRules<StampCardResponse>(
                 request.StampsRequired, request.Name, request.RewardDescription, request.RewardValue);
             if (rulesError != null) return rulesError;
@@ -170,14 +179,6 @@ public class StampCardService : IStampCardService
             if (!string.IsNullOrWhiteSpace(request.Status) && !TryParseStatus(request.Status, out _))
                 return ApiResponse<StampCardResponse>.Fail(
                     "INVALID_STATUS", "status must be one of: draft, active, inactive.");
-
-            if (request.CardDesignId.HasValue)
-            {
-                // Entitlement + tenant isolation are enforced in one place.
-                var check = await _cardDesignService.ValidateSelectionAsync(business.Id, request.CardDesignId);
-                if (!check.IsValid)
-                    return ApiResponse<StampCardResponse>.Fail(check.ErrorCode!, check.ErrorMessage!);
-            }
 
             var card = new StampCard
             {
@@ -192,7 +193,6 @@ public class StampCardService : IStampCardService
                 Status = string.IsNullOrWhiteSpace(request.Status)
                     ? StampCardStatus.Draft
                     : ParseStatus(request.Status),
-                CardDesignId = request.CardDesignId,
                 RulesVersion = 1,
                 CreatedAt = DateTime.UtcNow
             };
@@ -229,6 +229,10 @@ public class StampCardService : IStampCardService
             if (card.Status == StampCardStatus.Archived)
                 return ApiResponse<StampCardResponse>.Fail("ARCHIVED", "Archived stamp cards cannot be edited. Restore it first.");
 
+            if (request.CardDesignId.HasValue || request.ClearCardDesign)
+                return ApiResponse<StampCardResponse>.Fail(
+                    "PROGRAM_DESIGN_ONLY", "Select the card design on the loyalty program, not an individual stamp card.");
+
             var rulesError = ValidateRules<StampCardResponse>(
                 request.StampsRequired, request.Name, request.RewardDescription, request.RewardValue);
             if (rulesError != null) return rulesError;
@@ -240,22 +244,6 @@ public class StampCardService : IStampCardService
                 return ApiResponse<StampCardResponse>.Fail(
                     "REASON_REQUIRED",
                     "Applying a rules change to existing cards requires a reason.");
-
-            // ── Presentation (design) assignment ────────────────────────────
-            // Changing the design never touches loyalty state (§36): it is
-            // applied to this row only and produces no rules audit entry.
-            if (request.CardDesignId.HasValue)
-            {
-                // Entitlement + tenant isolation are enforced in one place.
-                var check = await _cardDesignService.ValidateSelectionAsync(business.Id, request.CardDesignId);
-                if (!check.IsValid)
-                    return ApiResponse<StampCardResponse>.Fail(check.ErrorCode!, check.ErrorMessage!);
-                card.CardDesignId = request.CardDesignId.Value;
-            }
-            else if (request.ClearCardDesign)
-            {
-                card.CardDesignId = null;
-            }
 
             // Non-rule cosmetic fields (no rules version bump, no audit row).
             if (request.Name != null) card.Name = request.Name.Trim();

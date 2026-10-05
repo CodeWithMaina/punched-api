@@ -40,14 +40,14 @@ public class BusinessSlugTests
     private static BusinessSlugGenerator CreateGenerator(ApplicationDbContext context) =>
         new(context);
 
-    private static BusinessService CreateBusinessService(ApplicationDbContext context) =>
+    private static BusinessService CreateBusinessService(ApplicationDbContext context, IModuleEntitlementService? moduleEntitlements = null) =>
         new(
             new UnitOfWork(context),
             context,
             new Mock<IInsightService>().Object,
             new Mock<IBusinessScopeResolver>().Object,
             new Mock<ISubscriptionProvisioningService>().Object,
-            new Mock<IModuleEntitlementService>().Object,
+            moduleEntitlements ?? new Mock<IModuleEntitlementService>().Object,
             CreateGenerator(context),
             TestHelpers.CreateLogger<BusinessService>());
 
@@ -398,5 +398,31 @@ public class BusinessSlugTests
 
         // Idempotent: a second run finds nothing to fix.
         Assert.Equal(0, await backfill.EnsureSlugsAsync());
+    }
+
+    [Fact]
+    public async Task PublicProfile_EmbedsOnlyReadyPublicLogoVariants()
+    {
+        using var context = CreateContext("PublicProfile_LogoVariants");
+        var owner = AddOwner(context);
+        var business = AddBusiness(context, owner, "Logo Test", "logo-test");
+        var image = new Media
+        {
+            Id = Guid.NewGuid(), BusinessId = business.Id, UploadedByUserId = owner.Id,
+            Purpose = MediaPurposes.BusinessLogo, SourceKey = "private/source/logo", Status = MediaStatus.Ready,
+            Visibility = MediaVisibility.Public,
+            VariantsJson = "[{\"url\":\"https://cdn.example/320.webp\",\"width\":320,\"height\":320,\"format\":\"webp\"}]"
+        };
+        business.LogoMediaId = image.Id;
+        context.Media.Add(image);
+        await context.SaveChangesAsync();
+        var moduleEntitlements = new Mock<IModuleEntitlementService>();
+        moduleEntitlements.Setup(service => service.GetEffectiveModuleKeysAsync(business.Id))
+            .ReturnsAsync(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+
+        var response = await CreateBusinessService(context, moduleEntitlements.Object).GetPublicProfileAsync(business.Id);
+
+        Assert.True(response.Success, response.Error?.Message);
+        Assert.Equal("https://cdn.example/320.webp", Assert.Single(response.Data!.LogoVariants).Url);
     }
 }

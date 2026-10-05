@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.RegularExpressions;
+using PunchedApi.Application.Assets;
 
 namespace PunchedApi.Application.Services;
 
@@ -29,9 +30,10 @@ public static partial class CardTemplateRenderer
     {
         "business.name", "business.logo", "business.description",
         "customer.name",
-        "campaign.name",
-        "card.name", "card.totalStamps", "card.completedStamps",
-        "reward.name",
+        "campaign.name", "program.name",
+        "card.name", "card.totalStamps", "card.completedStamps", "card.status",
+        "stamps.current", "stamps.required",
+        "reward.name", "reward.status",
         "stamps"
     };
 
@@ -40,6 +42,9 @@ public static partial class CardTemplateRenderer
 
     [GeneratedRegex("\\{\\{\\s*([a-zA-Z][a-zA-Z0-9_.]*)\\s*\\}\\}", RegexOptions.Compiled)]
     private static partial Regex VariableRegex();
+
+    [GeneratedRegex("/v1/card-assets/(?:me/)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/content", RegexOptions.Compiled)]
+    private static partial Regex CardAssetUrlRegex();
 
     /// <summary>
     /// Data source for rendering. All values are application-controlled.
@@ -54,6 +59,8 @@ public static partial class CardTemplateRenderer
         public string CardName { get; set; } = string.Empty;
         public int TotalStamps { get; set; } = 10;
         public int CompletedStamps { get; set; } = 4;
+        public string CardStatus { get; set; } = "active";
+        public string RewardStatus { get; set; } = "in-progress";
         public string RewardName { get; set; } = string.Empty;
         /// <summary>Filled-class / empty-class CSS names configured by the template author.</summary>
         public string FilledClass { get; set; } = "filled";
@@ -76,6 +83,11 @@ public static partial class CardTemplateRenderer
 
         /// <summary>App-relative URL of the earned stamp icon, or null.</summary>
         public string? StampCompletedIconUrl { get; set; }
+        public string StampFilledColor { get; set; } = "#059669";
+        public string StampEmptyColor { get; set; } = "#E5E7EB";
+
+        /// <summary>Creates a short-lived tenant/card-scoped delivery URL for referenced assets.</summary>
+        public Func<Guid, string>? CardAssetUrlFactory { get; set; }
     }
 
     /// <summary>
@@ -120,6 +132,16 @@ public static partial class CardTemplateRenderer
             return values.TryGetValue(key, out var value) ? WebUtility.HtmlEncode(value ?? string.Empty) : string.Empty;
         });
 
+        if (context.CardAssetUrlFactory != null)
+        {
+            html = CardAssetUrlRegex().Replace(html, match =>
+            {
+                return Guid.TryParse(match.Groups[1].Value, out var assetId)
+                    ? WebUtility.HtmlEncode(context.CardAssetUrlFactory(assetId))
+                    : string.Empty;
+            });
+        }
+
         return html;
     }
 
@@ -130,10 +152,15 @@ public static partial class CardTemplateRenderer
         ["business.description"] = c.BusinessDescription ?? string.Empty,
         ["customer.name"] = c.CustomerName,
         ["campaign.name"] = c.CampaignName,
+        ["program.name"] = c.CampaignName,
         ["card.name"] = c.CardName,
         ["card.totalStamps"] = c.TotalStamps.ToString(),
         ["card.completedStamps"] = c.CompletedStamps.ToString(),
-        ["reward.name"] = c.RewardName
+        ["card.status"] = c.CardStatus,
+        ["stamps.current"] = c.CompletedStamps.ToString(),
+        ["stamps.required"] = c.TotalStamps.ToString(),
+        ["reward.name"] = c.RewardName,
+        ["reward.status"] = c.RewardStatus
     };
 
     /// <summary>
@@ -150,7 +177,17 @@ public static partial class CardTemplateRenderer
               .Append(filled ? WebUtility.HtmlEncode(context.FilledClass) : WebUtility.HtmlEncode(context.EmptyClass))
               .Append("\" data-position=\"")
               .Append(position)
-              .Append("\"></span>");
+              .Append("\" style=\"display:inline-flex;width:100%;aspect-ratio:1;align-items:center;justify-content:center;overflow:hidden;border-radius:9999px;background-color:")
+              .Append(WebUtility.HtmlEncode(filled ? context.StampFilledColor : context.StampEmptyColor))
+              .Append(";\">");
+
+            var iconUrl = filled ? context.StampCompletedIconUrl : context.StampEmptyIconUrl;
+            if (!string.IsNullOrWhiteSpace(iconUrl))
+                sb.Append(BuildStampIconTag(iconUrl));
+            else
+                sb.Append(WebUtility.HtmlEncode((filled ? context.StampCompletedGlyph : context.StampEmptyGlyph) ?? string.Empty));
+
+            sb.Append("</span>");
         }
         return sb.ToString();
     }

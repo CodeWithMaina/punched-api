@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using System.Text.Json;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
@@ -195,13 +196,38 @@ public sealed class ReviewService : IReviewService
                 .ToDictionaryAsync(u => u.Id, u => (u.FullName, u.AvatarUrl, u.AvatarMediaId));
     }
 
-    private async Task<Dictionary<Guid, List<Guid>>> ReviewImagesAsync(List<Review> rows)
+    private async Task<Dictionary<Guid, List<ReviewImageMediaResponse>>> ReviewImagesAsync(List<Review> rows)
     {
-            var reviewIds = rows.Select(row => row.Id).ToList();
-            return await _context.ReviewMedia.AsNoTracking()
-                .Where(row => reviewIds.Contains(row.ReviewId))
-                .GroupBy(row => row.ReviewId)
-                .ToDictionaryAsync(group => group.Key, group => group.Select(row => row.MediaId).ToList());
+        var reviewIds = rows.Select(row => row.Id).ToList();
+        var images = await (from relationship in _context.ReviewMedia.AsNoTracking()
+                            join media in _context.Media.AsNoTracking() on relationship.MediaId equals media.Id
+                            where reviewIds.Contains(relationship.ReviewId) && media.Status == MediaStatus.Ready &&
+                                  media.Visibility == MediaVisibility.Public && media.Purpose == MediaPurposes.ReviewImage
+                            orderby relationship.SortOrder
+                            select new { relationship.ReviewId, relationship.MediaId, media.VariantsJson }).ToListAsync();
+        return images.GroupBy(image => image.ReviewId).ToDictionary(group => group.Key, group => group
+            .Select(image => new ReviewImageMediaResponse
+            {
+                MediaId = image.MediaId,
+                Variants = ParseReviewImageVariants(image.VariantsJson)
+            }).ToList());
+    }
+
+    private static IReadOnlyList<ReviewImageVariantResponse> ParseReviewImageVariants(string variantsJson)
+    {
+        try
+        {
+            return (JsonSerializer.Deserialize<List<MediaVariantResponse>>(variantsJson) ?? [])
+                .Where(variant => variant.Format is "webp" or "jpeg")
+                .Select(variant => new ReviewImageVariantResponse
+                {
+                    Url = variant.Url, Width = variant.Width, Height = variant.Height, Format = variant.Format
+                }).ToList();
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 
     private static ReviewResponse MapCustomer(Review r) => new()
@@ -210,17 +236,19 @@ public sealed class ReviewService : IReviewService
         Comment = r.Comment, Status = r.Status, CreatedAt = r.CreatedAt, UpdatedAt = r.UpdatedAt
     };
 
-    private static PublicReviewResponse MapPublic(Review r, (string Name, string? Avatar, Guid? AvatarMediaId) customer, IReadOnlyList<Guid> images) => new()
+    private static PublicReviewResponse MapPublic(Review r, (string Name, string? Avatar, Guid? AvatarMediaId) customer, IReadOnlyList<ReviewImageMediaResponse> images) => new()
     {
         Id = r.Id, BusinessId = r.BusinessId, Rating = r.Rating, Comment = r.Comment,
-        ReviewerDisplayName = DisplayName(customer.Name), ReviewerAvatar = customer.Avatar, ReviewerAvatarMediaId = customer.AvatarMediaId, ImageMediaIds = images,
+        ReviewerDisplayName = DisplayName(customer.Name), ReviewerAvatar = customer.Avatar, ReviewerAvatarMediaId = customer.AvatarMediaId,
+        ImageMediaIds = images.Select(image => image.MediaId).ToList(), ImageMedia = images,
         CreatedAt = r.CreatedAt, UpdatedAt = r.UpdatedAt
     };
 
-    private static BusinessReviewResponse MapBusiness(Review r, (string Name, string? Avatar, Guid? AvatarMediaId) customer, IReadOnlyList<Guid> images) => new()
+    private static BusinessReviewResponse MapBusiness(Review r, (string Name, string? Avatar, Guid? AvatarMediaId) customer, IReadOnlyList<ReviewImageMediaResponse> images) => new()
     {
         Id = r.Id, BusinessId = r.BusinessId, Rating = r.Rating, Comment = r.Comment, Status = r.Status,
-        ReviewerDisplayName = DisplayName(customer.Name), ReviewerAvatar = customer.Avatar, ReviewerAvatarMediaId = customer.AvatarMediaId, ImageMediaIds = images,
+        ReviewerDisplayName = DisplayName(customer.Name), ReviewerAvatar = customer.Avatar, ReviewerAvatarMediaId = customer.AvatarMediaId,
+        ImageMediaIds = images.Select(image => image.MediaId).ToList(), ImageMedia = images,
         CreatedAt = r.CreatedAt, UpdatedAt = r.UpdatedAt
     };
 

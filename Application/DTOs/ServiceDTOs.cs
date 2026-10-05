@@ -17,6 +17,9 @@ public class ServiceCatalogItemResponse
     [JsonPropertyName("businessId")]
     public Guid BusinessId { get; set; }
 
+    [JsonPropertyName("businessName")]
+    public string? BusinessName { get; set; }
+
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
@@ -43,8 +46,29 @@ public class ServiceCatalogItemResponse
     [JsonPropertyName("imageMediaId")]
     public Guid? ImageMediaId { get; set; }
 
+    [JsonPropertyName("imageStatus")]
+    public string? ImageStatus { get; set; }
+
+    [JsonPropertyName("imageVariants")]
+    public IReadOnlyList<ServiceImageVariantResponse> ImageVariants { get; set; } = [];
+
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
+}
+
+public sealed class ServiceImageVariantResponse
+{
+    [JsonPropertyName("url")]
+    public string Url { get; set; } = string.Empty;
+
+    [JsonPropertyName("width")]
+    public int Width { get; set; }
+
+    [JsonPropertyName("height")]
+    public int Height { get; set; }
+
+    [JsonPropertyName("format")]
+    public string Format { get; set; } = string.Empty;
 }
 
 /// <summary>

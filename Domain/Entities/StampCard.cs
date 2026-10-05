@@ -3,11 +3,10 @@ using System.ComponentModel.DataAnnotations;
 namespace PunchedApi.Domain.Entities;
 
 /// <summary>
-/// An individual stamp card customers can use within a loyalty program.
-/// A loyalty program owns one or more stamp cards (one-to-many); each card defines its
-/// own stamp goal, reward and visual design. The classic program-level fields on
-/// <see cref="LoyaltyProgram"/> remain the default/stamp-pipeline values so
-/// existing stamping behaviour is unchanged.
+/// An individual stamp-card rule set customers can use within a loyalty program.
+/// A loyalty program owns one or more stamp cards; each child defines its own
+/// stamp goal and reward. The visual design is canonical at
+/// <see cref="LoyaltyProgram.CardDesignId"/> and shared by every card in that program.
 /// </summary>
 public class StampCard : BaseEntity
 {
@@ -46,8 +45,8 @@ public class StampCard : BaseEntity
     public StampCardStatus Status { get; set; } = StampCardStatus.Draft;
 
     /// <summary>
-    /// FK to the reusable <see cref="CardDesign"/> controlling this card's visuals.
-    /// Null means the card uses the app's built-in default rendering.
+    /// Legacy nullable design reference retained for existing rows. New writes are
+    /// rejected and rendering ignores this field; program-level CardDesignId is canonical.
     /// </summary>
     public Guid? CardDesignId { get; set; }
 

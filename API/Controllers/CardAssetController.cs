@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Assets;
 using PunchedApi.Domain.Interfaces;
 
 namespace PunchedApi.API.Controllers;
@@ -38,10 +39,37 @@ public class CardAssetController : ControllerBase
     private const long RequestSizeLimitBytes = 8 * 1024 * 1024;
 
     private readonly ICardAssetService _cardAssetService;
+    private readonly ICardAssetDeliveryTokenService _deliveryTokens;
 
-    public CardAssetController(ICardAssetService cardAssetService)
+    public CardAssetController(
+        ICardAssetService cardAssetService,
+        ICardAssetDeliveryTokenService deliveryTokens)
     {
         _cardAssetService = cardAssetService;
+        _deliveryTokens = deliveryTokens;
+    }
+
+    /// <summary>Delivers one image referenced by a rendered card via a short-lived protected grant.</summary>
+    [HttpGet("deliver/{token}")]
+    [AllowAnonymous]
+    [EnableRateLimiting("general")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Deliver(string token, CancellationToken cancellationToken)
+    {
+        var grant = _deliveryTokens.ReadGrant(token);
+        if (grant == null) return NotFound();
+
+        var result = await _cardAssetService.OpenDeliveryContentAsync(
+            grant.BusinessId, grant.CardId, grant.AssetId, cancellationToken);
+        if (!result.Success || result.Data == null) return NotFound();
+
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        Response.Headers["Content-Security-Policy"] = "default-src 'none'; sandbox";
+        Response.Headers["Cross-Origin-Resource-Policy"] = "cross-origin";
+        Response.Headers["Referrer-Policy"] = "no-referrer";
+        Response.Headers["Cache-Control"] = "private, max-age=300";
+        return File(result.Data.Content, result.Data.ContentType);
     }
 
     /// <summary>

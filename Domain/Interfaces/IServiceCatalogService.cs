@@ -7,6 +7,12 @@ namespace PunchedApi.Domain.Interfaces;
 /// </summary>
 public interface IServiceCatalogService
 {
+    Task<ApiResponse<List<ServiceCatalogItemResponse>>> GetAdminServicesAsync(Guid? businessId);
+    Task<ApiResponse<ServiceCatalogItemResponse>> CreateForBusinessAsync(Guid businessId, CreateServiceRequest request);
+    Task<ApiResponse<ServiceCatalogItemResponse>> UpdateForBusinessAsync(Guid businessId, Guid serviceId, UpdateServiceRequest request);
+    Task<ApiResponse<bool>> DeleteForBusinessAsync(Guid businessId, Guid serviceId);
+    Task<ApiResponse<ServiceCatalogItemResponse>> GetPublicServiceAsync(Guid businessId, Guid serviceId);
+
     /// <summary>Public list of a business's active services.</summary>
     Task<ApiResponse<List<ServiceCatalogItemResponse>>> GetServicesForBusinessAsync(Guid businessId);
 

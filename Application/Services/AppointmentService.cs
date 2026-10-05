@@ -298,6 +298,7 @@ public class AppointmentService : IAppointmentService
             {
                 var overlaps = await _context.Appointments
                     .Where(a => a.BusinessId == appointment.BusinessId && a.StaffUserId == effectiveStaffId.Value
+                        && a.Status != "cancelled"
                         && a.ScheduledAt < endAt && a.EndAt > scheduledAt && a.Id != appointmentId)
                     .AnyAsync();
                 if (overlaps)
@@ -341,7 +342,7 @@ public class AppointmentService : IAppointmentService
             await _unitOfWork.SaveChangesAsync();
             await transaction.CommitAsync();
         }
-        catch (Npgsql.PostgresException pg) when (pg.SqlState == "23501")
+        catch (Npgsql.PostgresException pg) when (pg.SqlState == Npgsql.PostgresErrorCodes.ExclusionViolation)
         {
             // appointments_no_staff_overlap exclusion constraint fired — the slot was
             // taken between the availability check and this save.
@@ -489,9 +490,21 @@ public class AppointmentService : IAppointmentService
         var snapshot = System.Text.Json.JsonSerializer.Deserialize<List<AppointmentServiceSnapshot>>(
             rescheduleRequest.ProposedServicesJson) ?? new List<AppointmentServiceSnapshot>();
 
+        // The slot may have been taken since the customer proposed it.
+        var proposedMinutes = (int)(rescheduleRequest.ProposedEndAt - rescheduleRequest.ProposedScheduledAt).TotalMinutes;
+        var proposedServiceIds = snapshot.Count > 0
+            ? snapshot.Select(s => s.ServiceCatalogItemId).ToArray()
+            : appointment.Resources.Select(r => r.ServiceCatalogItemId).ToArray();
+        var recheck = await _availability.ResolveBookingStaffAsync(
+            appointment.BusinessId, proposedServiceIds, rescheduleRequest.ProposedStaffUserId,
+            rescheduleRequest.ProposedScheduledAt, proposedMinutes,
+            excludeAppointmentId: appointment.Id, enforceLeadTime: false);
+        if (!recheck.Ok)
+            return ApiResponse<AppointmentResponse>.Fail(recheck.ErrorCode!, recheck.ErrorMessage!);
+
         appointment.ScheduledAt = rescheduleRequest.ProposedScheduledAt;
         appointment.EndAt = rescheduleRequest.ProposedEndAt;
-        appointment.StaffUserId = rescheduleRequest.ProposedStaffUserId;
+        appointment.StaffUserId = recheck.StaffUserId;
 
         if (snapshot.Count > 0)
         {
@@ -996,6 +1009,7 @@ public class AppointmentService : IAppointmentService
             {
                 var overlaps = await _context.Appointments
                     .Where(a => a.BusinessId == businessId && a.StaffUserId == staffUserId.Value
+                        && a.Status != "cancelled"
                         && a.ScheduledAt < endAt && a.EndAt > scheduledAt && a.Id != excludeId)
                     .AnyAsync();
                 if (overlaps)
@@ -1052,7 +1066,7 @@ public class AppointmentService : IAppointmentService
             var created = await LoadAsync(appointment.Id);
             return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(created!));
         }
-        catch (Npgsql.PostgresException pg) when (pg.SqlState == "23501")
+        catch (Npgsql.PostgresException pg) when (pg.SqlState == Npgsql.PostgresErrorCodes.ExclusionViolation)
         {
             // appointments_no_staff_overlap exclusion constraint fired — the slot was
             // taken between the availability check and this save.
@@ -1131,6 +1145,15 @@ public class AppointmentService : IAppointmentService
     {
         if (!staffUserId.HasValue)
             return (null, null, null);
+
+        // Solo business: the owner is the provider and performs every service.
+        if (await _availability.IsSoloOwnerAsync(businessId, staffUserId.Value))
+        {
+            var owner = await _context.Users.FirstOrDefaultAsync(u => u.Id == staffUserId.Value);
+            return owner == null
+                ? (null, "STAFF_NOT_FOUND", "Staff member not found in this business.")
+                : (owner, null, null);
+        }
 
         var staff = await _context.Users.FirstOrDefaultAsync(u => u.Id == staffUserId.Value && u.StaffBusinessId == businessId);
         if (staff == null)

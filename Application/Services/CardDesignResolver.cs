@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Logging;
+using PunchedApi.Application.Assets;
+using PunchedApi.Application.Design;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 
@@ -31,6 +33,9 @@ public interface ICardDesignResolver
 
     /// <summary>Resolves the design that must be used for the given program.</summary>
     Task<ResolvedCardDesign> ResolveForProgramAsync(LoyaltyProgram program);
+
+    /// <summary>Renders a resolved design with tenant/card-scoped asset URLs.</summary>
+    string Render(ResolvedCardDesign design, CardTemplateRenderer.CardRenderContext context, Guid? cardId = null);
 }
 
 /// <summary>
@@ -59,6 +64,13 @@ public sealed class ResolvedCardDesign
 
     /// <summary>Whether the business currently holds the <c>customCardDesign</c> entitlement.</summary>
     public bool BusinessHasEntitlement { get; init; }
+
+    /// <summary>The validated configuration associated with the selected design, when present.</summary>
+    public CardDesignConfig? Config { get; init; }
+
+    public Guid BusinessId { get; init; }
+
+    public int Version { get; init; }
 }
 
 /// <inheritdoc />
@@ -69,15 +81,18 @@ public sealed class CardDesignResolver : ICardDesignResolver
 
     private readonly IUnitOfWork _unitOfWork;
     private readonly IModuleEntitlementService _entitlements;
+    private readonly ICardAssetDeliveryTokenService? _assetDeliveryTokens;
     private readonly ILogger<CardDesignResolver> _logger;
 
     public CardDesignResolver(
         IUnitOfWork unitOfWork,
         IModuleEntitlementService entitlements,
-        ILogger<CardDesignResolver> logger)
+        ILogger<CardDesignResolver> logger,
+        ICardAssetDeliveryTokenService? assetDeliveryTokens = null)
     {
         _unitOfWork = unitOfWork;
         _entitlements = entitlements;
+        _assetDeliveryTokens = assetDeliveryTokens;
         _logger = logger;
     }
 
@@ -108,7 +123,10 @@ public sealed class CardDesignResolver : ICardDesignResolver
                     DesignId = selected.Id,
                     DesignName = selected.Name,
                     IsDefault = selected.IsDefault,
-                    BusinessHasEntitlement = true
+                    BusinessHasEntitlement = true,
+                    Config = CardDesignConfig.TryParse(selected.ConfigJson),
+                    BusinessId = program.BusinessId,
+                    Version = selected.CurrentVersion
                 };
             }
 
@@ -127,7 +145,10 @@ public sealed class CardDesignResolver : ICardDesignResolver
             DesignName = fallback?.Name ?? DefaultCardTemplate.Name,
             IsDefault = true,
             IsFallback = program.CardDesignId.HasValue,
-            BusinessHasEntitlement = hasEntitlement
+            BusinessHasEntitlement = hasEntitlement,
+            Config = CardDesignConfig.TryParse(fallback?.ConfigJson),
+            BusinessId = program.BusinessId,
+            Version = fallback?.CurrentVersion ?? 0
         };
     }
 
@@ -135,6 +156,10 @@ public sealed class CardDesignResolver : ICardDesignResolver
     /// Renders a resolved design through the single shared pipeline. There is no
     /// other way to turn a design into HTML in this codebase.
     /// </summary>
-    public static string Render(ResolvedCardDesign design, CardTemplateRenderer.CardRenderContext context) =>
-        CardTemplateRenderer.Render(design.Template, context);
+    public string Render(ResolvedCardDesign design, CardTemplateRenderer.CardRenderContext context, Guid? cardId = null)
+    {
+        if (_assetDeliveryTokens != null)
+            context.CardAssetUrlFactory = assetId => _assetDeliveryTokens.CreateUrl(design.BusinessId, cardId, assetId);
+        return CardTemplateRenderer.Render(design.Template, context);
+    }
 }

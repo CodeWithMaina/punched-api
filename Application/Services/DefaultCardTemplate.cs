@@ -44,7 +44,7 @@ public static class DefaultCardTemplate
 <span style="font-size:15px;font-weight:600;color:#94a3b8">/ {{card.totalStamps}}</span>
 </div>
 <p style="margin:8px 0 0;font-size:12px;color:#cbd5e1">{{card.name}}</p>
-<div style="margin-top:16px;display:flex;flex-wrap:wrap;gap:8px">{{#each stamps}}<span class="stamp {{status}}" title="{{position}}"></span>{{/each}}</div>
+<div style="margin-top:16px;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px">{{stamps}}</div>
 <p style="margin:18px 0 0;font-size:12px;color:#94a3b8">{{reward.name}}</p>
 </div>
 </div>

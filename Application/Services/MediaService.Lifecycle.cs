@@ -105,24 +105,43 @@ public sealed partial class MediaService
         if (await _db.BusinessMedia.AnyAsync(x => x.MediaId == mediaId, cancellationToken) || await _db.ServiceMedia.AnyAsync(x => x.MediaId == mediaId, cancellationToken) || await _db.LoyaltyProgramMedia.AnyAsync(x => x.MediaId == mediaId, cancellationToken) || await _db.ReviewMedia.AnyAsync(x => x.MediaId == mediaId, cancellationToken))
             return Fail<bool>("MEDIA_STATE_CONFLICT", "Detach the media before deleting it.");
         if (media.Status == MediaStatus.Deleting || media.Status == MediaStatus.Deleted) return ApiResponse<bool>.Ok(true);
+        var now = DateTime.UtcNow;
         media.Status = MediaStatus.Deleting;
-        media.DeletedAt = DateTime.UtcNow;
-        media.UpdatedAt = DateTime.UtcNow;
+        media.DeletedAt = now;
+        media.DeliveryPurgeStatus = DeliveryPurgeStatus.Pending;
+        media.DeliveryPurgeNextAttemptAt = now;
+        media.DeliveryPurgeErrorCode = null;
+        media.UpdatedAt = now;
         await _db.SaveChangesAsync(cancellationToken);
-        await _store.DeleteAsync(ObjectStoreBucket.PrivateSource, media.SourceKey, cancellationToken);
-        var variants = ParseVariants(media.VariantsJson);
-        var deliveryKeys = variants.Select(x => _urls.TryGetDeliveryKey(x.Url)).Where(x => x != null).Cast<string>().Distinct().ToArray();
-        if (deliveryKeys.Length > 0)
+
+        try
         {
+            await _store.DeleteAsync(ObjectStoreBucket.PrivateSource, media.SourceKey, cancellationToken);
+            var variants = ParseVariants(media.VariantsJson);
+            var deliveryKeys = variants.Select(x => _urls.TryGetDeliveryKey(x.Url)).Where(x => x != null).Cast<string>().Distinct().ToArray();
             foreach (var key in deliveryKeys) await _store.DeleteAsync(ObjectStoreBucket.PublicDelivery, key, cancellationToken);
-            media.DeliveryPurgeStatus = DeliveryPurgeStatus.Pending;
-            media.DeliveryPurgeNextAttemptAt = DateTime.UtcNow;
-            media.DeliveryPurgeErrorCode = "DERIVATIVE_PURGE_REQUIRED";
+            media.DeliveryPurgeStatus = DeliveryPurgeStatus.Completed;
+            media.DeliveryPurgedAt = DateTime.UtcNow;
+            media.DeliveryPurgeNextAttemptAt = null;
+            media.DeliveryPurgeErrorCode = null;
+            media.Status = MediaStatus.Deleted;
+            media.UpdatedAt = DateTime.UtcNow;
             await _db.SaveChangesAsync(cancellationToken);
-            return ApiResponse<bool>.Ok(true);
         }
-        media.Status = MediaStatus.Deleted;
-        await _db.SaveChangesAsync(cancellationToken);
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            media.DeliveryPurgeStatus = DeliveryPurgeStatus.Failed;
+            media.DeliveryPurgeErrorCode = "PURGE_FAILED";
+            media.DeliveryPurgeAttempts++;
+            media.DeliveryPurgeNextAttemptAt = DateTime.UtcNow.AddMinutes(Math.Min(60, Math.Pow(2, Math.Min(media.DeliveryPurgeAttempts, 6))));
+            media.UpdatedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+
         return ApiResponse<bool>.Ok(true);
     }
 }

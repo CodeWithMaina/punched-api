@@ -58,6 +58,10 @@ public interface ICardAssetService
     Task<ApiResponse<CardAssetContentResult>> OpenContentAsync(
         Guid userId, Guid assetId, CancellationToken cancellationToken = default);
 
+    /// <summary>Opens an asset using a validated short-lived card-delivery grant.</summary>
+    Task<ApiResponse<CardAssetContentResult>> OpenDeliveryContentAsync(
+        Guid businessId, Guid? cardId, Guid assetId, CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Server-side ownership check for a set of asset ids referenced by a design.
     /// Used by the design validators so a business can never point its card at

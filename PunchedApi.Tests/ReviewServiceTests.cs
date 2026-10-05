@@ -154,6 +154,41 @@ public sealed class ReviewServiceTests
     }
 
     [Fact]
+    public async Task ReviewLists_EmbedOnlyReadyPublicImageVariants()
+    {
+        var e = await EnvAsync(DateTimeOffset.UtcNow);
+        Assert.True((await e.Service.CreateAsync(e.Customer.Id, new CreateReviewRequest { AppointmentId = e.Appointment.Id, Rating = 5 })).Success);
+        var review = await e.Context.Reviews.SingleAsync();
+        var readyImage = new Media
+        {
+            Id = Guid.NewGuid(), BusinessId = e.Business.Id, UploadedByUserId = e.Customer.Id,
+            Purpose = MediaPurposes.ReviewImage, SourceKey = "private/source/ready-review", Status = MediaStatus.Ready,
+            Visibility = MediaVisibility.Public,
+            VariantsJson = "[{\"url\":\"https://cdn.example/320.webp\",\"width\":320,\"height\":240,\"format\":\"webp\"}]"
+        };
+        var privateImage = new Media
+        {
+            Id = Guid.NewGuid(), BusinessId = e.Business.Id, UploadedByUserId = e.Customer.Id,
+            Purpose = MediaPurposes.ReviewImage, SourceKey = "private/source/private-review", Status = MediaStatus.Processing,
+            Visibility = MediaVisibility.Private,
+            VariantsJson = "[{\"url\":\"https://private.example/image.webp\",\"width\":320,\"height\":240,\"format\":\"webp\"}]"
+        };
+        e.Context.Media.AddRange(readyImage, privateImage);
+        e.Context.ReviewMedia.AddRange(
+            new ReviewMedia { ReviewId = review.Id, MediaId = readyImage.Id },
+            new ReviewMedia { ReviewId = review.Id, MediaId = privateImage.Id });
+        await e.Context.SaveChangesAsync();
+
+        var result = await e.Service.GetBusinessReviewsAsync(e.Business.Id, 1, 20);
+
+        var response = Assert.Single(result.Data!.Items);
+        Assert.Equal(new[] { readyImage.Id }, response.ImageMediaIds);
+        var image = Assert.Single(response.ImageMedia);
+        Assert.Equal(readyImage.Id, image.MediaId);
+        Assert.Equal("https://cdn.example/320.webp", Assert.Single(image.Variants).Url);
+    }
+
+    [Fact]
     public void PublicDto_AndValidators_MatchV1Contract()
     {
         var serializedProperties = JsonSerializer.SerializeToElement(new PublicReviewResponse()).EnumerateObject().Select(p => p.Name).ToArray();

@@ -172,6 +172,33 @@ public partial class CardAssetService
     }
 
     /// <inheritdoc />
+    public async Task<ApiResponse<CardAssetContentResult>> OpenDeliveryContentAsync(
+        Guid businessId, Guid? cardId, Guid assetId, CancellationToken cancellationToken = default)
+    {
+        if (cardId.HasValue && !await _context.LoyaltyCards
+                .AnyAsync(card => card.Id == cardId.Value && card.BusinessId == businessId, cancellationToken))
+            return ApiResponse<CardAssetContentResult>.Fail("NOT_FOUND", "The card asset could not be found.");
+
+        var asset = await _context.CardAssets
+            .AsNoTracking()
+            .FirstOrDefaultAsync(a => a.Id == assetId && a.BusinessId == businessId, cancellationToken);
+        if (asset == null)
+            return ApiResponse<CardAssetContentResult>.Fail("NOT_FOUND", "The card asset could not be found.");
+
+        var payload = await _storage.OpenReadAsync(asset.StorageKey, cancellationToken);
+        if (payload == null)
+            return ApiResponse<CardAssetContentResult>.Fail("NOT_FOUND", "The card asset could not be found.");
+
+        return ApiResponse<CardAssetContentResult>.Ok(new CardAssetContentResult
+        {
+            Content = payload.Content,
+            ContentType = asset.ContentType,
+            Length = payload.SizeBytes,
+            FileName = $"{asset.Id:N}.{asset.FileExtension}"
+        });
+    }
+
+    /// <inheritdoc />
     public async Task<CardAssetReferenceCheck> ValidateReferencesAsync(Guid businessId, IEnumerable<Guid> assetIds)
     {
         var ids = assetIds

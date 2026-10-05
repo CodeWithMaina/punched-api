@@ -5,6 +5,7 @@ using System.Threading.RateLimiting;
 using FluentValidation;
 using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -179,6 +180,8 @@ try
     // abstraction, so an object store can replace it without touching the service.
     builder.Services.AddScoped<ICardAssetService, CardAssetService>();
     builder.Services.AddSingleton<ICardAssetStorage, LocalCardAssetStorage>();
+    builder.Services.AddDataProtection().SetApplicationName("PunchedApi");
+    builder.Services.AddSingleton<ICardAssetDeliveryTokenService, CardAssetDeliveryTokenService>();
     builder.Services.Configure<CardAssetSettings>(
         builder.Configuration.GetSection(CardAssetSettings.SectionName));
 

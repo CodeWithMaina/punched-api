@@ -145,9 +145,17 @@ public sealed partial class MediaService
         if (!media.Success) return Fail<ServiceMediaResponse>(media.Error!.Code, media.Error.Message);
         var service = await _db.ServiceCatalogItems.FirstOrDefaultAsync(x => x.Id == serviceId && x.BusinessId == media.Data!.BusinessId, cancellationToken);
         if (service == null) return Fail<ServiceMediaResponse>("TARGET_NOT_FOUND", "The service target is not available.");
-        if (media.Data!.Status != MediaStatus.Ready) return Fail<ServiceMediaResponse>("MEDIA_NOT_READY", "Only ready media can be attached.");
+        if (media.Data!.Status is not (MediaStatus.Uploaded or MediaStatus.Processing or MediaStatus.Ready))
+            return Fail<ServiceMediaResponse>("MEDIA_NOT_ATTACHABLE", "The upload must complete before it can be attached.");
         var row = await _db.ServiceMedia.FirstOrDefaultAsync(x => x.ServiceCatalogItemId == serviceId && x.MediaId == mediaId, cancellationToken);
-        if (row == null) _db.ServiceMedia.Add(row = new ServiceMedia { ServiceCatalogItemId = serviceId, MediaId = mediaId, SortOrder = sortOrder });
+        if (row == null)
+        {
+            var previousPrimary = await _db.ServiceMedia
+                .Where(x => x.ServiceCatalogItemId == serviceId && x.Role == "Primary")
+                .ToListAsync(cancellationToken);
+            _db.ServiceMedia.RemoveRange(previousPrimary);
+            _db.ServiceMedia.Add(row = new ServiceMedia { ServiceCatalogItemId = serviceId, MediaId = mediaId, SortOrder = sortOrder });
+        }
         else row.SortOrder = sortOrder;
         await _db.SaveChangesAsync(cancellationToken);
         return ApiResponse<ServiceMediaResponse>.Ok(new ServiceMediaResponse { ServiceId = serviceId, MediaId = mediaId, SortOrder = row.SortOrder, Media = Map(media.Data) });

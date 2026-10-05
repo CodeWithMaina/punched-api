@@ -311,6 +311,14 @@ public class UpsertLoyaltyProgramRequest
     /// <summary>Welcome stamps granted automatically to a new customer on enrollment (0-100).</summary>
     [JsonPropertyName("defaultEnrollmentStamps")]
     public int DefaultEnrollmentStamps { get; set; }
+
+    /// <summary>Optional program design selection; omitted values preserve an existing assignment.</summary>
+    [JsonPropertyName("cardDesignId")]
+    public Guid? CardDesignId { get; set; }
+
+    /// <summary>Explicitly return this program to the platform default.</summary>
+    [JsonPropertyName("clearCardDesign")]
+    public bool ClearCardDesign { get; set; }
 }
 
 public class LoyaltyProgramResponse
@@ -378,6 +386,15 @@ public class LoyaltyProgramResponse
     [JsonPropertyName("cardDesignName")]
     public string? CardDesignName { get; set; }
 
+    [JsonPropertyName("cardDesignHtml")]
+    public string? CardDesignHtml { get; set; }
+
+    [JsonPropertyName("cardDesignIsDefault")]
+    public bool CardDesignIsDefault { get; set; }
+
+    [JsonPropertyName("cardDesignVersion")]
+    public int CardDesignVersion { get; set; }
+
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
 }
@@ -410,6 +427,9 @@ public class CustomerProgramResponse
     [JsonPropertyName("rewardExpirationHours")]
     public int RewardExpirationHours { get; set; }
 
+    [JsonPropertyName("defaultEnrollmentStamps")]
+    public int DefaultEnrollmentStamps { get; set; }
+
     /// <summary>Earning model key (see <c>ProgramTypes</c>).</summary>
     [JsonPropertyName("programType")]
     public string ProgramType { get; set; } = "stamp";
@@ -420,6 +440,21 @@ public class CustomerProgramResponse
     /// <summary>True when the calling customer already holds a card in this program.</summary>
     [JsonPropertyName("isEnrolled")]
     public bool IsEnrolled { get; set; }
+
+    [JsonPropertyName("cardDesignId")]
+    public Guid? CardDesignId { get; set; }
+
+    [JsonPropertyName("cardDesignName")]
+    public string? CardDesignName { get; set; }
+
+    [JsonPropertyName("cardDesignVersion")]
+    public int CardDesignVersion { get; set; }
+
+    [JsonPropertyName("cardDesignIsDefault")]
+    public bool CardDesignIsDefault { get; set; }
+
+    [JsonPropertyName("cardDesignHtml")]
+    public string? CardDesignHtml { get; set; }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -506,6 +541,9 @@ public class EnrollCardRequest
 {
     [JsonPropertyName("businessId")]
     public Guid BusinessId { get; set; }
+
+    [JsonPropertyName("programId")]
+    public Guid? ProgramId { get; set; }
 }
 
 public class LoyaltyCardResponse
@@ -584,13 +622,16 @@ public class LoyaltyCardResponse
     [JsonPropertyName("cardDesignName")]
     public string? CardDesignName { get; set; }
 
+    [JsonPropertyName("cardDesignVersion")]
+    public int CardDesignVersion { get; set; }
+
     /// <summary>True when the platform default design is applied.</summary>
     [JsonPropertyName("cardDesignIsDefault")]
     public bool CardDesignIsDefault { get; set; }
 
     /// <summary>
     /// The fully rendered card HTML (single shared rendering pipeline). Render
-    /// inside a sandboxed iframe. Null/empty ⇒ use the built-in React card.
+    /// inside the shared sandboxed iframe. Null/empty indicates a renderer error.
     /// </summary>
     [JsonPropertyName("cardDesignHtml")]
     public string? CardDesignHtml { get; set; }
@@ -634,6 +675,9 @@ public class PublicBusinessProfileResponse
 
     [JsonPropertyName("logoMediaId")]
     public Guid? LogoMediaId { get; set; }
+
+    [JsonPropertyName("logoVariants")]
+    public IReadOnlyList<ServiceImageVariantResponse> LogoVariants { get; set; } = [];
 
     [JsonPropertyName("coverMediaId")]
     public Guid? CoverMediaId { get; set; }

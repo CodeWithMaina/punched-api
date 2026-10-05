@@ -10,6 +10,18 @@ namespace PunchedApi.Tests;
 public class LoyaltyAndGoalSchemaTests
 {
     [Fact]
+    public void LoyaltyCards_AreUniquePerCustomerAndProgram_NotPerBusiness()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var indexes = context.Model.FindEntityType(typeof(LoyaltyCard))!.GetIndexes();
+        Assert.Contains(indexes, index => index.IsUnique &&
+            index.Properties.Select(property => property.Name).SequenceEqual(new[] { "CustomerId", "ProgramId" }));
+        Assert.DoesNotContain(indexes, index => index.IsUnique &&
+            index.Properties.Select(property => property.Name).SequenceEqual(new[] { "CustomerId", "BusinessId" }));
+    }
+
+    [Fact]
     public void LoyaltyProgram_DefaultEnrollmentStamps_DefaultsToZero_AndClampsTo100()
     {
         var program = new LoyaltyProgram

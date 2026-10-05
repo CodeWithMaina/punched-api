@@ -1,7 +1,13 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Moq;
+using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Loyalty;
+using PunchedApi.Application.Programs;
+using PunchedApi.Application.Services;
 using PunchedApi.Domain.Entities;
+using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
 using PunchedApi.Infrastructure.Repositories;
 using Xunit;
@@ -76,6 +82,66 @@ public class LoyaltyCardSnapshotTests : IDisposable
     };
 
     // ── Apply (freeze on enrollment) ───────────────────────
+
+    private LoyaltyService CreateLoyaltyService(Mock<ILogger<LoyaltyService>>? logger = null)
+    {
+        var resolver = new Mock<ICardDesignResolver>();
+        resolver.Setup(service => service.ResolveForProgramAsync(It.IsAny<LoyaltyProgram>()))
+            .ReturnsAsync(new ResolvedCardDesign { IsDefault = true });
+        return new LoyaltyService(_uow, _db, Mock.Of<IStampService>(),
+            Mock.Of<IProgramRuleEngine>(), Mock.Of<ICardDesignService>(), resolver.Object,
+            logger?.Object ?? TestHelpers.CreateLogger<LoyaltyService>());
+    }
+
+    [Fact]
+    public async Task Enroll_SelectedPrograms_CreateIndependentCards_AndRejectDuplicateProgram()
+    {
+        var owner = BookingTestBase.CreateOwner();
+        var customer = BookingTestBase.CreateCustomer();
+        var business = BookingTestBase.CreateBusiness(owner.Id, "Two program cafe");
+        var first = Program(6);
+        var second = Program(12);
+        foreach (var program in new[] { first, second })
+        {
+            program.BusinessId = business.Id;
+            program.IsActive = true;
+            program.Status = ProgramStatus.Active;
+        }
+        await BookingTestBase.SeedAsync(_db, owner, customer, business, first, second);
+        var logger = new Mock<ILogger<LoyaltyService>>();
+        var service = CreateLoyaltyService(logger);
+
+        var firstJoin = await service.EnrollAsync(customer.Id, new EnrollCardRequest { BusinessId = business.Id, ProgramId = first.Id });
+        var secondJoin = await service.EnrollAsync(customer.Id, new EnrollCardRequest { BusinessId = business.Id, ProgramId = second.Id });
+        var repeatedJoin = await service.EnrollAsync(customer.Id, new EnrollCardRequest { BusinessId = business.Id, ProgramId = second.Id });
+
+        Assert.True(firstJoin.Success, string.Join(Environment.NewLine,
+            logger.Invocations.Select(invocation => invocation.Arguments[3]?.ToString())));
+        Assert.True(secondJoin.Success, string.Join(Environment.NewLine,
+            logger.Invocations.Select(invocation => invocation.Arguments[3]?.ToString())));
+        Assert.Equal(second.Id, secondJoin.Data!.ProgramId);
+        Assert.Equal(12, secondJoin.Data.StampsRequired);
+        Assert.Equal("ALREADY_ENROLLED", repeatedJoin.Error?.Code);
+        Assert.Equal(2, await _db.LoyaltyCards.CountAsync());
+    }
+
+    [Fact]
+    public async Task Enroll_UnknownSelectedProgram_DoesNotFallBackToBusinessDefault()
+    {
+        var programId = await SeedProgramAsync();
+        var program = await _db.LoyaltyPrograms.FindAsync(programId);
+        program!.IsActive = true;
+        program.Status = ProgramStatus.Active;
+        var customer = BookingTestBase.CreateCustomer();
+        await BookingTestBase.SeedAsync(_db, customer);
+
+        var response = await CreateLoyaltyService().EnrollAsync(customer.Id,
+            new EnrollCardRequest { BusinessId = program.BusinessId, ProgramId = Guid.NewGuid() });
+
+        Assert.False(response.Success);
+        Assert.Equal("NO_PROGRAM", response.Error?.Code);
+        Assert.Empty(await _db.LoyaltyCards.ToListAsync());
+    }
 
     [Fact]
     public void Apply_SingleActiveCard_BindsAndFreezesSnapshot()

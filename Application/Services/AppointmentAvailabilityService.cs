@@ -137,7 +137,9 @@ public class AppointmentAvailabilityService
             if (focus == null)
             {
                 var existsInBusiness = await _context.Users.AsNoTracking()
-                    .AnyAsync(u => u.Id == staffUserId.Value && u.StaffBusinessId == businessId);
+                    .AnyAsync(u => u.Id == staffUserId.Value && u.StaffBusinessId == businessId)
+                    || await _context.Businesses.AsNoTracking()
+                        .AnyAsync(b => b.Id == businessId && b.OwnerId == staffUserId.Value);
                 return existsInBusiness
                     ? Fail("STAFF_NOT_AVAILABLE", "This staff member does not perform all of the selected services.")
                     : Fail("STAFF_NOT_FOUND", "Staff member not found in this business.");
@@ -504,9 +506,35 @@ public class AppointmentAvailabilityService
     //  HELPERS
     // ===========================================================
 
-    /// <summary>Staff of the business assigned to every requested service.</summary>
+    /// <summary>
+    /// True when the user owns a business that has no linked staff — the owner
+    /// is then the sole provider and their diary is the one bookings block.
+    /// </summary>
+    public async Task<bool> IsSoloOwnerAsync(Guid businessId, Guid userId) =>
+        await _context.Businesses.AsNoTracking().AnyAsync(b => b.Id == businessId && b.OwnerId == userId)
+        && !await _context.Users.AsNoTracking().AnyAsync(u => u.StaffBusinessId == businessId);
+
+    /// <summary>
+    /// Staff of the business assigned to every requested service. A business with
+    /// no linked staff falls back to its owner as the single provider.
+    /// </summary>
     private async Task<List<User>> GetEligibleStaffAsync(Guid businessId, Guid[] serviceIds)
     {
+        var hasStaff = await _context.Users.AsNoTracking().AnyAsync(u => u.StaffBusinessId == businessId);
+        if (!hasStaff)
+        {
+            var ownerId = await _context.Businesses.AsNoTracking()
+                .Where(b => b.Id == businessId)
+                .Select(b => b.OwnerId)
+                .FirstOrDefaultAsync();
+            if (ownerId == null || ownerId == Guid.Empty)
+                return new List<User>();
+
+            return await _context.Users.AsNoTracking()
+                .Where(u => u.Id == ownerId)
+                .ToListAsync();
+        }
+
         var assignments = await _context.StaffServiceAssignments.AsNoTracking()
             .Where(a => a.BusinessId == businessId && serviceIds.Contains(a.ServiceCatalogItemId))
             .Select(a => new { a.StaffUserId, a.ServiceCatalogItemId })

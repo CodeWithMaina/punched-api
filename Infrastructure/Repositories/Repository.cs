@@ -60,9 +60,27 @@ public class Repository<T> : IRepository<T> where T : BaseEntity
     }
 
     /// <inheritdoc />
+    public async Task<IEnumerable<T>> FindNoTrackingAsync(Expression<Func<T, bool>> predicate)
+    {
+        return await _dbSet.AsNoTracking().Where(predicate).ToListAsync();
+    }
+
+    /// <inheritdoc />
+    public async Task<List<TResult>> SelectNoTrackingAsync<TResult>(Expression<Func<T, bool>> predicate, Expression<Func<T, TResult>> selector)
+    {
+        return await _dbSet.AsNoTracking().Where(predicate).Select(selector).ToListAsync();
+    }
+
+    /// <inheritdoc />
     public async Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate)
     {
         return await _dbSet.FirstOrDefaultAsync(predicate);
+    }
+
+    /// <inheritdoc />
+    public async Task<T?> FirstOrDefaultNoTrackingAsync(Expression<Func<T, bool>> predicate)
+    {
+        return await _dbSet.AsNoTracking().FirstOrDefaultAsync(predicate);
     }
 
     /// <inheritdoc />

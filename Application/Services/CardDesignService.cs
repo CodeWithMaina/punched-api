@@ -22,15 +22,18 @@ public class CardDesignService : ICardDesignService
 
     private readonly IUnitOfWork _unitOfWork;
     private readonly ICardDesignResolver _resolver;
+    private readonly ICardAssetDeliveryTokenService? _assetDeliveryTokens;
     private readonly ILogger<CardDesignService> _logger;
 
     public CardDesignService(
         IUnitOfWork unitOfWork,
         ICardDesignResolver resolver,
-        ILogger<CardDesignService> logger)
+        ILogger<CardDesignService> logger,
+        ICardAssetDeliveryTokenService? assetDeliveryTokens = null)
     {
         _unitOfWork = unitOfWork;
         _resolver = resolver;
+        _assetDeliveryTokens = assetDeliveryTokens;
         _logger = logger;
     }
 
@@ -126,20 +129,29 @@ public class CardDesignService : ICardDesignService
     /// Builds the preview response through the single shared pipeline:
     /// (already sanitized template) → resolve variables → render.
     /// </summary>
-    private static PreviewCardDesignResponse BuildPreview(
+    private PreviewCardDesignResponse BuildPreview(
         string sanitizedTemplate,
-        CardTemplateRenderer.CardRenderContext context) => new()
+        CardTemplateRenderer.CardRenderContext context,
+        Guid? businessId)
+    {
+        if (businessId.HasValue && _assetDeliveryTokens != null)
+            context.CardAssetUrlFactory = assetId => _assetDeliveryTokens.CreateUrl(businessId.Value, null, assetId);
+
+        return new PreviewCardDesignResponse
         {
             SanitizedTemplate = sanitizedTemplate,
             RenderedHtml = CardTemplateRenderer.Render(sanitizedTemplate, context),
             Variables = CardTemplateRenderer.AvailableVariables.ToList()
         };
+    }
 
     /// <summary>Sample context branded with a business's public identity (plan §7).</summary>
     private static CardTemplateRenderer.CardRenderContext SampleContextFor(
         Business? business,
-        PreviewCardDesignRequest request) =>
-        CardPreviewSampleData.CreateContext(
+        PreviewCardDesignRequest request,
+        CardDesignConfig? config = null)
+    {
+        var context = CardPreviewSampleData.CreateContext(
             businessName: request.BusinessName ?? business?.Name,
             businessLogoUrl: business?.LogoUrl,
             customerName: request.CustomerName,
@@ -148,6 +160,17 @@ public class CardDesignService : ICardDesignService
             totalStamps: request.TotalStamps,
             completedStamps: request.CompletedStamps,
             programName: request.ProgramName);
+        if (config != null)
+        {
+            context.StampEmptyGlyph = config.Stamp.EmptyGlyph;
+            context.StampCompletedGlyph = config.Stamp.CompletedGlyph;
+            context.StampEmptyIconUrl = config.Stamp.EmptyAssetId is Guid emptyId ? CardAssetUrls.ContentPath(emptyId) : null;
+            context.StampCompletedIconUrl = config.Stamp.CompletedAssetId is Guid completedId ? CardAssetUrls.ContentPath(completedId) : null;
+            context.StampFilledColor = config.Colors.Primary;
+            context.StampEmptyColor = config.Colors.Surface;
+        }
+        return context;
+    }
 
     private Task<Business?> ResolveBusinessForOwnerAsync(Guid ownerId) =>
         _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
@@ -164,7 +187,7 @@ public class CardDesignService : ICardDesignService
     /// When <paramref name="enforceTenant"/> is true, only the platform default
     /// or the caller's own design may be previewed by id (plan §16).
     /// </summary>
-    private async Task<(string? Template, string? ErrorCode, string? ErrorMessage)> ResolvePreviewTemplateAsync(
+    private async Task<(string? Template, CardDesignConfig? Config, string? ErrorCode, string? ErrorMessage)> ResolvePreviewTemplateAsync(
         string? rawHtml,
         Guid? cardDesignId,
         Guid? allowedBusinessId,
@@ -174,9 +197,9 @@ public class CardDesignService : ICardDesignService
         {
             var (isValid, error) = CardTemplateSanitizer.Validate(rawHtml);
             if (!isValid)
-                return (null, "INVALID_TEMPLATE", error ?? "Invalid template.");
+                return (null, null, "INVALID_TEMPLATE", error ?? "Invalid template.");
 
-            return (CardTemplateSanitizer.Sanitize(rawHtml), null, null);
+            return (CardTemplateSanitizer.Sanitize(rawHtml), null, null, null);
         }
 
         if (cardDesignId.HasValue)
@@ -188,13 +211,14 @@ public class CardDesignService : ICardDesignService
                 : await _unitOfWork.CardDesigns.FirstOrDefaultAsync(d => d.Id == cardDesignId.Value);
 
             if (design == null)
-                return (null, "NOT_FOUND", "Card design not found.");
+                return (null, null, "NOT_FOUND", "Card design not found.");
 
-            return (design.HtmlTemplate, null, null);
+            return (design.HtmlTemplate, CardDesignConfig.TryParse(design.ConfigJson), null, null);
         }
 
         var defaultDesign = await _resolver.GetDefaultDesignAsync();
-        return (defaultDesign?.HtmlTemplate ?? DefaultCardTemplate.Html, null, null);
+        return (defaultDesign?.HtmlTemplate ?? DefaultCardTemplate.Html,
+            CardDesignConfig.TryParse(defaultDesign?.ConfigJson), null, null);
     }
 
     // ─ Admin: read ────────────────────────────────────────
@@ -441,17 +465,17 @@ public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid des
                     configCode!, configMessage ?? "Invalid configuration.");
 
             return ApiResponse<PreviewCardDesignResponse>.Ok(
-                BuildPreview(configTemplate, SampleContextFor(business, request)));
+                BuildPreview(configTemplate, SampleContextFor(business, request, request.Config), business?.Id));
         }
 
-        var (template, code, message) = await ResolvePreviewTemplateAsync(
+        var (template, templateConfig, code, message) = await ResolvePreviewTemplateAsync(
             request.HtmlTemplate, request.CardDesignId, business?.Id, enforceTenant: false);
 
         if (template == null)
             return ApiResponse<PreviewCardDesignResponse>.Fail(code ?? "PREVIEW_FAILED", message ?? "Preview failed.");
 
         return ApiResponse<PreviewCardDesignResponse>.Ok(
-            BuildPreview(template, SampleContextFor(business, request)));
+            BuildPreview(template, SampleContextFor(business, request, templateConfig), business?.Id));
     }
 
     public async Task<ApiResponse<PreviewCardDesignResponse>> PreviewForBusinessAsync(
@@ -461,6 +485,12 @@ public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid des
         var business = await ResolveBusinessForOwnerAsync(ownerId);
         if (business == null)
             return ApiResponse<PreviewCardDesignResponse>.Fail("NOT_FOUND", "No business found for this account.");
+
+        if (request.HtmlTemplate != null
+            && !await _resolver.BusinessHasCustomCardDesignAsync(business.Id))
+            return ApiResponse<PreviewCardDesignResponse>.Fail(
+                "MODULE_DISABLED",
+                $"The '{ICardDesignService.ModuleKey}' module is not enabled for this business.");
 
         // Live designer preview: an unsaved config is validated + rendered
         // through the exact save-time pipeline (§15 — preview == production).
@@ -478,17 +508,17 @@ public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid des
                     configCode!, configMessage ?? "Invalid configuration.");
 
             return ApiResponse<PreviewCardDesignResponse>.Ok(
-                BuildPreview(configTemplate, SampleContextFor(business, request)));
+                BuildPreview(configTemplate, SampleContextFor(business, request, request.Config), business.Id));
         }
 
-        var (template, code, message) = await ResolvePreviewTemplateAsync(
+        var (template, templateConfig, code, message) = await ResolvePreviewTemplateAsync(
             request.HtmlTemplate, request.CardDesignId, business.Id, enforceTenant: true);
 
         if (template == null)
             return ApiResponse<PreviewCardDesignResponse>.Fail(code ?? "PREVIEW_FAILED", message ?? "Preview failed.");
 
         return ApiResponse<PreviewCardDesignResponse>.Ok(
-            BuildPreview(template, SampleContextFor(business, request)));
+            BuildPreview(template, SampleContextFor(business, request, templateConfig), business.Id));
     }
 // ── Business: availability + validation ─────────────────
 
@@ -500,7 +530,6 @@ public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid des
                 "NOT_FOUND", "No business found for this account.");
 
         var hasModule = await _resolver.BusinessHasCustomCardDesignAsync(business.Id);
-        var sampleContext = SampleContextFor(business, new PreviewCardDesignRequest());
         var result = new List<AvailableCardDesignResponse>();
 
         // 1. The platform default — always present, always available (plan §4).
@@ -512,7 +541,8 @@ public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid des
             IsDefault = true,
             IsActive = true,
             PreviewHtml = CardTemplateRenderer.Render(
-                defaultDesign?.HtmlTemplate ?? DefaultCardTemplate.Html, sampleContext)
+                defaultDesign?.HtmlTemplate ?? DefaultCardTemplate.Html,
+                SampleContextFor(business, new PreviewCardDesignRequest(), CardDesignConfig.TryParse(defaultDesign?.ConfigJson)))
         });
 
         // 2. The business's own designs — ONLY when the module is enabled, and
@@ -525,13 +555,16 @@ public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid des
 
             foreach (var design in designs)
             {
+                var context = SampleContextFor(business, new PreviewCardDesignRequest(), CardDesignConfig.TryParse(design.ConfigJson));
+                if (_assetDeliveryTokens != null)
+                    context.CardAssetUrlFactory = assetId => _assetDeliveryTokens.CreateUrl(business.Id, null, assetId);
                 result.Add(new AvailableCardDesignResponse
                 {
                     Id = design.Id,
                     Name = design.Name,
                     IsDefault = false,
                     IsActive = design.IsActive,
-                    PreviewHtml = CardTemplateRenderer.Render(design.HtmlTemplate, sampleContext)
+                    PreviewHtml = CardTemplateRenderer.Render(design.HtmlTemplate, context)
                 });
             }
         }
@@ -642,13 +675,31 @@ public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid des
                     "DESIGN_LIMIT_REACHED",
                     $"This business has reached the limit of {MaxBusinessDesigns} card designs.");
 
-            // Null config ⇒ the safe professional default (§17): a usable branded
-            // card before any artwork exists.
-            var config = request.Config ?? CardDesignConfig.CreateDefault();
-            var (template, errorCode, errorMessage) = await BuildConfigTemplateAsync(business.Id, config);
-            if (template == null)
+            if (request.HtmlTemplate != null && request.Config != null)
                 return ApiResponse<CardDesignResponse>.Fail(
-                    errorCode!, errorMessage ?? "The card design configuration is invalid.");
+                    "DESIGN_INPUT_CONFLICT", "Provide either htmlTemplate or config, not both.");
+
+            string template;
+            string? configJson;
+            if (request.HtmlTemplate != null)
+            {
+                var (isValid, error) = CardTemplateSanitizer.Validate(request.HtmlTemplate);
+                if (!isValid)
+                    return ApiResponse<CardDesignResponse>.Fail("INVALID_TEMPLATE", error ?? "Invalid template.");
+                template = CardTemplateSanitizer.Sanitize(request.HtmlTemplate);
+                configJson = null;
+            }
+            else
+            {
+                // Null config ⇒ the safe professional default: a usable branded card.
+                var config = request.Config ?? CardDesignConfig.CreateDefault();
+                var result = await BuildConfigTemplateAsync(business.Id, config);
+                if (result.Template == null)
+                    return ApiResponse<CardDesignResponse>.Fail(
+                        result.ErrorCode!, result.Message ?? "The card design configuration is invalid.");
+                template = result.Template;
+                configJson = config.ToJson();
+            }
 
             var design = new CardDesign
             {
@@ -656,7 +707,7 @@ public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid des
                 BusinessId = business.Id,
                 Name = name,
                 HtmlTemplate = template,
-                ConfigJson = config.ToJson(),
+                ConfigJson = configJson,
                 IsActive = true,
                 IsDefault = false,
                 CreatedAt = DateTime.UtcNow
@@ -708,6 +759,10 @@ public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid des
 
             var contentChanged = false;
 
+            if (request.HtmlTemplate != null && request.Config != null)
+                return ApiResponse<CardDesignResponse>.Fail(
+                    "DESIGN_INPUT_CONFLICT", "Provide either htmlTemplate or config, not both.");
+
             if (request.Name != null)
             {
                 var name = request.Name.Trim();
@@ -723,7 +778,22 @@ public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid des
                 }
             }
 
-            if (request.Config != null)
+            if (request.HtmlTemplate != null)
+            {
+                var (isValid, error) = CardTemplateSanitizer.Validate(request.HtmlTemplate);
+                if (!isValid)
+                    return ApiResponse<CardDesignResponse>.Fail("INVALID_TEMPLATE", error ?? "Invalid template.");
+
+                var template = CardTemplateSanitizer.Sanitize(request.HtmlTemplate);
+                if (!string.Equals(design.HtmlTemplate, template, StringComparison.Ordinal)
+                    || design.ConfigJson != null)
+                {
+                    design.HtmlTemplate = template;
+                    design.ConfigJson = null;
+                    contentChanged = true;
+                }
+            }
+            else if (request.Config != null)
             {
                 var (template, errorCode, errorMessage) = await BuildConfigTemplateAsync(business.Id, request.Config);
                 if (template == null)

@@ -77,7 +77,8 @@ public sealed partial class R2ObjectStore : IObjectStore, IDisposable
         return _client.PutObjectAsync(new PutObjectRequest
         {
             BucketName = Bucket(bucket), Key = key, InputStream = content,
-            ContentType = contentType, Headers = { CacheControl = cacheControl }
+            ContentType = contentType, UseChunkEncoding = false,
+            Headers = { CacheControl = cacheControl }
         }, cancellationToken);
     }
 

@@ -97,9 +97,8 @@ public class CardDesignController : ControllerBase
     }
 
     /// <summary>
-    /// Creates a business-owned design from a validated structured config.
-    /// The server generates + sanitizes the template; raw HTML is never accepted
-    /// on this route.
+    /// Creates a business-owned design from either validated structured config
+    /// or a raw HTML fragment that is validated and sanitized before storage.
     /// </summary>
     [HttpPost("me/designs")]
     [ProducesResponseType(typeof(ApiResponse<CardDesignResponse>), StatusCodes.Status201Created)]
@@ -115,7 +114,7 @@ public class CardDesignController : ControllerBase
         return MapFailure(result);
     }
 
-    /// <summary>Updates one of the caller business's designs (append-only versioning).</summary>
+    /// <summary>Updates one of the caller business's designs (append-only versioning and sanitization).</summary>
     [HttpPut("me/designs/{designId:guid}")]
     [ProducesResponseType(typeof(ApiResponse<CardDesignResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]

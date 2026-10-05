@@ -55,6 +55,7 @@ public sealed class PublicReviewResponse
     [JsonPropertyName("reviewerAvatar")] public string? ReviewerAvatar { get; set; }
     [JsonPropertyName("reviewerAvatarMediaId")] public Guid? ReviewerAvatarMediaId { get; set; }
     [JsonPropertyName("imageMediaIds")] public IReadOnlyList<Guid> ImageMediaIds { get; set; } = [];
+    [JsonPropertyName("imageMedia")] public IReadOnlyList<ReviewImageMediaResponse> ImageMedia { get; set; } = [];
     [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; set; }
     [JsonPropertyName("updatedAt")] public DateTime UpdatedAt { get; set; }
 }
@@ -70,8 +71,23 @@ public sealed class BusinessReviewResponse
     [JsonPropertyName("reviewerAvatar")] public string? ReviewerAvatar { get; set; }
     [JsonPropertyName("reviewerAvatarMediaId")] public Guid? ReviewerAvatarMediaId { get; set; }
     [JsonPropertyName("imageMediaIds")] public IReadOnlyList<Guid> ImageMediaIds { get; set; } = [];
+    [JsonPropertyName("imageMedia")] public IReadOnlyList<ReviewImageMediaResponse> ImageMedia { get; set; } = [];
     [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; set; }
     [JsonPropertyName("updatedAt")] public DateTime UpdatedAt { get; set; }
+}
+
+public sealed class ReviewImageMediaResponse
+{
+    [JsonPropertyName("mediaId")] public Guid MediaId { get; set; }
+    [JsonPropertyName("variants")] public IReadOnlyList<ReviewImageVariantResponse> Variants { get; set; } = [];
+}
+
+public sealed class ReviewImageVariantResponse
+{
+    [JsonPropertyName("url")] public string Url { get; set; } = string.Empty;
+    [JsonPropertyName("width")] public int Width { get; set; }
+    [JsonPropertyName("height")] public int Height { get; set; }
+    [JsonPropertyName("format")] public string Format { get; set; } = string.Empty;
 }
 
 

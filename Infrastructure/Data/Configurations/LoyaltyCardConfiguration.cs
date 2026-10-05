@@ -76,8 +76,7 @@ public class LoyaltyCardConfiguration : IEntityTypeConfiguration<LoyaltyCard>
             .HasColumnName("rules_version")
             .HasDefaultValue(0);
 
-        // Unique: one card per customer per business
-        builder.HasIndex(e => new { e.CustomerId, e.BusinessId }).IsUnique();
+        builder.HasIndex(e => new { e.CustomerId, e.ProgramId }).IsUnique();
         builder.HasIndex(e => new { e.BusinessId, e.LastStampAt });
         builder.HasIndex(e => new { e.BusinessId, e.EnrolledAt });
         builder.HasIndex(e => new { e.BusinessId, e.ProgramId });

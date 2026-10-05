@@ -1,6 +1,7 @@
 using System.Diagnostics.Metrics;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Amazon.S3;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -46,6 +47,8 @@ public sealed class MediaValidator(IOptions<MediaStorageOptions> options) : IMed
         var detectedMime = DetectMimeType(bytes);
         if (!_options.Limits.SupportedInputMimeTypes.Contains(detectedMime, StringComparer.OrdinalIgnoreCase))
             throw new InvalidOperationException("UNSUPPORTED_MEDIA_TYPE");
+        if (!string.Equals(media.DeclaredMimeType, detectedMime, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("DECLARED_MIME_MISMATCH");
 
         using var codec = SKCodec.Create(new SKMemoryStream(bytes));
         if (codec is null) throw new InvalidOperationException("INVALID_IMAGE");
@@ -91,7 +94,8 @@ public sealed class MediaProcessor(
     IMediaKeyFactory keys,
     IMediaUrlFactory urls,
     IMediaValidator validator,
-    IOptions<MediaStorageOptions> options) : IMediaProcessor
+    IOptions<MediaStorageOptions> options,
+    IHttpClientFactory httpClientFactory) : IMediaProcessor
 {
     private readonly ApplicationDbContext _db = db;
     private readonly IObjectStore _store = store;
@@ -99,6 +103,7 @@ public sealed class MediaProcessor(
     private readonly IMediaUrlFactory _urls = urls;
     private readonly IMediaValidator _validator = validator;
     private readonly MediaStorageOptions _options = options.Value;
+    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
 
     public async Task<bool> ProcessAsync(Guid mediaId, CancellationToken cancellationToken)
     {
@@ -132,7 +137,13 @@ public sealed class MediaProcessor(
                 using var normalized = NormalizeOrientation(image, ReadEncodedOrigin(bytes));
                 if (normalized.Width == 0 || normalized.Height == 0) throw new InvalidOperationException("INVALID_IMAGE");
 
-                var variants = new List<MediaVariantResponse>();
+                media.DetectedMimeType = validation.DetectedMimeType;
+                media.SourceSizeBytes = validation.SizeBytes;
+                media.Width = validation.Width;
+                media.Height = validation.Height;
+                media.Sha256 = validation.Sha256;
+                var variants = DeserializeVariants(media.VariantsJson).ToList();
+                await _db.SaveChangesAsync(cancellationToken);
                 var variantWidths = _options.VariantWidths.Count > 0 ? _options.VariantWidths : [320, 640, 1280];
 
                 foreach (var variantWidth in variantWidths)
@@ -141,33 +152,53 @@ public sealed class MediaProcessor(
                     var targetWidth = Math.Max(1, (int)Math.Round(width * scale));
                     var targetHeight = Math.Max(1, (int)Math.Round(height * scale));
 
-                    var encodedWebp = EncodeScaledBitmap(normalized, targetWidth, targetHeight, "webp");
+                    using var scaled = normalized.Resize(new SKImageInfo(targetWidth, targetHeight, SKColorType.Rgba8888), SKSamplingOptions.Default);
+                    if (scaled is null) throw new InvalidOperationException("DERIVATIVE_GENERATION_FAILED");
+
+                    var encodedWebp = EncodeBitmap(scaled, "webp");
                     if (encodedWebp.Length == 0) throw new InvalidOperationException("DERIVATIVE_GENERATION_FAILED");
 
                     var webpKey = _keys.CreateDeliveryKey(media.Id, media.Purpose.Replace("-", "-"), targetWidth, "webp");
-                    await _store.PutAsync(ObjectStoreBucket.PublicDelivery, webpKey, new MemoryStream(encodedWebp), "image/webp", "public, max-age=31536000", cancellationToken);
-                    variants.Add(new MediaVariantResponse
+                    var webpVariant = new MediaVariantResponse
                     {
-                        Url = _urls.CreatePublicUrl(webpKey),
-                        Width = targetWidth,
-                        Height = targetHeight,
-                        Format = "webp",
-                        Transform = "public"
-                    });
+                        Url = _urls.CreatePublicUrl(webpKey), Width = targetWidth, Height = targetHeight,
+                        Format = "webp", Transform = "public"
+                    };
 
-                    var encodedJpg = EncodeScaledBitmap(normalized, targetWidth, targetHeight, "jpg");
+                    var encodedJpg = EncodeBitmap(scaled, "jpg");
                     if (encodedJpg.Length == 0) throw new InvalidOperationException("DERIVATIVE_GENERATION_FAILED");
 
                     var jpgKey = _keys.CreateDeliveryKey(media.Id, media.Purpose.Replace("-", "-"), targetWidth, "jpg");
-                    await _store.PutAsync(ObjectStoreBucket.PublicDelivery, jpgKey, new MemoryStream(encodedJpg), "image/jpeg", "public, max-age=31536000", cancellationToken);
-                    variants.Add(new MediaVariantResponse
+                    var jpgVariant = new MediaVariantResponse
                     {
-                        Url = _urls.CreatePublicUrl(jpgKey),
-                        Width = targetWidth,
-                        Height = targetHeight,
-                        Format = "jpeg",
-                        Transform = "public"
-                    });
+                        Url = _urls.CreatePublicUrl(jpgKey), Width = targetWidth, Height = targetHeight,
+                        Format = "jpeg", Transform = "public"
+                    };
+
+                    RecordVariant(variants, webpVariant);
+                    RecordVariant(variants, jpgVariant);
+                    media.VariantsJson = JsonSerializer.Serialize(variants);
+                    media.UpdatedAt = DateTime.UtcNow;
+                    await _db.SaveChangesAsync(cancellationToken);
+
+                    using var webpStream = new MemoryStream(encodedWebp);
+                    using var jpgStream = new MemoryStream(encodedJpg);
+                    await Task.WhenAll(
+                        _store.PutAsync(ObjectStoreBucket.PublicDelivery, webpKey, webpStream, "image/webp", "public, max-age=31536000, immutable", cancellationToken),
+                        _store.PutAsync(ObjectStoreBucket.PublicDelivery, jpgKey, jpgStream, "image/jpeg", "public, max-age=31536000, immutable", cancellationToken));
+                    await Task.WhenAll(
+                        VerifyStoredVariantAsync(webpKey, "image/webp", cancellationToken),
+                        VerifyStoredVariantAsync(jpgKey, "image/jpeg", cancellationToken));
+                }
+
+                if (variants.Count == 0) throw new InvalidOperationException("DERIVATIVE_GENERATION_FAILED");
+                using (var publicResponse = await _httpClientFactory.CreateClient().SendAsync(
+                    new HttpRequestMessage(HttpMethod.Head, variants[0].Url),
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken))
+                {
+                    if (!publicResponse.IsSuccessStatusCode || !string.Equals(publicResponse.Content.Headers.ContentType?.MediaType, "image/webp", StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("PUBLIC_DELIVERY_UNAVAILABLE");
                 }
 
                 media.Status = MediaStatus.Ready;
@@ -186,6 +217,10 @@ public sealed class MediaProcessor(
                 await _db.SaveChangesAsync(cancellationToken);
                 return true;
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -214,6 +249,24 @@ public sealed class MediaProcessor(
 
     private static string NormalizeErrorCode(Exception ex)
     {
+        while (ex.InnerException is not null && ex is not AmazonS3Exception and not HttpRequestException)
+            ex = ex.InnerException;
+
+        if (ex is AmazonS3Exception storageError)
+        {
+            var providerCode = new string((storageError.ErrorCode ?? "UNKNOWN")
+                .Where(char.IsAsciiLetterOrDigit)
+                .Take(32)
+                .ToArray())
+                .ToUpperInvariant();
+            return $"R2_{(int)storageError.StatusCode}_{providerCode}";
+        }
+
+        if (ex is HttpRequestException httpError)
+            return httpError.StatusCode is { } statusCode
+                ? $"PUBLIC_HTTP_{(int)statusCode}"
+                : "PUBLIC_HTTP_REQUEST_FAILED";
+
         var code = ex.Message switch
         {
             "MEDIA_EMPTY" => "MEDIA_EMPTY",
@@ -226,19 +279,17 @@ public sealed class MediaProcessor(
             "UPLOAD_MISSING" => "UPLOAD_MISSING",
             "INVALID_IMAGE" => "INVALID_IMAGE",
             "DERIVATIVE_GENERATION_FAILED" => "DERIVATIVE_GENERATION_FAILED",
-            _ => "PROCESSING_FAILED"
+            "PUBLIC_DELIVERY_UNAVAILABLE" => "PUBLIC_DELIVERY_UNAVAILABLE",
+            _ => $"PROCESSING_{new string(ex.GetType().Name.Where(char.IsAsciiLetterOrDigit).Take(48).ToArray()).ToUpperInvariant()}"
         };
         return code;
     }
 
-    private static byte[] EncodeScaledBitmap(SKBitmap source, int width, int height, string format)
+    private static byte[] EncodeBitmap(SKBitmap source, string format)
     {
-        if (width <= 0 || height <= 0) throw new InvalidOperationException("INVALID_IMAGE");
+        if (source.Width <= 0 || source.Height <= 0) throw new InvalidOperationException("INVALID_IMAGE");
 
-        using var scaled = source.Resize(new SKImageInfo(width, height, SKColorType.Rgba8888), SKSamplingOptions.Default);
-        if (scaled is null) throw new InvalidOperationException("DERIVATIVE_GENERATION_FAILED");
-
-        using var image = SKImage.FromBitmap(scaled);
+        using var image = SKImage.FromBitmap(source);
         using var data = format switch
         {
             "webp" => image.Encode(SKEncodedImageFormat.Webp, 90),
@@ -293,6 +344,26 @@ public sealed class MediaProcessor(
 
         canvas.DrawBitmap(source, 0, 0, new SKSamplingOptions(SKFilterMode.Linear));
         return normalized;
+    }
+
+    private async Task VerifyStoredVariantAsync(string key, string expectedContentType, CancellationToken cancellationToken)
+    {
+        var metadata = await _store.HeadAsync(ObjectStoreBucket.PublicDelivery, key, cancellationToken);
+        if (metadata is null || metadata.SizeBytes < 1 || !string.Equals(metadata.ContentType, expectedContentType, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("PUBLIC_DELIVERY_UNAVAILABLE");
+    }
+
+    private static void RecordVariant(List<MediaVariantResponse> variants, MediaVariantResponse variant)
+    {
+        var existing = variants.FindIndex(item => string.Equals(item.Url, variant.Url, StringComparison.Ordinal));
+        if (existing >= 0) variants[existing] = variant;
+        else variants.Add(variant);
+    }
+
+    private static List<MediaVariantResponse> DeserializeVariants(string json)
+    {
+        try { return JsonSerializer.Deserialize<List<MediaVariantResponse>>(json) ?? []; }
+        catch (JsonException) { return []; }
     }
 }
 
@@ -361,10 +432,16 @@ public sealed class MediaProcessingWorker(IServiceScopeFactory scopeFactory, IOp
                             .SetProperty(x => x.UpdatedAt, now), stoppingToken);
 
                     if (claimed == 0) continue;
+                    media.Status = MediaStatus.Processing;
+                    media.ProcessingAttempts++;
+                    media.ProcessingLeaseToken = leaseToken;
+                    media.ProcessingLeaseUntil = now.AddMinutes(_options.Processing.LeaseMinutes);
+                    media.UpdatedAt = now;
                     MediaMetrics.RecordProcessingStarted();
                     var started = DateTime.UtcNow;
-                    var success = await processor.ProcessAsync(media.Id, stoppingToken);
-                    if (success)
+                    var success = await ProcessWithLeaseHeartbeatAsync(media.Id, leaseToken, processor, stoppingToken);
+                    if (!success.HasValue) continue;
+                    if (success.Value)
                     {
                         MediaMetrics.RecordProcessingSucceeded();
                     }
@@ -391,6 +468,59 @@ public sealed class MediaProcessingWorker(IServiceScopeFactory scopeFactory, IOp
             await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
         }
     }
+
+    private async Task<bool?> ProcessWithLeaseHeartbeatAsync(Guid mediaId, string leaseToken, IMediaProcessor processor, CancellationToken stoppingToken)
+    {
+        using var processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var processing = processor.ProcessAsync(mediaId, processingCancellation.Token);
+
+        try
+        {
+            while (!processing.IsCompleted)
+            {
+                await Task.Delay(TimeSpan.FromMinutes(_options.Processing.LeaseHeartbeatMinutes), processingCancellation.Token);
+                if (processing.IsCompleted) break;
+
+                if (!await RenewLeaseAsync(mediaId, leaseToken, stoppingToken))
+                {
+                    processingCancellation.Cancel();
+                    try { await processing; }
+                    catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested) { }
+                    return null;
+                }
+            }
+
+            return await processing;
+        }
+        finally
+        {
+            processingCancellation.Cancel();
+        }
+    }
+
+    private async Task<bool> RenewLeaseAsync(Guid mediaId, string leaseToken, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var now = DateTime.UtcNow;
+            var renewed = await db.Media
+                .Where(x => x.Id == mediaId && x.Status == MediaStatus.Processing && x.ProcessingLeaseToken == leaseToken)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(x => x.ProcessingLeaseUntil, now.AddMinutes(_options.Processing.LeaseMinutes))
+                    .SetProperty(x => x.UpdatedAt, now), cancellationToken);
+            return renewed == 1;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }
 
 public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptions<MediaStorageOptions> options) : BackgroundService
@@ -408,18 +538,19 @@ public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptio
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 var urls = scope.ServiceProvider.GetRequiredService<IMediaUrlFactory>();
                 var store = scope.ServiceProvider.GetRequiredService<IObjectStore>();
-                var pendingCutoff = DateTime.UtcNow.AddMinutes(-_options.PendingRowExpirationMinutes);
+                var now = DateTime.UtcNow;
+                var pendingCutoff = now.AddMinutes(-_options.PendingRowExpirationMinutes);
                 await db.Media
                     .Where(x => x.Status == MediaStatus.Processing &&
                                 x.ProcessingAttempts >= _options.Processing.MaxAttempts &&
-                                x.ProcessingLeaseUntil != null && x.ProcessingLeaseUntil <= DateTime.UtcNow)
+                                x.ProcessingLeaseUntil != null && x.ProcessingLeaseUntil <= now)
                     .ExecuteUpdateAsync(s => s
                         .SetProperty(x => x.Status, MediaStatus.Failed)
                         .SetProperty(x => x.LastErrorCode, "PROCESSING_LEASE_EXPIRED")
                         .SetProperty(x => x.ProcessingLeaseToken, (string?)null)
                         .SetProperty(x => x.ProcessingLeaseUntil, (DateTime?)null)
                         .SetProperty(x => x.NextAttemptAt, (DateTime?)null)
-                        .SetProperty(x => x.UpdatedAt, DateTime.UtcNow), stoppingToken);
+                        .SetProperty(x => x.UpdatedAt, now), stoppingToken);
                 var stalePending = await db.Media
                     .Where(x => x.Status == MediaStatus.Pending && x.CreatedAt <= pendingCutoff)
                     .Take(_options.CleanupBatchSize)
@@ -441,8 +572,27 @@ public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptio
                     MediaMetrics.RecordCleanupDeleted();
                 }
 
+                if (_options.Retention.FailedUploadHours > 0)
+                {
+                    var failedCutoff = now.AddHours(-_options.Retention.FailedUploadHours);
+                    var expiredFailed = await db.Media
+                        .Where(x => x.Status == MediaStatus.Failed && x.UpdatedAt <= failedCutoff)
+                        .Take(_options.CleanupBatchSize)
+                        .ToListAsync(stoppingToken);
+
+                    foreach (var media in expiredFailed)
+                    {
+                        if (await HasRelationshipsAsync(db, media.Id, stoppingToken)) continue;
+                        await DeleteObjectsAsync(media, urls, store, stoppingToken);
+                        db.Media.Remove(media);
+                        await db.SaveChangesAsync(stoppingToken);
+                        MediaMetrics.RecordCleanupDeleted();
+                    }
+                }
+
                 var purgePending = await db.Media
-                    .Where(x => x.DeliveryPurgeStatus == DeliveryPurgeStatus.Pending && x.DeliveryPurgeNextAttemptAt <= DateTime.UtcNow)
+                    .Where(x => (x.DeliveryPurgeStatus == DeliveryPurgeStatus.Pending || x.DeliveryPurgeStatus == DeliveryPurgeStatus.Failed) &&
+                                (x.DeliveryPurgeNextAttemptAt == null || x.DeliveryPurgeNextAttemptAt <= now))
                     .Take(_options.CleanupBatchSize)
                     .ToListAsync(stoppingToken);
 
@@ -450,23 +600,13 @@ public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptio
                 {
                     try
                     {
-                        var variants = DeserializeVariants(media.VariantsJson);
-                        var keys = variants
-                            .Select(x => urls.TryGetDeliveryKey(x.Url))
-                            .Where(x => !string.IsNullOrWhiteSpace(x))
-                            .Select(x => x!)
-                            .Distinct()
-                            .ToArray();
-
-                        foreach (var key in keys)
-                        {
-                            await store.DeleteAsync(ObjectStoreBucket.PublicDelivery, key, stoppingToken);
-                        }
+                        await DeleteObjectsAsync(media, urls, store, stoppingToken);
 
                         media.DeliveryPurgeStatus = DeliveryPurgeStatus.Completed;
                         media.DeliveryPurgedAt = DateTime.UtcNow;
                         media.DeliveryPurgeErrorCode = null;
                         media.DeliveryPurgeAttempts++;
+                        media.DeliveryPurgeNextAttemptAt = null;
                         media.Status = MediaStatus.Deleted;
                         media.UpdatedAt = DateTime.UtcNow;
                         await db.SaveChangesAsync(stoppingToken);
@@ -477,10 +617,24 @@ public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptio
                         media.DeliveryPurgeStatus = DeliveryPurgeStatus.Failed;
                         media.DeliveryPurgeErrorCode = "PURGE_FAILED";
                         media.DeliveryPurgeAttempts++;
+                        media.DeliveryPurgeNextAttemptAt = DateTime.UtcNow.AddMinutes(Math.Min(60, Math.Pow(2, Math.Min(media.DeliveryPurgeAttempts, 6))));
                         media.UpdatedAt = DateTime.UtcNow;
                         await db.SaveChangesAsync(stoppingToken);
                         MediaMetrics.RecordCleanupFailed();
                     }
+                }
+
+                var deletedCutoff = DateTime.UtcNow.AddHours(-Math.Max(0, _options.Retention.DeletedGraceHours));
+                var expiredDeleted = await db.Media
+                    .Where(x => x.Status == MediaStatus.Deleted && x.DeletedAt != null && x.DeletedAt <= deletedCutoff)
+                    .Take(_options.CleanupBatchSize)
+                    .ToListAsync(stoppingToken);
+                foreach (var media in expiredDeleted)
+                {
+                    if (await HasRelationshipsAsync(db, media.Id, stoppingToken)) continue;
+                    db.Media.Remove(media);
+                    await db.SaveChangesAsync(stoppingToken);
+                    MediaMetrics.RecordCleanupDeleted();
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -507,5 +661,24 @@ public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptio
         {
             return Array.Empty<MediaVariantResponse>();
         }
+    }
+
+    private static async Task<bool> HasRelationshipsAsync(ApplicationDbContext db, Guid mediaId, CancellationToken cancellationToken) =>
+        await db.BusinessMedia.AnyAsync(x => x.MediaId == mediaId, cancellationToken) ||
+        await db.ServiceMedia.AnyAsync(x => x.MediaId == mediaId, cancellationToken) ||
+        await db.LoyaltyProgramMedia.AnyAsync(x => x.MediaId == mediaId, cancellationToken) ||
+        await db.ReviewMedia.AnyAsync(x => x.MediaId == mediaId, cancellationToken);
+
+    private static async Task DeleteObjectsAsync(PunchedApi.Domain.Entities.Media media, IMediaUrlFactory urls, IObjectStore store, CancellationToken cancellationToken)
+    {
+        await store.DeleteAsync(ObjectStoreBucket.PrivateSource, media.SourceKey, cancellationToken);
+        var keys = DeserializeVariants(media.VariantsJson)
+            .Select(variant => urls.TryGetDeliveryKey(variant.Url))
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Select(key => key!)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        foreach (var key in keys)
+            await store.DeleteAsync(ObjectStoreBucket.PublicDelivery, key, cancellationToken);
     }
 }

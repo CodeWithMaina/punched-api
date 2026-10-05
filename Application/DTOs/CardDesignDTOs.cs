@@ -9,9 +9,8 @@ namespace PunchedApi.Application.DTOs;
 //
 //  Two authoring paths exist:
 //   • Admin-authored HTML templates (raw template authoring, plan §15).
-//   • Business-authored *structured configuration* (§5, §16) — a validated
-//     CardDesignConfig the server turns into a template through the same
-//     sanitizer + renderer pipeline. Businesses never submit raw HTML.
+//   • Business-authored HTML fragments or *structured configuration* (§5, §16).
+//     Both are validated/sanitized and saved through the same template renderer.
 // ═══════════════════════════════════════════════════════════════
 
 /// <summary>
@@ -196,9 +195,7 @@ public class PreviewCardDesignResponse
 
 /// <summary>
 /// POST /v1/card-designs/me/designs — a business creating its own branded design
-/// from a structured configuration. Raw HTML is deliberately not accepted here:
-/// businesses compose validated presentation config, the server generates the
-/// template through the shared sanitizer pipeline (§5, §16).
+/// from a sanitized HTML fragment or validated structured configuration (§5, §16).
 /// </summary>
 public class CreateBusinessCardDesignRequest
 {
@@ -208,6 +205,11 @@ public class CreateBusinessCardDesignRequest
     /// <summary>Structured presentation config. Null ⇒ the safe default design (§17).</summary>
     [JsonPropertyName("config")]
     public CardDesignConfig? Config { get; set; }
+
+    /// <summary>Optional raw HTML fragment; validated and sanitized before storage.</summary>
+    [MaxLength(50000)]
+    [JsonPropertyName("htmlTemplate")]
+    public string? HtmlTemplate { get; set; }
 
     /// <summary>Optional audit note recorded on the first design version.</summary>
     [MaxLength(500)]
@@ -224,6 +226,11 @@ public class UpdateBusinessCardDesignRequest
     /// <summary>New structured config. Omit to keep the current presentation.</summary>
     [JsonPropertyName("config")]
     public CardDesignConfig? Config { get; set; }
+
+    /// <summary>Optional raw HTML fragment; validated and sanitized before storage.</summary>
+    [MaxLength(50000)]
+    [JsonPropertyName("htmlTemplate")]
+    public string? HtmlTemplate { get; set; }
 
     /// <summary>Optional audit note recorded on the new design version.</summary>
     [MaxLength(500)]

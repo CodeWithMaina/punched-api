@@ -34,12 +34,19 @@ public static class CardDesignTemplate
 
         var colors = config.Colors;
         var frame = config.Frame;
+        var background = config.Background;
+        var backgroundValue = background.Type switch
+        {
+          "gradient" => $"linear-gradient(135deg,{background.Value},{colors.Primary})",
+          "color" => background.Value ?? colors.Surface,
+          _ => colors.Surface
+        };
 
         var sb = new StringBuilder();
 
         // ── Card surface ────────────────────────────────────
-        sb.Append("<section class=\"punched-card\" style=\"");
-        sb.Append("background-color:").Append(Attr(colors.Surface)).Append(';');
+        sb.Append("<section class=\"punched-card\" style=\"position:relative;overflow:hidden;background:")
+          .Append(Attr(backgroundValue)).Append(';');
         sb.Append("color:").Append(Attr(colors.Text)).Append(';');
         sb.Append("font-family:").Append(Attr(CardTypographyStacks.ToCssStack(config.Typography.Body))).Append(';');
         sb.Append("border-radius:").Append(frame.BorderRadius).Append("px;");
@@ -53,10 +60,12 @@ public static class CardDesignTemplate
         sb.Append("\">");
 
         AppendBackgroundLayer(sb, config);
+        sb.Append("<div style=\"position:relative;z-index:1\">");
         AppendHeader(sb, config);
         AppendProgress(sb, config);
         AppendStampGrid(sb, config);
         if (config.Layout.ShowRewardSection) AppendReward(sb, config);
+        sb.Append("</div>");
 
         sb.Append("</section>");
         return sb.ToString();
@@ -75,7 +84,7 @@ public static class CardDesignTemplate
 
         sb.Append("<img class=\"punched-card__background\" src=\"")
           .Append(Attr(CardAssetUrls.ContentPath(assetId)))
-          .Append("\" alt=\"\" style=\"width:100%;height:100%;object-fit:cover;opacity:0.15;border-radius:")
+          .Append("\" alt=\"\" style=\"position:absolute;inset:0;z-index:0;width:100%;height:100%;object-fit:cover;opacity:0.18;border-radius:")
           .Append(config.Frame.BorderRadius)
           .Append("px;\" />");
     }
@@ -92,12 +101,12 @@ public static class CardDesignTemplate
         }
 
         sb.Append("<div class=\"punched-card__identity\">");
-        sb.Append("<div class=\"punched-card__business\" style=\"font-family:\"")
+        sb.Append("<div class=\"punched-card__business\" style=\"font-family:")
           .Append(Attr(CardTypographyStacks.ToCssStack(config.Typography.Heading)))
           .Append(";font-size:18px;font-weight:600;color:")
           .Append(Attr(config.Colors.Secondary))
           .Append("\">{{business.name}}</div>");
-        sb.Append("<div class=\"punched-card__campaign\" style=\"font-size:12px;color:\"")
+        sb.Append("<div class=\"punched-card__campaign\" style=\"font-size:12px;color:")
           .Append(Attr(config.Colors.Secondary))
           .Append(";opacity:0.75\">{{campaign.name}}</div>");
         sb.Append("</div></header>");

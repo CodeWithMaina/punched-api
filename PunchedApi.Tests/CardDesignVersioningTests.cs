@@ -1,10 +1,13 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Design;
+using PunchedApi.Application.Programs;
 using PunchedApi.Application.Services;
 using PunchedApi.Domain.Entities;
+using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
 using PunchedApi.Infrastructure.Repositories;
 using Xunit;
@@ -115,6 +118,101 @@ public class CardDesignVersioningTests : IDisposable
     }
 
     // ── Version history (append-only) ──────────────────────
+
+    private LoyaltyService CreateLoyaltyService(StubModuleEntitlements? entitlements = null) => new(
+        _uow, _db, Mock.Of<IStampService>(), Mock.Of<IProgramRuleEngine>(), _service,
+        new CardDesignResolver(_uow, entitlements ?? _entitlements, NullLogger<CardDesignResolver>.Instance),
+        NullLogger<LoyaltyService>.Instance);
+
+    private async Task<LoyaltyProgram> SeedSelectedProgramAsync(Guid? designId)
+    {
+        var program = new LoyaltyProgram
+        {
+            Id = Guid.NewGuid(), BusinessId = _businessId, Name = "Selected rewards",
+            IsActive = true, Status = ProgramStatus.Active, StampsRequired = 6,
+            RewardDescription = "Free treatment", CardDesignId = designId,
+            CreatedAt = DateTime.UtcNow
+        };
+        _db.LoyaltyPrograms.Add(program);
+        await _db.SaveChangesAsync();
+        return program;
+    }
+
+    [Fact]
+    public async Task ProgramListings_UseSelectedDesign_WithRealBusinessRules_AndNoCustomerData()
+    {
+        var design = await _service.CreateDesignAsync(_businessId, new CreateCardDesignRequest
+        {
+            Name = "Selected business design",
+            HtmlTemplate = "<section>SELECTED {{business.name}} {{program.name}} {{card.completedStamps}} / {{card.totalStamps}} {{customer.name}}</section>"
+        }, _ownerId);
+        Assert.True(design.Success);
+        await SeedSelectedProgramAsync(design.Data!.Id);
+        var service = CreateLoyaltyService();
+
+        var publicPrograms = await service.GetBusinessProgramsAsync(_businessId, null, 1, 6);
+        var ownerPrograms = await service.GetBusinessProgramsAsync(_ownerId);
+        var publicProgram = Assert.Single(publicPrograms.Data!.Items);
+        var ownerProgram = Assert.Single(ownerPrograms.Data!);
+
+        Assert.False(publicProgram.CardDesignIsDefault);
+        Assert.Equal(design.Data.Id, publicProgram.CardDesignId);
+        Assert.Contains("SELECTED Design Cafe Selected rewards 0 / 6", publicProgram.CardDesignHtml);
+        Assert.DoesNotContain(CardPreviewSampleData.CustomerName, publicProgram.CardDesignHtml);
+        Assert.Equal(publicProgram.CardDesignHtml, ownerProgram.CardDesignHtml);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ProgramListings_FallBackToDefault_WhenCustomDesignIsNotAllowed(bool foreignDesign)
+    {
+        var design = await _service.CreateDesignAsync(foreignDesign ? _otherBusinessId : _businessId,
+            new CreateCardDesignRequest { Name = "Unavailable", HtmlTemplate = "<section>UNAVAILABLE CUSTOM DESIGN</section>" }, _ownerId);
+        Assert.True(design.Success);
+        await SeedSelectedProgramAsync(design.Data!.Id);
+        var service = foreignDesign ? CreateLoyaltyService() : CreateLoyaltyService(new StubModuleEntitlements());
+
+        var response = await service.GetBusinessProgramsAsync(_businessId, null, 1, 6);
+        var program = Assert.Single(response.Data!.Items);
+
+        Assert.True(program.CardDesignIsDefault);
+        Assert.Contains("Design Cafe", program.CardDesignHtml);
+        Assert.DoesNotContain("UNAVAILABLE CUSTOM DESIGN", program.CardDesignHtml);
+    }
+
+    [Fact]
+    public async Task CustomerAndOperatorCards_UseTheSameSelectedDesign_WithCustomerProgress()
+    {
+        var design = await _service.CreateDesignAsync(_businessId, new CreateCardDesignRequest
+        {
+            Name = "Progress design",
+            HtmlTemplate = "<section>LIVE DESIGN {{business.name}} {{customer.name}} {{card.completedStamps}} / {{card.totalStamps}}</section>"
+        }, _ownerId);
+        Assert.True(design.Success);
+        var program = await SeedSelectedProgramAsync(design.Data!.Id);
+        var customer = BookingTestBase.CreateCustomer();
+        var staff = BookingTestBase.CreateStaff(_businessId);
+        var card = new LoyaltyCard
+        {
+            Id = Guid.NewGuid(), CustomerId = customer.Id, BusinessId = _businessId,
+            ProgramId = program.Id, TotalStamps = 3, LifetimeStamps = 3, RequiredStamps = 6,
+            EnrolledAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
+        };
+        await BookingTestBase.SeedAsync(_db, customer, staff, card);
+        var service = CreateLoyaltyService();
+
+        var customerView = await service.GetCardByIdAsync(customer.Id, card.Id);
+        var ownerView = await service.GetCardByIdAsync(_ownerId, card.Id);
+        var staffView = await service.GetCardByIdAsync(staff.Id, card.Id);
+
+        Assert.True(customerView.Success);
+        Assert.True(ownerView.Success);
+        Assert.True(staffView.Success);
+        Assert.Contains("LIVE DESIGN Design Cafe Test Customer 3 / 6", customerView.Data!.CardDesignHtml);
+        Assert.Equal(customerView.Data.CardDesignHtml, ownerView.Data!.CardDesignHtml);
+        Assert.Equal(customerView.Data.CardDesignHtml, staffView.Data!.CardDesignHtml);
+    }
 
     [Fact]
     public async Task Create_RecordsVersionOne_WithConfigSnapshot()
