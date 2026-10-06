@@ -100,6 +100,7 @@ public interface IUnitOfWork : IDisposable
 
     IRepository<Media> Media { get; }
     IRepository<BusinessMedia> BusinessMedia { get; }
+    IRepository<BusinessLandingPageConfig> BusinessLandingPageConfigs { get; }
     IRepository<ServiceMedia> ServiceMedia { get; }
     IRepository<LoyaltyProgramMedia> LoyaltyProgramMedia { get; }
     IRepository<ReviewMedia> ReviewMedia { get; }

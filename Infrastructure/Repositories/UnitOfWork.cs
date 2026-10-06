@@ -46,6 +46,7 @@ public class UnitOfWork : IUnitOfWork
     private IRepository<CardAsset>? _cardAssets;
     private IRepository<Media>? _media;
     private IRepository<BusinessMedia>? _businessMedia;
+    private IRepository<BusinessLandingPageConfig>? _landingPageConfigs;
     private IRepository<ServiceMedia>? _serviceMedia;
     private IRepository<LoyaltyProgramMedia>? _loyaltyProgramMedia;
     private IRepository<ReviewMedia>? _reviewMedia;
@@ -177,6 +178,8 @@ public class UnitOfWork : IUnitOfWork
 
     public IRepository<Media> Media => _media ??= new Repository<Media>(_context);
     public IRepository<BusinessMedia> BusinessMedia => _businessMedia ??= new Repository<BusinessMedia>(_context);
+    public IRepository<BusinessLandingPageConfig> BusinessLandingPageConfigs =>
+        _landingPageConfigs ??= new Repository<BusinessLandingPageConfig>(_context);
     public IRepository<ServiceMedia> ServiceMedia => _serviceMedia ??= new Repository<ServiceMedia>(_context);
     public IRepository<LoyaltyProgramMedia> LoyaltyProgramMedia => _loyaltyProgramMedia ??= new Repository<LoyaltyProgramMedia>(_context);
     public IRepository<ReviewMedia> ReviewMedia => _reviewMedia ??= new Repository<ReviewMedia>(_context);

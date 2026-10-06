@@ -68,6 +68,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<ServiceMedia> ServiceMedia => Set<ServiceMedia>();
     public DbSet<LoyaltyProgramMedia> LoyaltyProgramMedia => Set<LoyaltyProgramMedia>();
     public DbSet<ReviewMedia> ReviewMedia => Set<ReviewMedia>();
+    public DbSet<BusinessLandingPageConfig> BusinessLandingPageConfigs => Set<BusinessLandingPageConfig>();
     public DbSet<StampCardRulesChange> StampCardRulesChanges => Set<StampCardRulesChange>();
     public DbSet<CustomerBusinessEnrollment> CustomerBusinessEnrollments => Set<CustomerBusinessEnrollment>();
     public DbSet<CustomerStampCard> CustomerStampCards => Set<CustomerStampCard>();

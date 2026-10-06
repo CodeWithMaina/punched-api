@@ -152,6 +152,7 @@ try
 
     builder.Services.AddScoped<IUserService, UserService>();
     builder.Services.AddScoped<IBusinessService, BusinessService>();
+    builder.Services.AddScoped<ILandingPageService, LandingPageService>();
 
     // Business subdomain URLs (java-house.punched.app): slug generation,
     // validation, and the one-time-per-boot legacy backfill.
