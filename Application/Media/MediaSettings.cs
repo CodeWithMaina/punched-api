@@ -76,13 +76,14 @@ public sealed class MediaLimitOptions
     {
         Purposes = new Dictionary<string, MediaPurposeLimit>(StringComparer.Ordinal)
         {
-            [MediaPurposes.UserAvatar] = new() { MinWidth = 256, MinHeight = 256, MaxBytes = 5_242_880, MaxWidth = 8_000, MaxHeight = 8_000, MaxPixels = 24_000_000 },
-            [MediaPurposes.BusinessLogo] = new() { MinWidth = 128, MinHeight = 128, MaxBytes = 5_242_880, MaxWidth = 8_000, MaxHeight = 8_000, MaxPixels = 24_000_000 },
-            [MediaPurposes.BusinessCover] = new() { MinWidth = 1200, MinHeight = 400, MaxBytes = 10_485_760, MaxWidth = 12_000, MaxHeight = 12_000, MaxPixels = 40_000_000 },
-            [MediaPurposes.BusinessGallery] = new() { MinWidth = 640, MinHeight = 640, MaxBytes = 12_582_912, MaxWidth = 12_000, MaxHeight = 12_000, MaxPixels = 40_000_000 },
-            [MediaPurposes.ServiceImage] = new() { MinWidth = 640, MinHeight = 426, MaxBytes = 8_388_608, MaxWidth = 10_000, MaxHeight = 10_000, MaxPixels = 30_000_000 },
+            // No minimum dimensions: the pipeline never upscales, so small images are stored as-is.
+            [MediaPurposes.UserAvatar] = new() { MaxBytes = 5_242_880, MaxWidth = 8_000, MaxHeight = 8_000, MaxPixels = 24_000_000 },
+            [MediaPurposes.BusinessLogo] = new() { MaxBytes = 5_242_880, MaxWidth = 8_000, MaxHeight = 8_000, MaxPixels = 24_000_000 },
+            [MediaPurposes.BusinessCover] = new() { MaxBytes = 10_485_760, MaxWidth = 12_000, MaxHeight = 12_000, MaxPixels = 40_000_000 },
+            [MediaPurposes.BusinessGallery] = new() { MaxBytes = 12_582_912, MaxWidth = 12_000, MaxHeight = 12_000, MaxPixels = 40_000_000 },
+            [MediaPurposes.ServiceImage] = new() { MaxBytes = 8_388_608, MaxWidth = 10_000, MaxHeight = 10_000, MaxPixels = 30_000_000 },
             [MediaPurposes.LoyaltyProgramImage] = new() { MaxBytes = 8_388_608, MaxWidth = 10_000, MaxHeight = 10_000, MaxPixels = 30_000_000 },
-            [MediaPurposes.ReviewImage] = new() { MinWidth = 480, MinHeight = 480, MaxBytes = 6_291_456, MaxWidth = 10_000, MaxHeight = 10_000, MaxPixels = 30_000_000 }
+            [MediaPurposes.ReviewImage] = new() { MaxBytes = 6_291_456, MaxWidth = 10_000, MaxHeight = 10_000, MaxPixels = 30_000_000 }
         }
     };
 }

@@ -129,6 +129,121 @@ public class AppointmentServiceTests
         Assert.False(badResult.Success);
         Assert.Equal("CUSTOMER_NOT_FOUND", badResult.Error?.Code);
     }
+
+    [Fact]
+    public async Task CreateAppointmentOnBehalfAsync_CustomerFromAnotherBusiness_ReturnsCustomerNotFound()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        var env = await CreateEnvAsync(connection);
+        using var context = env.Context;
+
+        // Business B with its own customer enrolled only there.
+        var otherOwner = BookingTestBase.CreateOwner("other@test.com");
+        var otherBusiness = BookingTestBase.CreateBusiness(otherOwner.Id, "Other");
+        var otherCustomer = BookingTestBase.CreateCustomer("other-customer@test.com");
+        await BookingTestBase.SeedAsync(context, otherOwner, otherBusiness, otherCustomer,
+            new CustomerBusinessEnrollment
+            {
+                Id = Guid.NewGuid(), CustomerId = otherCustomer.Id, BusinessId = otherBusiness.Id,
+                Status = CustomerBusinessEnrollmentStatus.Active, Source = "test",
+                EnrolledAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
+            });
+
+        // Booking into Business A with Business B's customer must be rejected
+        // (IDOR): the customer id is real, but not enrolled in this business.
+        var crossBusiness = new CreateAppointmentOnBehalfRequest
+        {
+            BusinessId = env.Business.Id,
+            ServiceIds = new[] { env.S1.Id },
+            StaffUserId = env.Staff.Id,
+            ScheduledAt = Ten,
+            CustomerId = otherCustomer.Id
+        };
+        var crossResult = await env.Service.CreateAppointmentOnBehalfAsync(env.Owner.Id, "Business", crossBusiness);
+        Assert.False(crossResult.Success);
+        Assert.Equal("CUSTOMER_NOT_FOUND", crossResult.Error?.Code);
+
+        // Sanity: Business A's own customer still books fine.
+        var own = new CreateAppointmentOnBehalfRequest
+        {
+            BusinessId = env.Business.Id,
+            ServiceIds = new[] { env.S1.Id },
+            StaffUserId = env.Staff.Id,
+            ScheduledAt = Ten,
+            CustomerId = env.Customer.Id
+        };
+        var ownResult = await env.Service.CreateAppointmentOnBehalfAsync(env.Owner.Id, "Business", own);
+        Assert.True(ownResult.Success, ownResult.Error?.Message);
+    }
+
+    [Fact]
+    public async Task CreateAppointmentOnBehalfAsync_CrossBusinessService_ReturnsServiceNotFound()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        var env = await CreateEnvAsync(connection);
+        using var context = env.Context;
+
+        var otherOwner = BookingTestBase.CreateOwner("other@test.com");
+        var otherBusiness = BookingTestBase.CreateBusiness(otherOwner.Id, "Other");
+        var otherService = BookingTestBase.CreateService(otherBusiness.Id, "Other Cut", 60, 999m);
+        await BookingTestBase.SeedAsync(context, otherOwner, otherBusiness, otherService);
+
+        // A service id from Business B must never be injectable into a
+        // Business A booking, even when every other field targets Business A.
+        var request = new CreateAppointmentOnBehalfRequest
+        {
+            BusinessId = env.Business.Id,
+            ServiceIds = new[] { otherService.Id },
+            StaffUserId = env.Staff.Id,
+            ScheduledAt = Ten,
+            CustomerId = env.Customer.Id
+        };
+        var result = await env.Service.CreateAppointmentOnBehalfAsync(env.Owner.Id, "Business", request);
+        Assert.False(result.Success);
+        Assert.Equal("SERVICE_NOT_FOUND", result.Error?.Code);
+    }
+
+    [Fact]
+    public async Task CreateAppointmentOnBehalfAsync_DuplicateServiceIds_ReturnsValidationError()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        var env = await CreateEnvAsync(connection);
+        using var context = env.Context;
+
+        var request = new CreateAppointmentOnBehalfRequest
+        {
+            BusinessId = env.Business.Id,
+            ServiceIds = new[] { env.S1.Id, env.S1.Id },
+            StaffUserId = env.Staff.Id,
+            ScheduledAt = Ten,
+            CustomerId = env.Customer.Id
+        };
+        var result = await env.Service.CreateAppointmentOnBehalfAsync(env.Owner.Id, "Business", request);
+        Assert.False(result.Success);
+        Assert.Equal("VALIDATION_ERROR", result.Error?.Code);
+    }
+
+    [Fact]
+    public async Task CreateAppointmentOnBehalfAsync_MultipleServices_SucceedsWithSummedDuration()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        var env = await CreateEnvAsync(connection);
+        using var context = env.Context;
+
+        var request = new CreateAppointmentOnBehalfRequest
+        {
+            BusinessId = env.Business.Id,
+            ServiceIds = new[] { env.S1.Id, env.S2.Id },
+            StaffUserId = env.Staff.Id,
+            ScheduledAt = Ten,
+            CustomerId = env.Customer.Id
+        };
+        var result = await env.Service.CreateAppointmentOnBehalfAsync(env.Owner.Id, "Business", request);
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(2, result.Data!.Services.Count);
+        // 60 + 30 minutes per the seeded catalogue rows.
+        Assert.Equal(Ten.AddMinutes(90), result.Data!.EndAt);
+    }
 [Fact]
     public async Task CreateAppointmentOnBehalfAsync_StaffNotAssignedAllServices_ReturnsStaffNotAvailable()
     {

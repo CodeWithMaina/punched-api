@@ -221,6 +221,16 @@ public class AppointmentService : IAppointmentService
         if (customer == null)
             return ApiResponse<AppointmentResponse>.Fail("CUSTOMER_NOT_FOUND", "Customer not found.");
 
+        // Strict business-level isolation: the customer must hold an active
+        // enrollment in the booked business. Any real customer id from another
+        // business must never be injectable into an on-behalf booking (IDOR).
+        var enrolled = await _context.CustomerBusinessEnrollments.AnyAsync(e =>
+            e.CustomerId == request.CustomerId &&
+            e.BusinessId == businessId &&
+            e.Status == CustomerBusinessEnrollmentStatus.Active);
+        if (!enrolled)
+            return ApiResponse<AppointmentResponse>.Fail("CUSTOMER_NOT_FOUND", "Customer not found.");
+
         var (staff, staffError, staffMsg) = await ResolveStaffAsync(businessId, request.StaffUserId, request.ServiceIds);
         if (staffError != null)
             return ApiResponse<AppointmentResponse>.Fail(staffError, staffMsg!);
@@ -1128,6 +1138,11 @@ public class AppointmentService : IAppointmentService
     {
         if (serviceIds == null || serviceIds.Length == 0)
             return (new List<ServiceCatalogItem>(), "VALIDATION_ERROR", "At least one service is required.");
+
+        // Duplicates are a client bug, not extra line items: reject so pricing
+        // and duration can never be inflated by repeating the same service id.
+        if (serviceIds.Distinct().Count() != serviceIds.Length)
+            return (new List<ServiceCatalogItem>(), "VALIDATION_ERROR", "Duplicate services are not allowed.");
 
         var distinctRequested = serviceIds.Distinct().ToArray();
         var services = await _context.ServiceCatalogItems

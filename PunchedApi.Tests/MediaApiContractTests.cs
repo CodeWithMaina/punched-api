@@ -40,8 +40,7 @@ public sealed class MediaApiContractTests
     {
         var limits = MediaLimitOptions.CreateDefaults();
         Assert.Equal(5_242_880, limits.Purposes[MediaPurposes.UserAvatar].MaxBytes);
-        Assert.Equal(256, limits.Purposes[MediaPurposes.UserAvatar].MinWidth);
-        Assert.Equal(1_200, limits.Purposes[MediaPurposes.BusinessCover].MinWidth);
+        Assert.All(limits.Purposes.Values, limit => Assert.True(limit.MinWidth <= 1 && limit.MinHeight <= 1));
         Assert.Equal(10_000, limits.Purposes[MediaPurposes.ServiceImage].MaxWidth);
         Assert.Equal(6_291_456, limits.Purposes[MediaPurposes.ReviewImage].MaxBytes);
     }
