@@ -73,6 +73,8 @@ public sealed class ServiceImageVariantResponse
 
 /// <summary>
 /// A staff member eligible to perform a set of services (public booking view).
+/// Only identity plus the publicly authorized contact number — never internal
+/// metrics (appointments/stamps/goals/activity), which stay owner-scoped.
 /// </summary>
 public class EligibleStaffResponse
 {
@@ -84,6 +86,13 @@ public class EligibleStaffResponse
 
     [JsonPropertyName("avatarUrl")]
     public string? AvatarUrl { get; set; }
+
+    /// <summary>
+    /// Publicly authorized contact number so customers can call if they wish.
+    /// Null when the business/staff member has not shared one.
+    /// </summary>
+    [JsonPropertyName("phoneNumber")]
+    public string? PhoneNumber { get; set; }
 }
 
 /// <summary>

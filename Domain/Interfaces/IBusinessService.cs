@@ -30,6 +30,7 @@ public interface IBusinessService
         Guid ownerId,
         string? search,
         string? status,
+        Guid? programId,
         DateOnly? enrolledFrom,
         DateOnly? enrolledTo,
         string sortBy,

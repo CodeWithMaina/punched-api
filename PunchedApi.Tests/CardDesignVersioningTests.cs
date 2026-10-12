@@ -162,6 +162,39 @@ public class CardDesignVersioningTests : IDisposable
         Assert.Equal(publicProgram.CardDesignHtml, ownerProgram.CardDesignHtml);
     }
 
+    [Fact]
+    public async Task ProgramCardsEndpoint_ServesCardsAlone_AndDetailsStayPerCard()
+    {
+        var design = await _service.CreateDesignAsync(_businessId, new CreateCardDesignRequest
+        {
+            Name = "Cards endpoint design",
+            HtmlTemplate = "<section>CARDS {{program.name}} {{business.name}}</section>"
+        }, _ownerId);
+        Assert.True(design.Success);
+        var program = await SeedSelectedProgramAsync(design.Data!.Id);
+        var service = CreateLoyaltyService();
+
+        // Cards alone: art + core fields, ready for the rail/carousel.
+        var cards = await service.GetBusinessProgramCardsAsync(_ownerId);
+        var card = Assert.Single(cards.Data!);
+        Assert.Equal(program.Id, card.Id);
+        Assert.Equal("Selected rewards", card.Name);
+        Assert.Contains("CARDS Selected rewards", card.CardDesignHtml);
+
+        // Dedicated route, identical payload — the card section's fetch is
+        // independent of (and never bundled with) the details fetch.
+        var list = await service.GetBusinessProgramsAsync(_ownerId);
+        var listed = Assert.Single(list.Data!);
+        Assert.Equal(card.Id, listed.Id);
+        Assert.Equal(card.CardDesignHtml, listed.CardDesignHtml);
+
+        // Details remain a separate, per-card call (metrics + summary).
+        var detail = await service.GetProgramDetailAsync(_ownerId, program.Id);
+        Assert.True(detail.Success);
+        Assert.Equal(program.Id, detail.Data!.Program.Id);
+        Assert.Equal(0, detail.Data.ActiveCustomers);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

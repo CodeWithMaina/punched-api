@@ -6,6 +6,14 @@ public interface ILoyaltyService
 {
     // Business program management
     Task<ApiResponse<List<LoyaltyProgramResponse>>> GetBusinessProgramsAsync(Guid ownerId);
+
+    /// <summary>
+    /// Cards ALONE for the card surfaces (desktop rail, mobile carousel,
+    /// program list): card art + core fields, never metrics. Live metrics
+    /// belong to <see cref="GetProgramDetailAsync"/>, fetched per
+    /// active/tapped card instead of with the list.
+    /// </summary>
+    Task<ApiResponse<List<LoyaltyProgramResponse>>> GetBusinessProgramCardsAsync(Guid ownerId);
     Task<ApiResponse<LoyaltyProgramResponse>> GetBusinessProgramAsync(Guid ownerId, Guid programId);
     Task<ApiResponse<LoyaltyProgramResponse>> CreateProgramAsync(Guid ownerId, CreateLoyaltyProgramRequest request);
     Task<ApiResponse<LoyaltyProgramResponse>> UpdateProgramAsync(Guid ownerId, Guid programId, UpdateLoyaltyProgramRequest request);

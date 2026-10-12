@@ -216,9 +216,14 @@ public partial class BusinessService : IBusinessService
 
     public async Task<ApiResponse<BusinessResponse>> GetMyBusinessAsync(Guid ownerId)
     {
+        // Hot dashboard path (the shell calls this on every page). Only the
+        // ACTIVE loyalty program is ever consumed by the client — the plural
+        // `loyaltyPrograms` array is used solely as a redundant fallback behind
+        // the single active `loyaltyProgram` on the enrollment poster. A filtered
+        // include avoids materializing/serializing every draft/paused program.
         var business = await _context.Businesses
             .AsNoTracking()
-            .Include(b => b.LoyaltyPrograms)
+            .Include(b => b.LoyaltyPrograms.Where(p => p.IsActive))
             .Include(b => b.ReferralProgram)
             .FirstOrDefaultAsync(b => b.OwnerId == ownerId);
 
@@ -407,6 +412,7 @@ public partial class BusinessService : IBusinessService
         Guid ownerId,
         string? search,
         string? status,
+        Guid? programId,
         DateOnly? enrolledFrom,
         DateOnly? enrolledTo,
         string sortBy,
@@ -428,6 +434,17 @@ public partial class BusinessService : IBusinessService
                 on new { e.CustomerId, e.BusinessId } equals new { c.CustomerId, c.BusinessId } into cards
             from c in cards.DefaultIfEmpty()
             select new { e, c };
+
+        // Program scoping: BOTH predicates must hold for a roster row — the
+        // enrollment above already pins customers to THIS business, and a
+        // program id additionally requires a loyalty card in that program
+        // (i.e., the customer joined it). Without a program id the endpoint
+        // keeps its business-wide behaviour (customer roster, CSV export).
+        if (programId.HasValue)
+        {
+            var wantedProgramId = programId.Value;
+            baseQuery = baseQuery.Where(x => x.c != null && x.c.ProgramId == wantedProgramId);
+        }
 
         // Default roster shows active members only; status filter can widen it.
         if (string.IsNullOrWhiteSpace(status) || status.ToLowerInvariant() == "enrolled")

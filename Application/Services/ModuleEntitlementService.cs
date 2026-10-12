@@ -78,25 +78,70 @@ public class ModuleEntitlementService : IModuleEntitlementService
     {
         var result = new ModuleEntitlementResult();
 
+        // Project only the fields entitlement resolution actually needs from the
+        // subscription → plan → plan-modules graph (plan key/name + the set of
+        // granted module ids). No entity tracking, no Module rows loaded through
+        // the plan (we already load the active catalog separately below), and a
+        // single round trip instead of the previous AsSplitQuery fan-out.
         var subscription = await _context.BusinessSubscriptions
-            .Include(s => s.Plan)
-            .ThenInclude(p => p.PlanModules)
-            .ThenInclude(pm => pm.Module)
-            .AsSplitQuery()
-            .FirstOrDefaultAsync(s => s.BusinessId == businessId &&
-                (s.Status == "active" || s.Status == "trial"));
+            .AsNoTracking()
+            .Where(s => s.BusinessId == businessId &&
+                (s.Status == "active" || s.Status == "trial"))
+            .Select(s => new
+            {
+                s.Status,
+                s.EndsAt,
+                PlanKey = s.Plan.Key,
+                PlanName = s.Plan.Name,
+                PlanModuleIds = s.Plan.PlanModules.Select(pm => pm.ModuleId).ToList()
+            })
+            .FirstOrDefaultAsync();
 
-        result.CurrentPlan = subscription?.Plan;
-        result.SubscriptionEndsAt = subscription?.EndsAt;
-        result.SubscriptionStatus = subscription?.Status;
+        if (subscription != null)
+        {
+            result.CurrentPlan = new SubscriptionPlan
+            {
+                Key = subscription.PlanKey,
+                Name = subscription.PlanName
+            };
+            result.SubscriptionEndsAt = subscription.EndsAt;
+            result.SubscriptionStatus = subscription.Status;
+        }
 
         var subscriptionActive = subscription != null &&
             (subscription.Status == "active" || subscription.Status == "trial") &&
             (!subscription.EndsAt.HasValue || subscription.EndsAt > DateTime.UtcNow);
 
-        var allModules = await _context.Modules.Where(m => m.IsActive).ToListAsync();
-        var businessOverrides = await _context.BusinessModules.Where(bm => bm.BusinessId == businessId).ToListAsync();
-        var planModuleIds = subscription?.Plan.PlanModules.Select(pm => pm.ModuleId).ToHashSet() ?? new HashSet<Guid>();
+        var planModuleIds = subscription?.PlanModuleIds.ToHashSet() ?? new HashSet<Guid>();
+
+        // Active module catalog — read-only, no tracking, only the columns the
+        // entitlement projection consumes.
+        var allModules = await _context.Modules
+            .AsNoTracking()
+            .Where(m => m.IsActive)
+            .Select(m => new
+            {
+                m.Id,
+                m.Key,
+                m.Name,
+                m.Description,
+                m.IsCore,
+                m.DependenciesJson
+            })
+            .ToListAsync();
+
+        // Per-business overrides — read-only, projected to the few columns used.
+        var businessOverrides = await _context.BusinessModules
+            .AsNoTracking()
+            .Where(bm => bm.BusinessId == businessId)
+            .Select(bm => new
+            {
+                bm.ModuleId,
+                bm.IsEnabled,
+                bm.Source,
+                bm.Reason
+            })
+            .ToListAsync();
 
         foreach (var module in allModules)
         {

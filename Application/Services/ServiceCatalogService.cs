@@ -333,7 +333,8 @@ public class ServiceCatalogService : IServiceCatalogService
             {
                 UserId = u.Id,
                 FullName = u.FullName,
-                AvatarUrl = u.AvatarUrl
+                AvatarUrl = u.AvatarUrl,
+                PhoneNumber = u.PhoneNumber
             })
             .ToList());
     }

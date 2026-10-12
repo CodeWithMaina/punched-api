@@ -757,16 +757,25 @@ public class AuthService : IAuthService
     {
         try
         {
-            var userAuth = await _unitOfWork.UserAuths.GetByIdAsync(userAuthId);
-            if (userAuth == null)
+            // Read-only, projected: we only need the auth email to locate the
+            // profile row. AsNoTracking + single-column projection avoids
+            // loading (and change-tracking) the full UserAuth entity — password
+            // hash, refresh tokens, lockout state — on this hot path.
+            var authEmails = await _unitOfWork.UserAuths
+                .SelectNoTrackingAsync(a => a.Id == userAuthId, a => a.Email);
+            var authEmail = authEmails.Count > 0 ? authEmails[0] : null;
+            if (string.IsNullOrEmpty(authEmail))
             {
                 return ApiResponse<UserProfileResponse>.Fail(
                     "USER_NOT_FOUND",
                     "User not found.");
             }
 
+            // Read-only profile projection: no change tracking, only the columns
+            // the mapper needs. The two lookups are inherently sequential (the
+            // User row is found by the UserAuth email), so no parallelization.
             var user = await _unitOfWork.Users
-                .FirstOrDefaultAsync(u => u.Email == userAuth.Email);
+                .FirstOrDefaultNoTrackingAsync(u => u.Email == authEmail);
 
             if (user == null)
             {

@@ -18,8 +18,10 @@ namespace PunchedApi.API.Controllers;
 public partial class BusinessController
 {
     /// <summary>
-    /// Get all customers enrolled in the authenticated business's loyalty program.
-    /// Results are scoped strictly to the business — no cross-tenant access.
+    /// Get customers of the authenticated business, optionally scoped to a
+    /// single loyalty program: with <c>programId</c>, only customers who
+    /// joined that program are returned. Results are scoped strictly to the
+    /// business — no cross-tenant access.
     /// </summary>
     [RequireModule("customers")]
     [HttpGet("me/customers")]
@@ -28,6 +30,7 @@ public partial class BusinessController
     public async Task<IActionResult> GetMyCustomers(
         [FromQuery] string? search,
         [FromQuery] string? status,
+        [FromQuery] Guid? programId,
         [FromQuery] DateOnly? enrolledFrom,
         [FromQuery] DateOnly? enrolledTo,
         [FromQuery] string sortBy = "recent",
@@ -44,7 +47,7 @@ public partial class BusinessController
         page = Math.Max(page, 1);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var result = await _businessService.GetBusinessCustomersAsync(
-            userId.Value, search, status, enrolledFrom, enrolledTo, sortBy, sortDirection, page, pageSize);
+            userId.Value, search, status, programId, enrolledFrom, enrolledTo, sortBy, sortDirection, page, pageSize);
         return Ok(result);
     }
 
@@ -143,7 +146,7 @@ public partial class BusinessController
         if (userId == null) return Unauthorized();
 
         var result = await _businessService.GetBusinessCustomersAsync(
-            userId.Value, search, null, null, null, "recent", "desc", 1, 100);
+            userId.Value, search, null, null, null, null, "recent", "desc", 1, 100);
         if (!result.Success) return BadRequest(result);
 
         var sb = new System.Text.StringBuilder();
@@ -180,7 +183,7 @@ public partial class BusinessController
         for (var page = 2; page <= totalPages; page++)
         {
             result = await _businessService.GetBusinessCustomersAsync(
-                userId.Value, search, null, null, null, "recent", "desc", page, ExportPageSize);
+                userId.Value, search, null, null, null, null, "recent", "desc", page, ExportPageSize);
             if (!result.Success || result.Data == null) break;
             AppendPage(result.Data.Items);
         }

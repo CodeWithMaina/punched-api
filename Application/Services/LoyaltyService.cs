@@ -174,6 +174,18 @@ public class LoyaltyService : ILoyaltyService
         return ApiResponse<List<LoyaltyProgramResponse>>.Ok(responses);
     }
 
+    /// <summary>
+    /// GET /programs/me/cards — the CARDS ALONE payload for the card
+    /// surfaces (rail, carousel, program list). Same card-face data as the
+    /// general list (which has never carried metrics): the dedicated route
+    /// exists so the card section has its own endpoint + client cache key
+    /// and fetches exactly once per visit, while live metrics stay
+    /// exclusively on GET /programs/me/{id}/details — one request per
+    /// active/tapped card.
+    /// </summary>
+    public Task<ApiResponse<List<LoyaltyProgramResponse>>> GetBusinessProgramCardsAsync(Guid ownerId)
+        => GetBusinessProgramsAsync(ownerId);
+
     public async Task<ApiResponse<LoyaltyProgramResponse>> GetBusinessProgramAsync(Guid ownerId, Guid programId)
     {
         var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);

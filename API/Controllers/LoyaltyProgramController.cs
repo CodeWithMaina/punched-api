@@ -39,6 +39,24 @@ public class LoyaltyProgramController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// The business's programs as CARDS alone (art + core fields) for the
+    /// card surfaces — desktop rail, mobile carousel, program list. No
+    /// metrics: those live on <c>me/{id}/details</c>, fetched per
+    /// active/tapped card, so the cards are requested once and each
+    /// program's details are requested separately when it becomes active.
+    /// </summary>
+    [HttpGet("me/cards")]
+    [ProducesResponseType(typeof(ApiResponse<List<LoyaltyProgramResponse>>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetMyProgramCards()
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+        var result = await _loyaltyService.GetBusinessProgramCardsAsync(userId.Value);
+        if (!result.Success) return NotFound(result);
+        return Ok(result);
+    }
+
     /// <summary>Get one loyalty program owned by the authenticated business.</summary>
     [HttpGet("me/{id:guid}")]
     [ProducesResponseType(typeof(ApiResponse<LoyaltyProgramResponse>), StatusCodes.Status200OK)]
