@@ -73,6 +73,8 @@ public sealed class MediaController : ControllerBase
     public Task<IActionResult> AttachGallery([FromBody] AttachGalleryMediaRequest request, CancellationToken cancellationToken) => HandleAttachGallery(request, cancellationToken);
     [HttpGet("business/gallery")]
     public Task<IActionResult> GetGallery(CancellationToken cancellationToken) => HandleGetGallery(cancellationToken);
+    [HttpGet("business/gallery/capacity")]
+    public Task<IActionResult> GetGalleryCapacity(CancellationToken cancellationToken) => HandleGetGalleryCapacity(cancellationToken);
     [HttpPatch("business/gallery/order")]
     public Task<IActionResult> ReorderGallery([FromBody] ReorderGalleryMediaRequest request, CancellationToken cancellationToken) => HandleReorderGallery(request, cancellationToken);
     [HttpDelete("business/gallery/{mediaId:guid}")]
@@ -102,6 +104,8 @@ public sealed class MediaController : ControllerBase
     { var id = UserId(); return id == null ? Unauthorized() : Map(await _media.AttachGalleryAsync(id.Value, request.MediaId, request.SortOrder, request.Featured, ct)); }
     private async Task<IActionResult> HandleGetGallery(CancellationToken ct)
     { var id = UserId(); return id == null ? Unauthorized() : Map(await _media.GetBusinessGalleryAsync(id.Value, ct)); }
+    private async Task<IActionResult> HandleGetGalleryCapacity(CancellationToken ct)
+    { var id = UserId(); return id == null ? Unauthorized() : Map(await _media.GetBusinessGalleryCapacityAsync(id.Value, ct)); }
     private async Task<IActionResult> HandleReorderGallery(ReorderGalleryMediaRequest request, CancellationToken ct)
     { var id = UserId(); return id == null ? Unauthorized() : Map(await _media.ReorderGalleryAsync(id.Value, request.MediaIds, ct)); }
     private async Task<IActionResult> HandleAttachService(Guid serviceId, AttachRelationshipMediaRequest request, CancellationToken ct)
@@ -120,7 +124,7 @@ public sealed class MediaController : ControllerBase
         {
             "FORBIDDEN" => StatusCode(StatusCodes.Status403Forbidden, result),
             "MEDIA_NOT_FOUND" or "TARGET_NOT_FOUND" => NotFound(result),
-            "IDEMPOTENCY_CONFLICT" or "MEDIA_STATE_CONFLICT" => Conflict(result),
+            "IDEMPOTENCY_CONFLICT" or "MEDIA_STATE_CONFLICT" or "MEDIA_QUOTA_EXCEEDED" => Conflict(result),
             "UNSUPPORTED_MEDIA_TYPE" => StatusCode(StatusCodes.Status415UnsupportedMediaType, result),
             "MEDIA_TOO_LARGE" or "MEDIA_SIZE_MISMATCH" => StatusCode(StatusCodes.Status413PayloadTooLarge, result),
             _ => BadRequest(result)

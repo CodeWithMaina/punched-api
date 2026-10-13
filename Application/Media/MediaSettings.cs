@@ -20,6 +20,13 @@ public sealed class MediaStorageOptions
     public int CleanupBatchSize { get; set; } = 25;
     public int WorkerBatchSize { get; set; } = 4;
     public List<int> VariantWidths { get; set; } = [320, 640, 1280];
+    /// <summary>
+    /// Maximum number of business-gallery attachments per business. Enforced atomically on
+    /// attach (business-scoped). A value &lt;= 0 disables the limit (unlimited). This is a
+    /// product default, not a subscription entitlement: it is a single global configuration
+    /// value with no per-tier differentiation.
+    /// </summary>
+    public int MaxGalleryImages { get; set; } = 30;
     public MediaProcessingOptions Processing { get; set; } = new();
     public MediaRetentionOptions Retention { get; set; } = new();
     public MediaLimitOptions Limits { get; set; } = MediaLimitOptions.CreateDefaults();
@@ -30,6 +37,7 @@ public sealed class MediaStorageOptions
         if (PendingRowExpirationMinutes < 1 || PendingObjectLifecycleHours < 1) throw new InvalidOperationException("Media pending expiry must be positive.");
         if (Processing.LeaseMinutes < 1 || Processing.LeaseHeartbeatMinutes < 1 || Processing.LeaseHeartbeatMinutes >= Processing.LeaseMinutes) throw new InvalidOperationException("Media lease heartbeat must be positive and shorter than the lease.");
         if (Processing.MaxAttempts < 1) throw new InvalidOperationException("Media processing attempts must be positive.");
+        if (MaxGalleryImages < 0) throw new InvalidOperationException("MediaStorage:MaxGalleryImages must be zero or greater (0 = unlimited).");
         if (Limits.SupportedInputMimeTypes.Length == 0) throw new InvalidOperationException("At least one input MIME type is required.");
         foreach (var purpose in Limits.Purposes.Values)
             if (purpose.MaxBytes < 1 || purpose.MaxWidth < 1 || purpose.MaxHeight < 1 || purpose.MaxPixels < 1)

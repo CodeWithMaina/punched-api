@@ -49,14 +49,32 @@ public sealed partial class MediaService
 
     public async Task<ApiResponse<MediaResponse>> GetPublicProjectionAsync(Guid mediaId, CancellationToken cancellationToken)
     {
+        // MEASUREMENT: timed inside the service so it covers the read plus projection only,
+        // not ASP.NET middleware. Outcome is tagged so cache-miss/not-found costs are visible.
+        var startedAt = DateTime.UtcNow;
         var media = await _db.Media.AsNoTracking().FirstOrDefaultAsync(x => x.Id == mediaId, cancellationToken);
-        if (media == null) return Fail<MediaResponse>("MEDIA_NOT_FOUND", "The media could not be found.");
-        if (media.Status != MediaStatus.Ready) return ApiResponse<MediaResponse>.Ok(Map(media));
+        if (media == null)
+        {
+            MediaMetrics.RecordRetrievalDuration(DateTime.UtcNow - startedAt, "unknown", "not_found");
+            return Fail<MediaResponse>("MEDIA_NOT_FOUND", "The media could not be found.");
+        }
+        // Each branch records its own outcome so the histogram separates "delivered variants"
+        // from "not ready yet" and "gated review image", which have very different costs.
+        if (media.Status != MediaStatus.Ready)
+        {
+            MediaMetrics.RecordRetrievalDuration(DateTime.UtcNow - startedAt, media.Purpose, "not_ready");
+            return ApiResponse<MediaResponse>.Ok(Map(media));
+        }
         if (media.Purpose == MediaPurposes.ReviewImage)
         {
             var published = await (from rm in _db.ReviewMedia.AsNoTracking() join r in _db.Reviews.AsNoTracking() on rm.ReviewId equals r.Id where rm.MediaId == mediaId && r.Status == ReviewStatuses.Published select rm.Id).AnyAsync(cancellationToken);
-            if (!published) return ApiResponse<MediaResponse>.Ok(new MediaResponse { Id = media.Id, Purpose = media.Purpose, Status = media.Status.ToString(), Visibility = MediaVisibility.Private.ToString(), CreatedAt = media.CreatedAt, UpdatedAt = media.UpdatedAt });
+            if (!published)
+            {
+                MediaMetrics.RecordRetrievalDuration(DateTime.UtcNow - startedAt, media.Purpose, "gated");
+                return ApiResponse<MediaResponse>.Ok(new MediaResponse { Id = media.Id, Purpose = media.Purpose, Status = media.Status.ToString(), Visibility = MediaVisibility.Private.ToString(), CreatedAt = media.CreatedAt, UpdatedAt = media.UpdatedAt });
+            }
         }
+        MediaMetrics.RecordRetrievalDuration(DateTime.UtcNow - startedAt, media.Purpose, "success");
         return ApiResponse<MediaResponse>.Ok(Map(media));
     }
 
@@ -76,13 +94,61 @@ public sealed partial class MediaService
         var media = await RequireOwnedBusinessMediaAsync(userId, mediaId, MediaPurposes.BusinessGallery, cancellationToken);
         if (!media.Success) return Fail<BusinessMediaResponse>(media.Error!.Code, media.Error.Message);
         if (media.Data!.Status != MediaStatus.Ready) return Fail<BusinessMediaResponse>("MEDIA_NOT_READY", "Only ready media can be attached.");
-        var businessId = (await _businessContext.GetBusinessIdAsync())!.Value;
-        if (featured) await _db.BusinessMedia.Where(x => x.BusinessId == businessId).ExecuteUpdateAsync(s => s.SetProperty(x => x.IsFeatured, false), cancellationToken);
+        var businessId = await _businessContext.GetBusinessIdAsync();
+        if (!businessId.HasValue || _businessContext.GetRole() is not ("Business" or "Staff"))
+            return Fail<BusinessMediaResponse>("FORBIDDEN", "Business media management is not authorized.");
+
+        // Serialize concurrent attaches for the same business so the capacity check and the
+        // insert cannot interleave (Postgres row lock; skipped for non-relational test providers).
+        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+        await LockBusinessForUpdateAsync(businessId.Value, cancellationToken);
+
         var row = await _db.BusinessMedia.FirstOrDefaultAsync(x => x.BusinessId == businessId && x.MediaId == mediaId, cancellationToken);
-        if (row == null) _db.BusinessMedia.Add(row = new BusinessMedia { BusinessId = businessId, MediaId = mediaId, SortOrder = sortOrder ?? 0, IsFeatured = featured });
+        // Idempotency: an already-attached image updates in place and never consumes capacity.
+        if (row == null && !await HasGalleryCapacityAsync(businessId.Value, cancellationToken))
+            return Fail<BusinessMediaResponse>("MEDIA_QUOTA_EXCEEDED", $"The gallery is limited to {_options.MaxGalleryImages} images. Remove an image before adding another.");
+
+        if (featured) await _db.BusinessMedia.Where(x => x.BusinessId == businessId).ExecuteUpdateAsync(s => s.SetProperty(x => x.IsFeatured, false), cancellationToken);
+        if (row == null) _db.BusinessMedia.Add(row = new BusinessMedia { BusinessId = businessId.Value, MediaId = mediaId, SortOrder = sortOrder ?? 0, IsFeatured = featured });
         else { row.SortOrder = sortOrder ?? row.SortOrder; row.IsFeatured = featured; }
         await _db.SaveChangesAsync(cancellationToken);
-        return ApiResponse<BusinessMediaResponse>.Ok(new BusinessMediaResponse { BusinessId = businessId, MediaId = mediaId, Role = "Gallery", SortOrder = row.SortOrder, Featured = row.IsFeatured, Media = Map(media.Data) });
+        await transaction.CommitAsync(cancellationToken);
+        return ApiResponse<BusinessMediaResponse>.Ok(new BusinessMediaResponse { BusinessId = businessId.Value, MediaId = mediaId, Role = "Gallery", SortOrder = row.SortOrder, Featured = row.IsFeatured, Media = Map(media.Data) });
+    }
+
+    /// <summary>
+    /// True when the gallery can accept one more attachment. Unlimited when
+    /// <see cref="MediaStorageOptions.MaxGalleryImages"/> &lt;= 0. Counts attachment rows for
+    /// the business only (not orphaned media objects in storage), so a detach frees capacity.
+    /// </summary>
+    private async Task<bool> HasGalleryCapacityAsync(Guid businessId, CancellationToken cancellationToken)
+    {
+        if (_options.MaxGalleryImages <= 0) return true;
+        var used = await _db.BusinessMedia.CountAsync(x => x.BusinessId == businessId, cancellationToken);
+        return used < _options.MaxGalleryImages;
+    }
+
+    /// <summary>PostgreSQL row lock (FOR UPDATE) on the business row. Skipped for SQLite/non-relational providers.</summary>
+    private async Task LockBusinessForUpdateAsync(Guid businessId, CancellationToken cancellationToken)
+    {
+        var provider = _db.Database.ProviderName;
+        if (provider == null || provider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase)) return;
+        await _db.Database.ExecuteSqlRawAsync("SELECT id FROM businesses WHERE id = {0} FOR UPDATE", businessId);
+    }
+
+    public async Task<ApiResponse<GalleryCapacityResponse>> GetBusinessGalleryCapacityAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        var businessId = await _businessContext.GetBusinessIdAsync();
+        if (!businessId.HasValue || _businessContext.GetRole() is not ("Business" or "Staff"))
+            return Fail<GalleryCapacityResponse>("FORBIDDEN", "Business media management is not authorized.");
+        var used = await _db.BusinessMedia.CountAsync(x => x.BusinessId == businessId.Value, cancellationToken);
+        var limit = _options.MaxGalleryImages > 0 ? _options.MaxGalleryImages : (int?)null;
+        return ApiResponse<GalleryCapacityResponse>.Ok(new GalleryCapacityResponse
+        {
+            Limit = limit,
+            Used = used,
+            Remaining = limit.HasValue ? Math.Max(0, limit.Value - used) : null
+        });
     }
 
     public async Task<ApiResponse<List<BusinessMediaResponse>>> GetBusinessGalleryAsync(Guid userId, CancellationToken cancellationToken)
@@ -129,7 +195,20 @@ public sealed partial class MediaService
         {
             case "business-gallery":
                 var galleryBusinessId = targetId == Guid.Empty ? businessId : targetId;
-                _db.BusinessMedia.RemoveRange(_db.BusinessMedia.Where(x => x.BusinessId == galleryBusinessId && x.MediaId == mediaId));
+                var galleryRows = await _db.BusinessMedia.Where(x => x.BusinessId == galleryBusinessId).ToListAsync(cancellationToken);
+                var removedFeatured = galleryRows.FirstOrDefault(x => x.MediaId == mediaId && x.IsFeatured);
+                _db.BusinessMedia.RemoveRange(galleryRows.Where(x => x.MediaId == mediaId));
+                // Featured-image invariant: when the featured image is removed, promote the next
+                // remaining image (lowest sort order) so the gallery never silently loses its
+                // featured image. Does not apply to service/loyalty/review relationships.
+                if (removedFeatured != null)
+                {
+                    var nextFeatured = galleryRows
+                        .Where(x => x.MediaId != mediaId)
+                        .OrderBy(x => x.SortOrder).ThenBy(x => x.CreatedAt)
+                        .FirstOrDefault();
+                    if (nextFeatured != null) nextFeatured.IsFeatured = true;
+                }
                 break;
             case "service": _db.ServiceMedia.RemoveRange(_db.ServiceMedia.Where(x => x.ServiceCatalogItemId == targetId && x.MediaId == mediaId)); break;
             case "loyalty-program": _db.LoyaltyProgramMedia.RemoveRange(_db.LoyaltyProgramMedia.Where(x => x.LoyaltyProgramId == targetId && x.MediaId == mediaId)); break;

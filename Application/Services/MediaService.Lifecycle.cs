@@ -1,3 +1,4 @@
+using Amazon.S3;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using PunchedApi.Application.DTOs;
@@ -38,30 +39,88 @@ public sealed partial class MediaService
 
     public async Task<ApiResponse<MediaResponse>> CompleteAsync(Guid userId, Guid mediaId, string idempotencyKey, CancellationToken cancellationToken)
     {
+        // MEASUREMENT: starts at the very top of the action and covers only this request's
+        // server work — idempotency lookup, scoped read, HEAD probe and state transition.
+        var startedAt = DateTime.UtcNow;
+        var outcome = "success";
+        try
+        {
+            return await CompleteCoreAsync(userId, mediaId, idempotencyKey, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            outcome = "cancelled";
+            throw;
+        }
+        catch (Exception ex)
+        {
+            outcome = ex is AmazonS3Exception or HttpRequestException ? "storage_unavailable" : "error";
+            throw;
+        }
+        finally
+        {
+            MediaMetrics.RecordCompletionDuration(DateTime.UtcNow - startedAt, "unknown", outcome);
+        }
+    }
+
+    private async Task<ApiResponse<MediaResponse>> CompleteCoreAsync(Guid userId, Guid mediaId, string idempotencyKey, CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 200)
+        {
+            MediaMetrics.RecordCompletionFailed("unknown", "invalid_key");
             return Fail<MediaResponse>("VALIDATION_ERROR", "A valid Idempotency-Key is required.");
+        }
         var hash = Hash("POST", "/v1/media/{id}/complete", userId, new { id = mediaId });
         var replay = await _idempotency.TryGetAsync(idempotencyKey, userId, hash);
-        if (replay.Conflict) return Fail<MediaResponse>("IDEMPOTENCY_CONFLICT", "The idempotency key was used with a different request.");
+        if (replay.Conflict)
+        {
+            MediaMetrics.RecordCompletionFailed("unknown", "idempotency_conflict");
+            return Fail<MediaResponse>("IDEMPOTENCY_CONFLICT", "The idempotency key was used with a different request.");
+        }
         if (replay.Found && replay.ResponseJson != null)
         {
+            // A duplicate completion request. Counting these proves retries are genuinely
+            // idempotent (a rising count with flat created-count means the guard is working).
+            MediaMetrics.RecordCompletionReplayed("unknown");
             try { return ApiResponse<MediaResponse>.Ok(JsonSerializer.Deserialize<MediaResponse>(replay.ResponseJson)!); }
             catch (JsonException) { return Fail<MediaResponse>("MEDIA_STATE_CONFLICT", "The completion replay is invalid."); }
         }
         var media = await FindScopedAsync(userId, mediaId, cancellationToken);
-        if (media == null) return Fail<MediaResponse>("MEDIA_NOT_FOUND", "The media could not be found.");
+        if (media == null)
+        {
+            MediaMetrics.RecordCompletionFailed("unknown", "not_found");
+            return Fail<MediaResponse>("MEDIA_NOT_FOUND", "The media could not be found.");
+        }
         var mutation = await AuthorizeMutationAsync(media);
-        if (!mutation.Success) return Fail<MediaResponse>(mutation.Error!.Code, mutation.Error.Message);
+        if (!mutation.Success)
+        {
+            MediaMetrics.RecordCompletionFailed(media.Purpose, "forbidden");
+            return Fail<MediaResponse>(mutation.Error!.Code, mutation.Error.Message);
+        }
         if (media.Status is MediaStatus.Uploaded or MediaStatus.Processing or MediaStatus.Ready)
             return await CompleteReplayAsync(idempotencyKey, userId, hash, media, cancellationToken);
-        if (media.Status != MediaStatus.Pending) return Fail<MediaResponse>("MEDIA_STATE_CONFLICT", "The media cannot be completed now.");
+        if (media.Status != MediaStatus.Pending)
+        {
+            MediaMetrics.RecordCompletionFailed(media.Purpose, "state_conflict");
+            return Fail<MediaResponse>("MEDIA_STATE_CONFLICT", "The media cannot be completed now.");
+        }
         var metadata = await _store.HeadAsync(ObjectStoreBucket.PrivateSource, media.SourceKey, cancellationToken);
-        if (metadata == null) return Fail<MediaResponse>("MEDIA_UPLOAD_MISSING", "The uploaded object was not found.");
+        if (metadata == null)
+        {
+            MediaMetrics.RecordCompletionFailed(media.Purpose, "upload_missing");
+            return Fail<MediaResponse>("MEDIA_UPLOAD_MISSING", "The uploaded object was not found.");
+        }
         if (media.ExpectedSizeBytes.HasValue && metadata.SizeBytes != media.ExpectedSizeBytes.Value)
+        {
+            MediaMetrics.RecordCompletionFailed(media.Purpose, "size_mismatch");
             return Fail<MediaResponse>("MEDIA_SIZE_MISMATCH", "The uploaded object size does not match the declared size.");
+        }
+        // Single server-clock timestamp for the whole "now waiting on the worker" interval.
+        var now = DateTime.UtcNow;
         media.Status = MediaStatus.Uploaded;
-        media.NextAttemptAt = DateTime.UtcNow;
-        media.UpdatedAt = DateTime.UtcNow;
+        media.NextAttemptAt = now;
+        media.UploadedAt = now;
+        media.UpdatedAt = now;
         await _db.SaveChangesAsync(cancellationToken);
         MediaMetrics.RecordUploadCompleted();
         return await CompleteReplayAsync(idempotencyKey, userId, hash, media, cancellationToken);

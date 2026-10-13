@@ -2071,6 +2071,10 @@ namespace PunchedApi.Migrations
                         .HasColumnType("character varying(40)")
                         .HasColumnName("purpose");
 
+                    b.Property<DateTime?>("ReadyAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ready_at");
+
                     b.Property<string>("Sha256")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
@@ -2103,6 +2107,10 @@ namespace PunchedApi.Migrations
                     b.Property<DateTime?>("UploadGrantExpiresAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("upload_grant_expires_at");
+
+                    b.Property<DateTime?>("UploadedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("uploaded_at");
 
                     b.Property<Guid>("UploadedByUserId")
                         .HasColumnType("uuid")

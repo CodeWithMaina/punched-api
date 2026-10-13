@@ -79,6 +79,17 @@ public sealed class BusinessMediaResponse
     public MediaResponse? Media { get; set; }
 }
 
+/// <summary>
+/// Authoritative business-gallery capacity snapshot. <see cref="Limit"/> is null when the
+/// gallery is unlimited (MaxGalleryImages &lt;= 0); <see cref="Remaining"/> is then null too.
+/// </summary>
+public sealed class GalleryCapacityResponse
+{
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("used")] public int Used { get; set; }
+    [JsonPropertyName("remaining")] public int? Remaining { get; set; }
+}
+
 public sealed class ServiceMediaResponse
 {
     [JsonPropertyName("serviceId")] public Guid ServiceId { get; set; }

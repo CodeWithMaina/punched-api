@@ -56,6 +56,22 @@ public class Media : BaseEntity
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? DeletedAt { get; set; }
 
+    /// <summary>
+    /// Server-side UTC timestamp of the transition to <see cref="MediaStatus.Uploaded"/>,
+    /// i.e. when completion confirmed the object exists in the private bucket. This is the
+    /// START of the "waiting for the worker" interval and is the anchor for queue-delay and
+    /// upload-to-Ready measurements. Server-owned and single-clock, so these intervals are
+    /// never computed by subtracting browser timestamps from server timestamps.
+    /// </summary>
+    public DateTime? UploadedAt { get; set; }
+
+    /// <summary>
+    /// Server-side UTC timestamp of the transition to <see cref="MediaStatus.Ready"/>.
+    /// Paired with <see cref="UploadedAt"/> it yields the total server-observed
+    /// completion→Ready latency (queue delay + processing) without a clock-domain crossing.
+    /// </summary>
+    public DateTime? ReadyAt { get; set; }
+
     public virtual Business? Business { get; set; }
     public virtual User? OwnerUser { get; set; }
     public virtual User UploadedByUser { get; set; } = null!;

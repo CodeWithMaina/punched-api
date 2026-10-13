@@ -33,9 +33,40 @@ public sealed partial class MediaService : IMediaService
 
     public async Task<ApiResponse<MediaUploadGrantResponse>> CreateUploadAsync(Guid userId, CreateMediaUploadRequest request, string idempotencyKey, CancellationToken cancellationToken)
     {
+        // MEASUREMENT: spans only this request's server work — validation, owner resolution,
+        // idempotency lookup, INSERT and presign. The browser's own selection/preview time is
+        // measured client-side and is deliberately NOT mixed into this figure.
+        var startedAt = DateTime.UtcNow;
+        var purpose = request.Purpose?.Trim().ToLowerInvariant() ?? string.Empty;
+        ApiResponse<MediaUploadGrantResponse>? response = null;
+        try
+        {
+            response = await CreateUploadCoreAsync(userId, request, idempotencyKey, purpose, cancellationToken);
+            return response;
+        }
+        finally
+        {
+            // The response envelope carries the true outcome, so validation rejections land in
+            // the histogram's failure series instead of being mislabelled as successes.
+            var success = response?.Success == true;
+            MediaMetrics.RecordUploadIntentDuration(DateTime.UtcNow - startedAt, purpose, success,
+                request.SizeBytes > 0 ? request.SizeBytes : null);
+            if (success)
+            {
+                MediaMetrics.RecordUploadCreated();
+                MediaMetrics.RecordSourceBytes(request.SizeBytes, purpose);
+            }
+            else
+            {
+                MediaMetrics.RecordUploadIntentFailed(purpose);
+            }
+        }
+    }
+
+    private async Task<ApiResponse<MediaUploadGrantResponse>> CreateUploadCoreAsync(Guid userId, CreateMediaUploadRequest request, string idempotencyKey, string purpose, CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 200)
             return Fail<MediaUploadGrantResponse>("VALIDATION_ERROR", "A valid Idempotency-Key is required.");
-        var purpose = request.Purpose?.Trim().ToLowerInvariant() ?? string.Empty;
         if (!MediaPurposes.All.Contains(purpose)) return Fail<MediaUploadGrantResponse>("INVALID_MEDIA_PURPOSE", "Unsupported media purpose.");
         if (request.SizeBytes < 1) return Fail<MediaUploadGrantResponse>("MEDIA_TOO_LARGE", "The declared file size must be positive.");
         if (!_options.Limits.Purposes.TryGetValue(purpose, out var purposeLimit))
@@ -65,7 +96,6 @@ public sealed partial class MediaService : IMediaService
         media.SourceKey = _keys.CreatePendingKey(media);
         _db.Media.Add(media);
         await _db.SaveChangesAsync(cancellationToken);
-        MediaMetrics.RecordUploadCreated();
         await _idempotency.StoreAsync(idempotencyKey, userId, hash, JsonSerializer.Serialize(new { mediaId = media.Id }));
         return await GrantAsync(media, cancellationToken);
     }

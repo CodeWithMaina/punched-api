@@ -56,6 +56,11 @@ public sealed class MediaConfiguration : IEntityTypeConfiguration<Media>
         b.Property(x => x.CreatedAt).HasColumnName("created_at");
         b.Property(x => x.UpdatedAt).HasColumnName("updated_at");
         b.Property(x => x.DeletedAt).HasColumnName("deleted_at");
+        // Lifecycle instrumentation anchors. Nullable so existing rows are unaffected; both
+        // are written only by the state transitions they describe, which keeps every derived
+        // interval inside a single server clock domain.
+        b.Property(x => x.UploadedAt).HasColumnName("uploaded_at");
+        b.Property(x => x.ReadyAt).HasColumnName("ready_at");
         b.HasIndex(x => x.SourceKey).IsUnique().HasDatabaseName("ux_media_source_key");
         b.HasIndex(x => new { x.BusinessId, x.Status, x.Purpose, x.CreatedAt }).HasDatabaseName("ix_media_business_status_purpose_created");
         b.HasIndex(x => new { x.OwnerUserId, x.Status, x.Purpose, x.CreatedAt }).HasDatabaseName("ix_media_owner_status_purpose_created");

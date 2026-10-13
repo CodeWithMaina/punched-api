@@ -113,6 +113,12 @@ public sealed class MediaProcessor(
         if (media.Status is MediaStatus.Ready or MediaStatus.Failed or MediaStatus.Deleted or MediaStatus.Deleting)
             return media.Status == MediaStatus.Ready;
 
+        // MEASUREMENT: the stopwatch starts after the row is claimed, so it times ONLY the
+        // image work (download original → validate → decode → encode → PUT variants → probe).
+        // Time spent queued between completion and this claim is recorded separately by the
+        // worker as queue delay, and the two are never summed or mixed.
+        var attempt = media.ProcessingAttempts;
+        var processingStopwatch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             if (!_options.Limits.Purposes.TryGetValue(media.Purpose, out var limit))
@@ -146,10 +152,20 @@ public sealed class MediaProcessor(
                 await _db.SaveChangesAsync(cancellationToken);
                 var variantWidths = _options.VariantWidths.Count > 0 ? _options.VariantWidths : [320, 640, 1280];
 
-                foreach (var variantWidth in variantWidths)
+                // Distinct target widths only. Several configured widths collapse to the same
+                // rendered width whenever the source is at or below them; re-encoding and
+                // re-uploading an identical bitmap under a different key is pure waste (CPU,
+                // an R2 PUT, and stored bytes) and also bloats the variants list.
+                var renderedWidths = variantWidths
+                    .Select(variantWidth => variantWidth > 0 && width > variantWidth ? variantWidth : width)
+                    .Distinct()
+                    .OrderByDescending(target => target)
+                    .ToArray();
+
+                var uploads = new List<Task>();
+                foreach (var targetWidth in renderedWidths)
                 {
-                    var scale = variantWidth > 0 && width > variantWidth ? (double)variantWidth / width : 1d;
-                    var targetWidth = Math.Max(1, (int)Math.Round(width * scale));
+                    var scale = targetWidth < width ? (double)targetWidth / width : 1d;
                     var targetHeight = Math.Max(1, (int)Math.Round(height * scale));
 
                     using var scaled = normalized.Resize(new SKImageInfo(targetWidth, targetHeight, SKColorType.Rgba8888), SKSamplingOptions.Default);
@@ -157,41 +173,43 @@ public sealed class MediaProcessor(
 
                     var encodedWebp = EncodeBitmap(scaled, "webp");
                     if (encodedWebp.Length == 0) throw new InvalidOperationException("DERIVATIVE_GENERATION_FAILED");
-
-                    var webpKey = _keys.CreateDeliveryKey(media.Id, media.Purpose.Replace("-", "-"), targetWidth, "webp");
-                    var webpVariant = new MediaVariantResponse
-                    {
-                        Url = _urls.CreatePublicUrl(webpKey), Width = targetWidth, Height = targetHeight,
-                        Format = "webp", Transform = "public"
-                    };
-
                     var encodedJpg = EncodeBitmap(scaled, "jpg");
                     if (encodedJpg.Length == 0) throw new InvalidOperationException("DERIVATIVE_GENERATION_FAILED");
 
-                    var jpgKey = _keys.CreateDeliveryKey(media.Id, media.Purpose.Replace("-", "-"), targetWidth, "jpg");
-                    var jpgVariant = new MediaVariantResponse
+                    var webpKey = _keys.CreateDeliveryKey(media.Id, media.Purpose, targetWidth, "webp");
+                    var jpgKey = _keys.CreateDeliveryKey(media.Id, media.Purpose, targetWidth, "jpg");
+                    RecordVariant(variants, new MediaVariantResponse
+                    {
+                        Url = _urls.CreatePublicUrl(webpKey), Width = targetWidth, Height = targetHeight,
+                        Format = "webp", Transform = "public"
+                    });
+                    RecordVariant(variants, new MediaVariantResponse
                     {
                         Url = _urls.CreatePublicUrl(jpgKey), Width = targetWidth, Height = targetHeight,
                         Format = "jpeg", Transform = "public"
-                    };
+                    });
 
-                    RecordVariant(variants, webpVariant);
-                    RecordVariant(variants, jpgVariant);
-                    media.VariantsJson = JsonSerializer.Serialize(variants);
-                    media.UpdatedAt = DateTime.UtcNow;
-                    await _db.SaveChangesAsync(cancellationToken);
-
-                    using var webpStream = new MemoryStream(encodedWebp);
-                    using var jpgStream = new MemoryStream(encodedJpg);
-                    await Task.WhenAll(
-                        _store.PutAsync(ObjectStoreBucket.PublicDelivery, webpKey, webpStream, "image/webp", "public, max-age=31536000, immutable", cancellationToken),
-                        _store.PutAsync(ObjectStoreBucket.PublicDelivery, jpgKey, jpgStream, "image/jpeg", "public, max-age=31536000, immutable", cancellationToken));
-                    await Task.WhenAll(
-                        VerifyStoredVariantAsync(webpKey, "image/webp", cancellationToken),
-                        VerifyStoredVariantAsync(jpgKey, "image/jpeg", cancellationToken));
+                    // Fan the uploads out: encoding is already finished, so the only remaining
+                    // cost is network. Serialising PUTs would make time-to-Ready scale with the
+                    // number of widths. Delivery objects are immutable and content-addressed per
+                    // key, so parallel writes can never partially overwrite each other.
+                    var webpStream = new MemoryStream(encodedWebp);
+                    var jpgStream = new MemoryStream(encodedJpg);
+                    uploads.Add(UploadAndDisposeAsync(_store, ObjectStoreBucket.PublicDelivery, webpKey, webpStream, "image/webp", cancellationToken));
+                    uploads.Add(UploadAndDisposeAsync(_store, ObjectStoreBucket.PublicDelivery, jpgKey, jpgStream, "image/jpeg", cancellationToken));
                 }
 
                 if (variants.Count == 0) throw new InvalidOperationException("DERIVATIVE_GENERATION_FAILED");
+                await Task.WhenAll(uploads);
+
+                media.VariantsJson = JsonSerializer.Serialize(variants);
+                media.UpdatedAt = DateTime.UtcNow;
+                // One write per attempt instead of one per variant width.
+                await _db.SaveChangesAsync(cancellationToken);
+
+                // One public-delivery probe instead of one HEAD per variant: every key shares
+                // the same delivery path, so a single successful HEAD proves the whole batch is
+                // reachable and removes 2N R2 HEAD round trips from time-to-Ready.
                 using (var publicResponse = await _httpClientFactory.CreateClient().SendAsync(
                     new HttpRequestMessage(HttpMethod.Head, variants[0].Url),
                     HttpCompletionOption.ResponseHeadersRead,
@@ -203,18 +221,30 @@ public sealed class MediaProcessor(
 
                 media.Status = MediaStatus.Ready;
                 media.Visibility = MediaVisibility.Public;
-                media.DetectedMimeType = validation.DetectedMimeType;
-                media.SourceSizeBytes = validation.SizeBytes;
-                media.Width = validation.Width;
-                media.Height = validation.Height;
-                media.Sha256 = validation.Sha256;
-                media.VariantsJson = JsonSerializer.Serialize(variants);
                 media.LastErrorCode = null;
                 media.NextAttemptAt = null;
                 media.ProcessingLeaseToken = null;
                 media.ProcessingLeaseUntil = null;
-                media.UpdatedAt = DateTime.UtcNow;
+                // Server-side anchor for the completion→Ready interval.
+                var readyAt = DateTime.UtcNow;
+                media.ReadyAt = readyAt;
+                media.UpdatedAt = readyAt;
                 await _db.SaveChangesAsync(cancellationToken);
+
+                processingStopwatch.Stop();
+                MediaMetrics.RecordProcessingDuration(processingStopwatch.Elapsed, media.Purpose);
+                MediaMetrics.RecordProcessingSucceeded();
+                MediaMetrics.RecordVariantsGenerated(variants.Count, media.Purpose);
+
+                // Upload acceptance → Ready and completion → Ready, both from server-side
+                // timestamps on this row. A single clock domain means no cross-clock arithmetic.
+                if (media.UploadedAt is DateTime uploadedAt)
+                    MediaMetrics.RecordUploadToReady(readyAt - uploadedAt, media.Purpose);
+
+                // This attempt succeeded after at least one prior failure: a real recovery,
+                // which is the number that proves retry policy actually rescues uploads.
+                if (attempt >= 2)
+                    MediaMetrics.RecordProcessingRecovered(media.Purpose, attempt);
                 return true;
             }
         }
@@ -243,6 +273,10 @@ public sealed class MediaProcessor(
             }
 
             await _db.SaveChangesAsync(cancellationToken);
+            processingStopwatch.Stop();
+            MediaMetrics.RecordProcessingFailed();
+            MediaMetrics.RecordProcessingDuration(processingStopwatch.Elapsed, media.Purpose);
+            if (attempt >= 2) MediaMetrics.RecordProcessingRetry();
             return false;
         }
     }
@@ -346,11 +380,22 @@ public sealed class MediaProcessor(
         return normalized;
     }
 
-    private async Task VerifyStoredVariantAsync(string key, string expectedContentType, CancellationToken cancellationToken)
+    /// <summary>
+    /// Uploads one delivery variant and disposes its stream afterwards. A successful R2 PUT is
+    /// already a durable acknowledgement of the object, so a follow-up HEAD per variant only adds
+    /// a round trip; reachability of the shared delivery path is proven once per batch by the
+    /// public probe in <see cref="MediaProcessor.ProcessAsync"/>.
+    /// </summary>
+    private static async Task UploadAndDisposeAsync(IObjectStore store, ObjectStoreBucket bucket, string key, Stream content, string contentType, CancellationToken cancellationToken)
     {
-        var metadata = await _store.HeadAsync(ObjectStoreBucket.PublicDelivery, key, cancellationToken);
-        if (metadata is null || metadata.SizeBytes < 1 || !string.Equals(metadata.ContentType, expectedContentType, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("PUBLIC_DELIVERY_UNAVAILABLE");
+        try
+        {
+            await store.PutAsync(bucket, key, content, contentType, "public, max-age=31536000, immutable", cancellationToken);
+        }
+        finally
+        {
+            await content.DisposeAsync();
+        }
     }
 
     private static void RecordVariant(List<MediaVariantResponse> variants, MediaVariantResponse variant)
@@ -367,29 +412,6 @@ public sealed class MediaProcessor(
     }
 }
 
-public sealed class MediaMetrics
-{
-    public static readonly Meter Meter = new("Punched.Media");
-    private static readonly Counter<long> UploadCreated = Meter.CreateCounter<long>("media.upload.created");
-    private static readonly Counter<long> UploadCompleted = Meter.CreateCounter<long>("media.upload.completed");
-    private static readonly Counter<long> ProcessingStarted = Meter.CreateCounter<long>("media.processing.started");
-    private static readonly Counter<long> ProcessingSucceeded = Meter.CreateCounter<long>("media.processing.succeeded");
-    private static readonly Counter<long> ProcessingFailed = Meter.CreateCounter<long>("media.processing.failed");
-    private static readonly Counter<long> ProcessingRetry = Meter.CreateCounter<long>("media.processing.retry");
-    private static readonly Counter<long> CleanupDeleted = Meter.CreateCounter<long>("media.cleanup.deleted");
-    private static readonly Counter<long> CleanupFailed = Meter.CreateCounter<long>("media.cleanup.failed");
-    private static readonly Histogram<double> ProcessingDuration = Meter.CreateHistogram<double>("media.processing.duration.ms");
-
-    public static void RecordUploadCreated() => UploadCreated.Add(1);
-    public static void RecordUploadCompleted() => UploadCompleted.Add(1);
-    public static void RecordProcessingStarted() => ProcessingStarted.Add(1);
-    public static void RecordProcessingSucceeded() => ProcessingSucceeded.Add(1);
-    public static void RecordProcessingFailed() => ProcessingFailed.Add(1);
-    public static void RecordProcessingRetry() => ProcessingRetry.Add(1);
-    public static void RecordCleanupDeleted() => CleanupDeleted.Add(1);
-    public static void RecordCleanupFailed() => CleanupFailed.Add(1);
-    public static void RecordProcessingDuration(TimeSpan elapsed) => ProcessingDuration.Record(elapsed.TotalMilliseconds);
-}
 
 public sealed class MediaProcessingWorker(IServiceScopeFactory scopeFactory, IOptions<MediaStorageOptions> options) : BackgroundService
 {
@@ -419,17 +441,9 @@ public sealed class MediaProcessingWorker(IServiceScopeFactory scopeFactory, IOp
                 foreach (var media in pending)
                 {
                     var leaseToken = Guid.NewGuid().ToString("N");
-                    var claimed = await db.Media
-                        .Where(x => x.Id == media.Id &&
-                                    (x.Status == MediaStatus.Uploaded || x.Status == MediaStatus.Processing) &&
-                                    x.ProcessingAttempts < _options.Processing.MaxAttempts &&
-                                    (x.ProcessingLeaseUntil == null || x.ProcessingLeaseUntil <= now))
-                        .ExecuteUpdateAsync(s => s
-                            .SetProperty(x => x.Status, MediaStatus.Processing)
-                            .SetProperty(x => x.ProcessingLeaseToken, leaseToken)
-                            .SetProperty(x => x.ProcessingLeaseUntil, now.AddMinutes(_options.Processing.LeaseMinutes))
-                            .SetProperty(x => x.ProcessingAttempts, x => x.ProcessingAttempts + 1)
-                            .SetProperty(x => x.UpdatedAt, now), stoppingToken);
+                    // Atomic claim: the WHERE predicate runs inside one UPDATE, so a
+                    // concurrent worker racing for this row gets 0 rows and moves on.
+                    var claimed = await MediaLeaseOperations.ClaimAsync(db, media.Id, now, leaseToken, _options, stoppingToken);
 
                     if (claimed == 0) continue;
                     media.Status = MediaStatus.Processing;
@@ -438,22 +452,18 @@ public sealed class MediaProcessingWorker(IServiceScopeFactory scopeFactory, IOp
                     media.ProcessingLeaseUntil = now.AddMinutes(_options.Processing.LeaseMinutes);
                     media.UpdatedAt = now;
                     MediaMetrics.RecordProcessingStarted();
-                    var started = DateTime.UtcNow;
-                    var success = await ProcessWithLeaseHeartbeatAsync(media.Id, leaseToken, processor, stoppingToken);
-                    if (!success.HasValue) continue;
-                    if (success.Value)
-                    {
-                        MediaMetrics.RecordProcessingSucceeded();
-                    }
-                    else if (media.ProcessingAttempts >= _options.Processing.MaxAttempts)
-                    {
-                        MediaMetrics.RecordProcessingFailed();
-                    }
-                    else
-                    {
-                        MediaMetrics.RecordProcessingRetry();
-                    }
-                    MediaMetrics.RecordProcessingDuration(DateTime.UtcNow - started);
+
+                    // MEASUREMENT: queue delay = completion (UploadedAt) → this claim. Both
+                    // timestamps are server-side, so this is pure waiting time and contains no
+                    // processing work. Attempts >= 2 are retries, not queue delay, and are
+                    // excluded so a backoff wait is never misreported as queue congestion.
+                    if (media.ProcessingAttempts == 1 && media.UploadedAt is DateTime uploadedAt && uploadedAt <= now)
+                        MediaMetrics.RecordQueueDelay(now - uploadedAt, media.Purpose);
+
+                    // Outcome counters and processing duration are recorded inside the
+                    // processor, which is the only place that knows the purpose and can time
+                    // the image work itself rather than the surrounding lease heartbeat.
+                    await ProcessWithLeaseHeartbeatAsync(media.Id, leaseToken, processor, stoppingToken);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -504,12 +514,8 @@ public sealed class MediaProcessingWorker(IServiceScopeFactory scopeFactory, IOp
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var now = DateTime.UtcNow;
-            var renewed = await db.Media
-                .Where(x => x.Id == mediaId && x.Status == MediaStatus.Processing && x.ProcessingLeaseToken == leaseToken)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(x => x.ProcessingLeaseUntil, now.AddMinutes(_options.Processing.LeaseMinutes))
-                    .SetProperty(x => x.UpdatedAt, now), cancellationToken);
+            var renewed = await MediaLeaseOperations.RenewAsync(
+                db, mediaId, leaseToken, DateTime.UtcNow, _options, cancellationToken);
             return renewed == 1;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -540,17 +546,15 @@ public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptio
                 var store = scope.ServiceProvider.GetRequiredService<IObjectStore>();
                 var now = DateTime.UtcNow;
                 var pendingCutoff = now.AddMinutes(-_options.PendingRowExpirationMinutes);
-                await db.Media
-                    .Where(x => x.Status == MediaStatus.Processing &&
-                                x.ProcessingAttempts >= _options.Processing.MaxAttempts &&
-                                x.ProcessingLeaseUntil != null && x.ProcessingLeaseUntil <= now)
-                    .ExecuteUpdateAsync(s => s
-                        .SetProperty(x => x.Status, MediaStatus.Failed)
-                        .SetProperty(x => x.LastErrorCode, "PROCESSING_LEASE_EXPIRED")
-                        .SetProperty(x => x.ProcessingLeaseToken, (string?)null)
-                        .SetProperty(x => x.ProcessingLeaseUntil, (DateTime?)null)
-                        .SetProperty(x => x.NextAttemptAt, (DateTime?)null)
-                        .SetProperty(x => x.UpdatedAt, now), stoppingToken);
+
+                // Fail over rows whose processing lease expired AND whose attempt budget is
+                // exhausted. Rows still within their attempt budget are deliberately left
+                // alone: the processing worker reclaims them itself, and failing them here
+                // would silently burn an attempt the worker would otherwise have used.
+                // (Predicate, telemetry and clock semantics live in MediaLeaseOperations
+                // so they can be regression-tested without a running BackgroundService.)
+                await MediaLeaseOperations.ReclaimExpiredAsync(db, _options, now, stoppingToken);
+
                 var stalePending = await db.Media
                     .Where(x => x.Status == MediaStatus.Pending && x.CreatedAt <= pendingCutoff)
                     .Take(_options.CleanupBatchSize)
@@ -569,6 +573,7 @@ public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptio
                     media.NextAttemptAt = null;
                     media.UpdatedAt = DateTime.UtcNow;
                     await db.SaveChangesAsync(stoppingToken);
+                    MediaMetrics.RecordAbandonedPendingPurged(media.Purpose);
                     MediaMetrics.RecordCleanupDeleted();
                 }
 
