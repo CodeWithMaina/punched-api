@@ -37,10 +37,16 @@ public interface IAdminTierService
     /// <summary>Archives Draft/Inactive → Archived (rejects if active subscribers).</summary>
     Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? actorUserId);
 
+    /// <summary>Unarchives an Archived tier (restores to Inactive).</summary>
+    Task<ApiResponse<AdminTierDetail>> UnarchiveAsync(Guid id, Guid? actorUserId);
+
+    /// <summary>Permanently deletes an Archived tier (requires zero business subscriptions).</summary>
+    Task<ApiResponse<MessageResponse>> PurgeAsync(Guid id, Guid? actorUserId);
+
     /// <summary>Current module set for a tier.</summary>
     Task<ApiResponse<AdminTierModulesResponse>> GetModulesAsync(Guid id);
 
-    /// <summary>Transactionsally replaces a tier's module set (Draft/Inactive only).</summary>
+    /// <summary>Transactionsally replaces a tier's module set (Draft, Inactive, or Active).</summary>
     Task<ApiResponse<AdminTierModulesResponse>> SetModulesAsync(Guid id, AdminTierModulesRequest request, Guid? actorUserId);
 
     /// <summary>Admin module catalog (runtime manifest enriched with DB metadata).</summary>

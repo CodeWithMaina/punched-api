@@ -140,10 +140,92 @@ public class AdminTierServiceTests : IDisposable
     {
         var created = (await _service.CreateAsync(CreateRequest(), _actorId)).Data!;
         await _service.PublishAsync(created.Id, _actorId);
+
+        // A live tier may still edit its module set — the matrix drives the
+        // entitlements of the subscribers currently assigned to the plan.
         var result = await _service.SetModulesAsync(created.Id,
-            new AdminTierModulesRequest { ModuleKeys = new List<string> { "customers" } }, _actorId);
+            new AdminTierModulesRequest { ModuleKeys = new List<string> { "customers", "stamps" } }, _actorId);
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(new[] { "customers", "stamps" }.OrderBy(x => x), result.Data!.ModuleKeys.OrderBy(x => x));
+
+        // The tier stays live; only the membership changed.
+        var after = await _service.GetAsync(created.Id);
+        Assert.Equal("Active", after.Data!.Lifecycle);
+    }
+
+    // ── Unarchive ───────────────────────────────────────────
+
+    [Fact]
+    public async Task Unarchive_ArchivedTier_ReturnsInactive()
+    {
+        var created = (await _service.CreateAsync(CreateRequest(), _actorId)).Data!;
+        await _service.PublishAsync(created.Id, _actorId);
+        var archived = await _service.ArchiveAsync(created.Id, _actorId);
+        Assert.True(archived.Success);
+
+        var result = await _service.UnarchiveAsync(created.Id, _actorId);
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal("Inactive", result.Data!.Lifecycle);
+
+        var entity = await _db.SubscriptionPlans.SingleAsync(p => p.Id == created.Id);
+        Assert.Equal(SubscriptionPlanLifecycleState.Inactive, entity.LifecycleState);
+        Assert.Null(entity.ArchivedAt);
+        Assert.False(entity.IsActive);
+    }
+
+    [Fact]
+    public async Task Unarchive_NonArchivedTier_ReturnsError()
+    {
+        var created = (await _service.CreateAsync(CreateRequest(), _actorId)).Data!;
+        var result = await _service.UnarchiveAsync(created.Id, _actorId);
+
         Assert.False(result.Success);
-        Assert.Equal("ACTIVE_TIER_HAS_MODULE_EDIT_DISABLED", result.Error?.Code);
+        Assert.Equal("INVALID_LIFECYCLE_TRANSITION", result.Error?.Code);
+    }
+
+    // ── Purge ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task Purge_ArchivedTierWithoutSubscribers_DeletesTier()
+    {
+        var created = (await _service.CreateAsync(CreateRequest(), _actorId)).Data!;
+        await _service.PublishAsync(created.Id, _actorId);
+        var archived = await _service.ArchiveAsync(created.Id, _actorId);
+        Assert.True(archived.Success);
+
+        var result = await _service.PurgeAsync(created.Id, _actorId);
+        Assert.True(result.Success, result.Error?.Message);
+
+        var exists = await _db.SubscriptionPlans.AsNoTracking().AnyAsync(p => p.Id == created.Id);
+        Assert.False(exists);
+        Assert.False(_db.PlanModules.Any(pm => pm.PlanId == created.Id));
+    }
+
+    [Fact]
+    public async Task Purge_ArchivedTierWithSubscribers_ReturnsError()
+    {
+        var business = new Business { Id = Guid.NewGuid(), Name = "Biz", Category = "salon", Location = "NBO", MpesaNumber = "1" };
+        _db.Businesses.Add(business);
+        await _db.SaveChangesAsync();
+
+        var created = (await _service.CreateAsync(CreateRequest(), _actorId)).Data!;
+        await _service.PublishAsync(created.Id, _actorId);
+        var archived = await _service.ArchiveAsync(created.Id, _actorId);
+        Assert.True(archived.Success);
+
+        _db.BusinessSubscriptions.Add(new BusinessSubscription
+        {
+            BusinessId = business.Id,
+            PlanId = created.Id,
+            Status = "active",
+            StartsAt = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync();
+
+        var result = await _service.PurgeAsync(created.Id, _actorId);
+        Assert.False(result.Success);
+        Assert.Equal("TIER_HAS_ACTIVE_SUBSCRIBERS", result.Error?.Code);
+        Assert.True(await _db.SubscriptionPlans.AsNoTracking().AnyAsync(p => p.Id == created.Id));
     }
 
     [Fact]

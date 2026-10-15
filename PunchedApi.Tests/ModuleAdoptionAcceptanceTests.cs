@@ -58,6 +58,9 @@ public class ModuleAdoptionAcceptanceTests
         ("ServiceCatalogController.cs", "serviceCatalog"),
         ("QrController.cs", "customers"),
         ("InvitationControllers.cs", "staff"),
+        ("ReviewController.cs", "reviews"),
+        ("LandingPageController.cs", "storefront"),
+        ("MediaController.cs", "gallery"),
     };
 
     // ── Platform controllers (must NOT carry [RequireModule]) ──

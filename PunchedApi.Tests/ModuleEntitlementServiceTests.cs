@@ -227,7 +227,7 @@ public class ModuleEntitlementServiceTests : IDisposable
 
         var keys = await _service.GetEffectiveModuleKeysAsync(_businessId);
 
-        Assert.Equal(new HashSet<string> { "customers", "staff", "settings", "appointments" }, keys);
+        Assert.Equal(new HashSet<string> { "customers", "staff", "settings", "appointments", "reviews", "gallery", "storefront" }, keys);
     }
 
     [Fact]

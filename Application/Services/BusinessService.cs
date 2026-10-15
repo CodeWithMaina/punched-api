@@ -20,6 +20,7 @@ public partial class BusinessService : IBusinessService
     private readonly ISubscriptionProvisioningService _subscriptionProvisioning;
     private readonly IModuleEntitlementService _moduleEntitlementService;
     private readonly IBusinessSlugGenerator _slugGenerator;
+    private readonly ICardDesignResolver? _cardDesignResolver;
     private readonly ILogger<BusinessService> _logger;
 
     /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
@@ -34,7 +35,8 @@ public partial class BusinessService : IBusinessService
         IModuleEntitlementService moduleEntitlementService,
         IBusinessSlugGenerator slugGenerator,
         ILogger<BusinessService> logger,
-        ITenantContext? tenant = null)
+        ITenantContext? tenant = null,
+        ICardDesignResolver? cardDesignResolver = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
@@ -45,6 +47,7 @@ public partial class BusinessService : IBusinessService
         _slugGenerator = slugGenerator;
         _logger = logger;
         _tenant = tenant;
+        _cardDesignResolver = cardDesignResolver;
     }
 
     /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
@@ -592,6 +595,199 @@ public partial class BusinessService : IBusinessService
     private static string EscapeLike(string input) =>
         input.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
 
+    // ── Aggregated customer details (single-request initial screen) ──
+    // One business-scoped request replaces the old five-request
+    // waterfall (customer + stats + managed card + appointments +
+    // activity). Appointments/activity stay paginated on their own
+    // tab endpoints and are never loaded here.
+    public async Task<ApiResponse<CustomerDetailsResponse>> GetCustomerDetailsAsync(
+        Guid ownerId, Guid customerId, CancellationToken cancellationToken = default)
+    {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            var businessId = await _businessScopeResolver.GetOwnedBusinessIdAsync(ownerId);
+            if (businessId == null)
+                return ApiResponse<CustomerDetailsResponse>.Fail("NOT_FOUND", "No business found for this account.");
+            var bid = businessId.Value;
+
+            if (TenantBusinessId is Guid tenantId && bid != tenantId)
+                return ApiResponse<CustomerDetailsResponse>.Fail("NOT_FOUND", "Customer not enrolled in this business.");
+
+            var enrollment = await _context.CustomerBusinessEnrollments
+                .AsNoTracking()
+                .Where(e => e.BusinessId == bid && e.CustomerId == customerId)
+                .Select(e => new
+                {
+                    e.Status,
+                    e.EnrolledAt,
+                    CustomerFullName = e.Customer.FullName,
+                    CustomerEmail = e.Customer.Email,
+                    CustomerPhone = e.Customer.PhoneNumber,
+                    CustomerDob = e.Customer.DateOfBirth,
+                    CustomerGender = e.Customer.Gender,
+                    CustomerAvatar = e.Customer.AvatarUrl,
+                })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (enrollment == null)
+                return ApiResponse<CustomerDetailsResponse>.Fail("NOT_FOUND", "Customer not enrolled in this business.");
+
+            var loyaltyRow = await _context.LoyaltyCards
+                .AsNoTracking()
+                .Where(c => c.BusinessId == bid && c.CustomerId == customerId)
+                .Select(c => new
+                {
+                    CardId = c.Id,
+                    c.ProgramId,
+                    c.TotalStamps,
+                    c.LifetimeStamps,
+                    c.TotalRedemptions,
+                    c.LastStampAt,
+                    c.RequiredStamps,
+                    ProgramName = c.Program.Name,
+                    ProgramStampsRequired = c.Program.StampsRequired,
+                    ProgramRewardDescription = c.Program.RewardDescription,
+                    ProgramRewardValue = c.Program.RewardValue,
+                    ProgramRewardExpirationHours = c.Program.RewardExpirationHours,
+                    StampCardStampsRequired = c.StampCard != null ? (int?)c.StampCard.StampsRequired : null,
+                    StampCardRewardDescription = c.StampCard != null ? c.StampCard.RewardDescription : null,
+                    BusinessName = c.Business.Name,
+                    BusinessLogoUrl = c.Business.LogoUrl,
+                    BusinessDescription = c.Business.Description,
+                })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            var weekAgo = DateTime.UtcNow.AddDays(-7);
+            var stampAgg = loyaltyRow == null
+                ? null
+                : await _context.Stamps
+                    .AsNoTracking()
+                    .Where(s => s.CardId == loyaltyRow.CardId)
+                    .GroupBy(_ => 1)
+                    .Select(g => new
+                    {
+                        Total = g.Count(),
+                        In7d = g.Count(s => s.StampedAt >= weekAgo),
+                        Last = g.Max(s => (DateTime?)s.StampedAt),
+                    })
+                    .FirstOrDefaultAsync(cancellationToken);
+            var metrics = new CustomerDetailsMetricsBlock
+            {
+                StampsIn7d = stampAgg?.In7d ?? 0,
+                VisitsIn7d = stampAgg?.In7d ?? 0,
+                LifetimeStamps = loyaltyRow?.LifetimeStamps ?? 0,
+                TotalRedemptions = loyaltyRow?.TotalRedemptions ?? 0,
+                TotalVisits = stampAgg?.Total ?? 0,
+                LastVisitAt = stampAgg?.Last ?? loyaltyRow?.LastStampAt,
+            };
+
+            CustomerDetailsLoyaltySummary? loyalty = null;
+            if (loyaltyRow != null)
+            {
+                var required = loyaltyRow.RequiredStamps;
+                if (required < 1 || required > 100)
+                    required = loyaltyRow.StampCardStampsRequired
+                        ?? loyaltyRow.ProgramStampsRequired;
+                required = Math.Clamp(required, 1, 100);
+
+                var rewardDescription = !string.IsNullOrWhiteSpace(loyaltyRow.StampCardRewardDescription)
+                    ? loyaltyRow.StampCardRewardDescription!
+                    : loyaltyRow.ProgramRewardDescription;
+
+                loyalty = new CustomerDetailsLoyaltySummary
+                {
+                    CardId = loyaltyRow.CardId,
+                    ProgramId = loyaltyRow.ProgramId,
+                    ProgramName = loyaltyRow.ProgramName,
+                    TotalStamps = loyaltyRow.TotalStamps,
+                    StampsRequired = required,
+                    RewardDescription = rewardDescription,
+                    RewardReady = loyaltyRow.TotalStamps >= required,
+                    RewardValue = loyaltyRow.ProgramRewardValue,
+                    RewardExpirationHours = loyaltyRow.ProgramRewardExpirationHours,
+                };
+
+                if (_cardDesignResolver != null)
+                {
+                    try
+                    {
+                        var program = new LoyaltyProgram
+                        {
+                            Id = loyaltyRow.ProgramId,
+                            BusinessId = bid,
+                            Name = loyaltyRow.ProgramName,
+                        };
+                        program.StampsRequired = loyaltyRow.ProgramStampsRequired;
+                        program.RewardValue = loyaltyRow.ProgramRewardValue;
+                        program.RewardDescription = loyaltyRow.ProgramRewardDescription;
+                        program.RewardExpirationHours = loyaltyRow.ProgramRewardExpirationHours;
+                        var resolved = await _cardDesignResolver.ResolveForProgramAsync(program);
+                        loyalty.CardDesignId = resolved.DesignId;
+                        loyalty.CardDesignName = resolved.DesignName;
+                        loyalty.CardDesignIsDefault = resolved.IsDefault;
+                        var renderContext = new CardTemplateRenderer.CardRenderContext
+                        {
+                            BusinessName = loyaltyRow.BusinessName,
+                            BusinessLogoUrl = loyaltyRow.BusinessLogoUrl,
+                            BusinessDescription = loyaltyRow.BusinessDescription,
+                            CustomerName = enrollment.CustomerFullName,
+                            CampaignName = loyaltyRow.ProgramName,
+                            CardName = loyaltyRow.ProgramName,
+                            TotalStamps = required,
+                            CompletedStamps = Math.Clamp(loyaltyRow.TotalStamps, 0, required),
+                            RewardName = rewardDescription,
+                            StampFilledColor = resolved.Config?.Colors.Primary ?? "#059669",
+                            StampEmptyColor = resolved.Config?.Colors.Surface ?? "#E5E7EB",
+                        };
+                        renderContext.CardStatus = loyaltyRow.TotalStamps >= required ? "reward-ready" : "active";
+                        renderContext.RewardStatus = loyaltyRow.TotalStamps >= required ? "ready" : "in-progress";
+                        loyalty.CardDesignHtml = _cardDesignResolver.Render(
+                            resolved, renderContext, loyaltyRow.CardId);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Card design resolution failed for customer.");
+                    }
+                }
+            }
+
+            var elapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            _logger.LogInformation("Customer details for {CustomerId} in {ElapsedMs}ms.", customerId, elapsedMs);
+
+            return ApiResponse<CustomerDetailsResponse>.Ok(new CustomerDetailsResponse
+            {
+                Customer = new CustomerDetailsCustomerBlock
+                {
+                    UserId = customerId,
+                    FullName = enrollment.CustomerFullName,
+                    Email = enrollment.CustomerEmail,
+                    PhoneNumber = enrollment.CustomerPhone,
+                    DateOfBirth = enrollment.CustomerDob,
+                    Gender = enrollment.CustomerGender,
+                    AvatarUrl = enrollment.CustomerAvatar,
+                    EnrolledAt = enrollment.EnrolledAt,
+                    LastStampAt = loyaltyRow?.LastStampAt,
+                },
+                Status = new CustomerDetailsStatusBlock
+                {
+                    EnrollmentStatus = enrollment.Status == CustomerBusinessEnrollmentStatus.Active
+                        ? "active" : enrollment.Status.ToString().ToLowerInvariant(),
+                    HasLoyaltyCard = loyaltyRow != null,
+                },
+                Metrics = metrics,
+                Loyalty = loyalty,
+                ServerMs = (long)Math.Round(elapsedMs, 0),
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting customer details.");
+            return ApiResponse<CustomerDetailsResponse>.Fail("DETAILS_FAILED", "Failed to load customer details.");
+        }
+    }
+
+
     /// <summary>
     /// Customer management overview for the owner: summary counts, engagement
     /// snapshot (top customers / soon-to-reward / recently active).
@@ -693,37 +889,57 @@ public partial class BusinessService : IBusinessService
         var stampTotal = await _context.Stamps.CountAsync(s => s.CardId == card.Id);
         var redemptionTotal = await _context.Redemptions.CountAsync(r => r.CardId == card.Id);
 
-        var stamps = await _context.Stamps
+        var stampRows = await _context.Stamps
+            .AsNoTracking()
             .Where(s => s.CardId == card.Id)
             .OrderByDescending(s => s.StampedAt)
             .Take(fetchBound)
-            .Select(s => new CustomerActivityItem
-            {
-                ActivityId = s.Id,
-                ActivityType = "stamp",
-                StampNumber = s.StampNumber,
-                StaffName = s.AwardedByUserId != null
-                    ? _context.Users.Where(u => u.Id == s.AwardedByUserId).Select(u => u.FullName).FirstOrDefault()
-                    : null,
-                Timestamp = s.StampedAt
-            })
+            .Select(s => new { s.Id, s.StampNumber, s.AwardedByUserId, s.StampedAt })
             .ToListAsync();
 
-        var redemptions = await _context.Redemptions
+        var redemptionRows = await _context.Redemptions
+            .AsNoTracking()
             .Where(r => r.CardId == card.Id)
             .OrderByDescending(r => r.RedeemedAt)
             .Take(fetchBound)
-            .Select(r => new CustomerActivityItem
-            {
-                ActivityId = r.Id,
-                ActivityType = "redemption",
-                StaffName = r.PerformedByUserId != null
-                    ? _context.Users.Where(u => u.Id == r.PerformedByUserId).Select(u => u.FullName).FirstOrDefault()
-                    : null,
-                RewardValue = r.RewardValue,
-                Timestamp = r.RedeemedAt
-            })
+            .Select(r => new { r.Id, r.PerformedByUserId, r.RewardValue, r.RedeemedAt })
             .ToListAsync();
+
+        // One batched staff-name lookup replaces the old correlated
+        // subquery per activity row (N+1 inside pagination).
+        var staffIds = stampRows.Where(s => s.AwardedByUserId.HasValue).Select(s => s.AwardedByUserId!.Value)
+            .Concat(redemptionRows.Where(r => r.PerformedByUserId.HasValue).Select(r => r.PerformedByUserId!.Value))
+            .Distinct()
+            .ToList();
+        var staffNames = staffIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _context.Users
+                .AsNoTracking()
+                .Where(u => staffIds.Contains(u.Id))
+                .Select(u => new { u.Id, u.FullName })
+                .ToDictionaryAsync(u => u.Id, u => u.FullName);
+
+        var stamps = stampRows.Select(s => new CustomerActivityItem
+        {
+            ActivityId = s.Id,
+            ActivityType = "stamp",
+            StampNumber = s.StampNumber,
+            StaffName = s.AwardedByUserId.HasValue
+                ? staffNames.GetValueOrDefault(s.AwardedByUserId.Value)
+                : null,
+            Timestamp = s.StampedAt
+        }).ToList();
+
+        var redemptions = redemptionRows.Select(r => new CustomerActivityItem
+        {
+            ActivityId = r.Id,
+            ActivityType = "redemption",
+            StaffName = r.PerformedByUserId.HasValue
+                ? staffNames.GetValueOrDefault(r.PerformedByUserId.Value)
+                : null,
+            RewardValue = r.RewardValue,
+            Timestamp = r.RedeemedAt
+        }).ToList();
 
         var items = stamps.Concat(redemptions)
             .OrderByDescending(a => a.Timestamp)

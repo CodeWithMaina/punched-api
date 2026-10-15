@@ -271,6 +271,56 @@ public static class ModuleCatalog
                 new PermissionDefinition("cardDesigns.view",   new[] { "Business" }),
                 new PermissionDefinition("cardDesigns.select", new[] { "Business" }),
             }),
+        // ── Reviews, gallery & storefront — owner-dashboard surfaces that are
+        // switchable per subscription (AdminSubscriptionTiers) and per business
+        // (AdminModulesController overrides). Public/customer READ paths stay
+        // open by design: the customer review capability stays derived from
+        // "appointments" and public storefront/review endpoints are
+        // [AllowAnonymous], which [RequireModule] always skips.
+        new ModuleDefinition(
+            Key: "reviews", Name: "Reviews",
+            Description: "Customer reviews and ratings moderation",
+            Version: "1.0.0", Visibility: ModuleVisibility.Standard,
+            Dependencies: Array.Empty<string>(),
+            // Staff see only reviews about their OWN work (staff/me/reviews,
+            // token-scoped); moderation and insights stay owner-only.
+            RequiredRoles: new[] { "Business", "Staff" },
+            // Business-internal: the moderation/insights surface is an owner
+            // tool. Customers write reviews against a completed appointment
+            // (capability derived from "appointments"), never this module.
+            CustomerCapability: null,
+            Permissions: new[]
+            {
+                new PermissionDefinition("reviews.view",   new[] { "Business", "Staff" }),
+                new PermissionDefinition("reviews.manage", new[] { "Business" }),
+            }),
+        new ModuleDefinition(
+            Key: "gallery", Name: "Gallery",
+            Description: "Business photo gallery management",
+            Version: "1.0.0", Visibility: ModuleVisibility.Standard,
+            Dependencies: Array.Empty<string>(),
+            RequiredRoles: new[] { "Business" },
+            // Business-internal: gallery uploads/organization are owner tools.
+            CustomerCapability: null,
+            Permissions: new[]
+            {
+                new PermissionDefinition("gallery.view",   new[] { "Business" }),
+                new PermissionDefinition("gallery.manage", new[] { "Business" }),
+            }),
+        new ModuleDefinition(
+            Key: "storefront", Name: "Storefront",
+            Description: "Public business landing page editor",
+            Version: "1.0.0", Visibility: ModuleVisibility.Standard,
+            Dependencies: Array.Empty<string>(),
+            RequiredRoles: new[] { "Business" },
+            // Business-internal: editing the public page is an owner tool;
+            // the published page itself stays publicly readable.
+            CustomerCapability: null,
+            Permissions: new[]
+            {
+                new PermissionDefinition("storefront.view",   new[] { "Business" }),
+                new PermissionDefinition("storefront.manage", new[] { "Business" }),
+            }),
     };
 
     /// <summary>Finds a module definition by key (case-insensitive).</summary>

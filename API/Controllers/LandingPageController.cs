@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Interfaces;
 
@@ -8,13 +9,15 @@ namespace PunchedApi.API.Controllers;
 
 /// <summary>
 /// Controlled business landing-page configuration.
-/// Owner: GET/PUT me/landing-page (own business only, version-guarded).
-/// Public: GET public/{id}/landing-page (sanitized, capability-filtered).
+/// Owner: GET/PUT me/landing-page (own business only, version-guarded) —
+/// gated by the storefront module. Public: GET public/{id}/landing-page
+/// (sanitized, capability-filtered, [AllowAnonymous] so the module gate skips it).
 /// </summary>
 [ApiController]
 [Route("v1/businesses")]
 [Produces("application/json")]
 [EnableRateLimiting("general")]
+[RequireModule("storefront")]
 public class LandingPageController : ControllerBase
 {
     private readonly ILandingPageService _landingPages;

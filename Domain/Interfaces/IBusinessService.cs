@@ -38,6 +38,7 @@ public interface IBusinessService
         int page,
         int pageSize);
     Task<ApiResponse<BusinessCustomerResponse>> GetSingleCustomerAsync(Guid ownerId, Guid customerId);
+    Task<ApiResponse<CustomerDetailsResponse>> GetCustomerDetailsAsync(Guid ownerId, Guid customerId, CancellationToken cancellationToken = default);
     Task<ApiResponse<CustomerOverviewResponse>> GetCustomerOverviewAsync(Guid ownerId);
     Task<ApiResponse<CustomerActivityFeedResponse>> GetCustomerActivityAsync(Guid ownerId, Guid customerId, int page = 1, int pageSize = 10);
     Task<ApiResponse<BusinessDashboardResponse>> GetDashboardAsync(Guid ownerId);

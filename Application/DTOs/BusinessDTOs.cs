@@ -1576,6 +1576,164 @@ public class StaffMemberAnalyticsResponse
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  CUSTOMER DETAILS (owner view, single-request initial screen)
+//  One compact DTO backs GET me/customers/{id}/details: identity +
+//  status + overview metrics + loyalty summary. Appointments and
+//  activity stay paginated on their own tab endpoints and are never
+//  embedded here.
+// ═══════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Compact customer identity block for the details Overview tab.
+/// Mirrors <see cref="BusinessCustomerResponse"/> fields the first
+/// screen genuinely needs — no loyalty aggregates duplicated here
+/// (they live on <see cref="CustomerDetailsLoyaltySummary"/>).
+/// </summary>
+public class CustomerDetailsCustomerBlock
+{
+    [JsonPropertyName("userId")]
+    public Guid UserId { get; set; }
+
+    [JsonPropertyName("fullName")]
+    public string FullName { get; set; } = string.Empty;
+
+    [JsonPropertyName("email")]
+    public string Email { get; set; } = string.Empty;
+
+    [JsonPropertyName("phoneNumber")]
+    public string? PhoneNumber { get; set; }
+
+    [JsonPropertyName("dateOfBirth")]
+    public DateOnly? DateOfBirth { get; set; }
+
+    [JsonPropertyName("gender")]
+    public string? Gender { get; set; }
+
+    [JsonPropertyName("avatarUrl")]
+    public string? AvatarUrl { get; set; }
+
+    [JsonPropertyName("enrolledAt")]
+    public DateTime EnrolledAt { get; set; }
+
+    [JsonPropertyName("lastStampAt")]
+    public DateTime? LastStampAt { get; set; }
+}
+
+/// <summary>
+/// Authoritative enrollment status for one customer in this business.
+/// Uses the same vocabulary as <see cref="BusinessCustomerResponse"/>
+/// (<c>active | left | blocked</c>).
+/// </summary>
+public class CustomerDetailsStatusBlock
+{
+    [JsonPropertyName("enrollmentStatus")]
+    public string EnrollmentStatus { get; set; } = "active";
+
+    [JsonPropertyName("hasLoyaltyCard")]
+    public bool HasLoyaltyCard { get; set; }
+}
+
+/// <summary>
+/// Business-relevant overview metrics: value, engagement, retention.
+/// Definitions match the existing analytics vocabulary — stamps in the
+/// trailing 7d, lifetime stamps, redemptions, visits and recency.
+/// </summary>
+public class CustomerDetailsMetricsBlock
+{
+    [JsonPropertyName("stampsIn7d")]
+    public int StampsIn7d { get; set; }
+
+    [JsonPropertyName("visitsIn7d")]
+    public int VisitsIn7d { get; set; }
+
+    [JsonPropertyName("lifetimeStamps")]
+    public int LifetimeStamps { get; set; }
+
+    [JsonPropertyName("totalRedemptions")]
+    public int TotalRedemptions { get; set; }
+
+    [JsonPropertyName("totalVisits")]
+    public int TotalVisits { get; set; }
+
+    [JsonPropertyName("lastVisitAt")]
+    public DateTime? LastVisitAt { get; set; }
+}
+
+/// <summary>
+/// Single loyalty-card summary for the details page. One card per
+/// (customer, business) — carries the resolved design rendering data
+/// so the initial screen never needs GET /cards/managed/{cardId}.
+/// </summary>
+public class CustomerDetailsLoyaltySummary
+{
+    [JsonPropertyName("cardId")]
+    public Guid CardId { get; set; }
+
+    [JsonPropertyName("programId")]
+    public Guid ProgramId { get; set; }
+
+    [JsonPropertyName("programName")]
+    public string ProgramName { get; set; } = string.Empty;
+
+    [JsonPropertyName("totalStamps")]
+    public int TotalStamps { get; set; }
+
+    [JsonPropertyName("stampsRequired")]
+    public int StampsRequired { get; set; }
+
+    [JsonPropertyName("rewardDescription")]
+    public string RewardDescription { get; set; } = string.Empty;
+
+    [JsonPropertyName("rewardReady")]
+    public bool RewardReady { get; set; }
+
+    [JsonPropertyName("cardDesignId")]
+    public Guid? CardDesignId { get; set; }
+
+    [JsonPropertyName("cardDesignName")]
+    public string? CardDesignName { get; set; }
+
+    [JsonPropertyName("cardDesignIsDefault")]
+    public bool CardDesignIsDefault { get; set; }
+
+    [JsonPropertyName("cardDesignHtml")]
+    public string? CardDesignHtml { get; set; }
+
+    [JsonPropertyName("rewardValue")]
+    public decimal RewardValue { get; set; }
+
+    [JsonPropertyName("rewardExpirationHours")]
+    public int RewardExpirationHours { get; set; }
+}
+
+/// <summary>
+/// Aggregated customer-details response. Supplies everything the
+/// initial Overview shell needs in one request; appointments and
+/// activity load on demand from their own paginated endpoints.
+/// </summary>
+public class CustomerDetailsResponse
+{
+    [JsonPropertyName("customer")]
+    public CustomerDetailsCustomerBlock Customer { get; set; } = new();
+
+    [JsonPropertyName("status")]
+    public CustomerDetailsStatusBlock Status { get; set; } = new();
+
+    [JsonPropertyName("metrics")]
+    public CustomerDetailsMetricsBlock Metrics { get; set; } = new();
+
+    [JsonPropertyName("loyalty")]
+    public CustomerDetailsLoyaltySummary? Loyalty { get; set; }
+
+    /// <summary>
+    /// Server-side processing time in milliseconds (diagnostics only).
+    /// Never includes transport latency.
+    /// </summary>
+    [JsonPropertyName("serverMs")]
+    public long ServerMs { get; set; }
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  CUSTOMER PERIOD STATS (owner view, time-filtered)
 // ═══════════════════════════════════════════════════════════════
 

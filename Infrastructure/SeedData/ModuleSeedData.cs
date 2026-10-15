@@ -28,6 +28,9 @@ public static class ModuleSeedData
         // Custom Card Design is an ENHANCEMENT of loyalty, never a dependency of it:
         // loyalty grants the built-in default card, this module grants business-specific designs.
                 new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000014"), Key = "customCardDesign", Name = "Custom Card Design", Description = "Business-specific HTML card designs for loyalty stamp cards", IsCore = false, IsActive = true, DependenciesJson = "[\"loyalty\"]" },
-        new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000015"), Key = "payments", Name = "Payments", Description = "Direct-to-business payment collection (cash + M-PESA via Daraja)", IsCore = false, IsActive = true, DependenciesJson = "[\"appointments\"]" }
+        new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000015"), Key = "payments", Name = "Payments", Description = "Direct-to-business payment collection (cash + M-PESA via Daraja)", IsCore = false, IsActive = true, DependenciesJson = "[\"appointments\"]" },
+        new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000016"), Key = "reviews", Name = "Reviews", Description = "Customer reviews and ratings moderation", IsCore = false, IsActive = true },
+        new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000017"), Key = "gallery", Name = "Gallery", Description = "Business photo gallery management", IsCore = false, IsActive = true },
+        new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000018"), Key = "storefront", Name = "Storefront", Description = "Public business landing page editor", IsCore = false, IsActive = true }
     };
 }

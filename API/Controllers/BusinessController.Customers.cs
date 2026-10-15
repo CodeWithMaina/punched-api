@@ -70,6 +70,27 @@ public partial class BusinessController
     }
 
     /// <summary>
+    /// Aggregated customer-details payload for the details Overview shell:
+    /// identity + status + overview metrics + loyalty summary (with resolved
+    /// card-design HTML) in one business-scoped request. Appointments and
+    /// activity stay paginated on their own tab endpoints.
+    /// </summary>
+    [RequireModule("customers")]
+    [HttpGet("me/customers/{customerId:guid}/details")]
+    [Authorize(Roles = "Business")]
+    [ProducesResponseType(typeof(ApiResponse<CustomerDetailsResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetCustomerDetails(Guid customerId, CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _businessService.GetCustomerDetailsAsync(userId.Value, customerId, cancellationToken);
+        if (!result.Success) return NotFound(result);
+        return Ok(result);
+    }
+
+    /// <summary>
     /// Customer management overview for the owner: summary counts, engagement
     /// snapshot (top customers / soon-to-reward / recently active).
     /// </summary>

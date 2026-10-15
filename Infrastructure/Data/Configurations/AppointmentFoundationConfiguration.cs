@@ -37,6 +37,9 @@ public class AppointmentConfiguration : IEntityTypeConfiguration<Appointment>
 
         builder.HasIndex(x => new { x.BusinessId, x.ScheduledAt });
         builder.HasIndex(x => new { x.StaffUserId, x.ScheduledAt });
+        // Customer-details Appointments tab: paginated per-customer history
+        // within one business, newest first.
+        builder.HasIndex(x => new { x.BusinessId, x.CustomerId, x.ScheduledAt });
 
         builder.HasMany(x => x.Resources)
             .WithOne()

@@ -55,10 +55,28 @@ public static class CustomerCapabilityCatalog
     /// <summary>
     /// Leave a review. Core rather than module-gated: reviews are written
     /// against a completed appointment, so this capability is derived from
-    /// <see cref="Appointments"/> rather than from a catalog module
-    /// (<c>ReviewController</c> carries no <c>[RequireModule]</c>).
+    /// <see cref="Appointments"/> rather than from a catalog module. The
+    /// separate owner-facing "reviews" module only gates the business's
+    /// moderation surface (<c>ReviewController.GetOwner</c>).
     /// </summary>
     public const string Reviews = "reviews";
+
+    /// <summary>
+    /// The business's public photo gallery on the storefront. Derived from
+    /// the owner-facing <c>gallery</c> module — uploads are entitlement-gated
+    /// ([RequireModule("gallery")]), so a business that does not subscribe
+    /// has no gallery to show its visitors.
+    /// </summary>
+    public const string Gallery = "gallery";
+
+    /// <summary>
+    /// The public review feed on the storefront. Derived from the
+    /// owner-facing <c>reviews</c> module (the moderation surface a business
+    /// buys). WRITING a review stays governed by <see cref="Reviews"/>
+    /// (appointments); this key only gates READING the public feed, which is
+    /// how the storefront decides whether to advertise a Reviews tab at all.
+    /// </summary>
+    public const string GalleryReviews = "galleryReviews";
 
     /// <summary>
     /// Every customer capability, in the order the customer dashboard should
@@ -71,6 +89,8 @@ public static class CustomerCapabilityCatalog
         Loyalty,
         Rewards,
         Reviews,
+        Gallery,
+        GalleryReviews,
         Referrals,
         Payments,
         Notifications,
@@ -144,6 +164,12 @@ public static class CustomerCapabilityCatalog
 
             // Reviews follow the appointment they are written against.
             Reviews => has("appointments"),
+
+            // Storefront surfaces backed by owner-switchable modules: the
+            // Gallery tab needs the gallery module, the public review feed
+            // needs the reviews module (the owner's moderation entitlement).
+            Gallery => has("gallery"),
+            GalleryReviews => has("reviews"),
 
             _ => false,
         };

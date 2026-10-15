@@ -129,6 +129,8 @@ namespace PunchedApi.Migrations
 
                     b.HasIndex("StaffUserId", "ScheduledAt");
 
+                    b.HasIndex("BusinessId", "CustomerId", "ScheduledAt");
+
                     b.ToTable("appointments", (string)null);
                 });
 

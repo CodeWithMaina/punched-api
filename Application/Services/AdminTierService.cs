@@ -5,9 +5,7 @@ using PunchedApi.Application.Modules;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Infrastructure.Data;
 using static PunchedApi.Application.DTOs.TierModuleView;
-
 namespace PunchedApi.Application.Services;
-
 /// <summary>
 /// <see cref="IAdminTierService"/> implementation. Encapsulates tier CRUD,
 /// lifecycle state machine, and tier-module set management with audit +
@@ -25,12 +23,10 @@ public class AdminTierService : IAdminTierService
     private const string ErrActiveSubscribers = "TIER_HAS_ACTIVE_SUBSCRIBERS";
     private const string ErrInvalidTransition = "INVALID_LIFECYCLE_TRANSITION";
     private const string ErrTierNotFound = "TIER_NOT_FOUND";
-
     private readonly ApplicationDbContext _context;
     private readonly IModuleEntitlementService _entitlements;
     private readonly ISubscriptionAuditService _audit;
     private readonly ILogger<AdminTierService> _logger;
-
     public AdminTierService(
         ApplicationDbContext context,
         IModuleEntitlementService entitlements,
@@ -42,11 +38,9 @@ public class AdminTierService : IAdminTierService
         _audit = audit;
         _logger = logger;
     }
-
     // ═════════════════════════════════════════════════════════════
     //  LIST / SUMMARY
     // ═════════════════════════════════════════════════════════════
-
     public async Task<ApiResponse<List<AdminTierSummary>>> ListAsync()
     {
         try
@@ -57,14 +51,12 @@ public class AdminTierService : IAdminTierService
                 .OrderBy(p => p.DisplayOrder ?? int.MaxValue)
                 .ThenBy(p => p.Name)
                 .ToListAsync();
-
             // Efficient subscriber counts per tier (one grouped query).
             var counts = await _context.BusinessSubscriptions
                 .AsNoTracking()
                 .GroupBy(s => s.PlanId)
                 .Select(g => new { PlanId = g.Key, Count = g.Count() })
                 .ToDictionaryAsync(k => k.PlanId, v => v.Count);
-
             var response = tiers.Select(p => ToSummary(p, counts)).ToList();
             return ApiResponse<List<AdminTierSummary>>.Ok(response);
         }
@@ -74,7 +66,6 @@ public class AdminTierService : IAdminTierService
             return ApiResponse<List<AdminTierSummary>>.Fail("LIST_FAILED", "Failed to list subscription tiers.");
         }
     }
-
     public async Task<ApiResponse<AdminSubscriptionSummary>> GetSummaryAsync()
     {
         try
@@ -95,7 +86,6 @@ public class AdminTierService : IAdminTierService
             return ApiResponse<AdminSubscriptionSummary>.Fail("SUMMARY_FAILED", "Failed to compute subscription summary.");
         }
     }
-
     public async Task<ApiResponse<AdminTierDetail>> GetAsync(Guid id)
     {
         try
@@ -107,14 +97,12 @@ public class AdminTierService : IAdminTierService
                 .FirstOrDefaultAsync(p => p.Id == id);
             if (tier == null)
                 return ApiResponse<AdminTierDetail>.Fail(ErrTierNotFound, "No subscription tier exists with the given id.");
-
             var counts = await _context.BusinessSubscriptions
                 .AsNoTracking()
                 .Where(s => s.PlanId == id)
                 .GroupBy(s => s.PlanId)
                 .Select(g => g.Count())
                 .SingleOrDefaultAsync();
-
             return ApiResponse<AdminTierDetail>.Ok(ToDetail(tier, counts));
         }
         catch (Exception ex)
@@ -126,7 +114,6 @@ public class AdminTierService : IAdminTierService
 // ═════════════════════════════════════════════════════════════
     //  LIFECYCLE
     // ═════════════════════════════════════════════════════════════
-
     public async Task<ApiResponse<AdminTierDetail>> PublishAsync(Guid id, Guid? actorUserId)
     {
         try
@@ -137,36 +124,29 @@ public class AdminTierService : IAdminTierService
                 .FirstOrDefaultAsync(p => p.Id == id);
             if (tier == null)
                 return ApiResponse<AdminTierDetail>.Fail(ErrTierNotFound, "No subscription tier exists with the given id.");
-
             if (tier.LifecycleState is not (SubscriptionPlanLifecycleState.Draft or SubscriptionPlanLifecycleState.Inactive))
                 return ApiResponse<AdminTierDetail>.Fail(ErrInvalidTransition,
                     $"Cannot publish a tier in state '{tier.LifecycleState}'.");
-
             // Publish preconditions.
             var includedKeys = tier.PlanModules.Select(pm => pm.Module.Key).ToList();
             var hasCore = includedKeys.Any(k => ModuleCatalog.Find(k)?.Visibility == ModuleVisibility.Core);
             if (!hasCore)
                 return ApiResponse<AdminTierDetail>.Fail(ErrNoCoreModule,
                     "A tier must include at least one Core module before it can be published.");
-
             var dependencyProblem = FindDependencyProblem(includedKeys);
             if (dependencyProblem != null)
                 return ApiResponse<AdminTierDetail>.Fail(ErrDependencyMissing, dependencyProblem);
-
             var now = DateTime.UtcNow;
             ApplyState(tier, SubscriptionPlanLifecycleState.Active, now, actorUserId);
-
             // If no default tier exists yet, this published tier becomes the default.
             if (!await _context.SubscriptionPlans.AnyAsync(p => p.IsDefault))
                 tier.IsDefault = true;
-
             await _context.SaveChangesAsync();
             await InvalidateSubscribersAsync(id);
             await _audit.RecordAsync(
                 "TIER_PUBLISHED", actorUserId, targetBusinessId: null, targetPlanId: tier.Id,
                 payloadJson: JsonSerializer.Serialize(new { tier.Id, tier.Key, State = tier.LifecycleState.ToString() }),
                 reason: "Tier published.");
-
             _logger.LogInformation("Admin published subscription tier {TierKey} ({TierId}) by {Actor}.", tier.Key, tier.Id, actorUserId);
             return await GetAsync(id);
         }
@@ -176,7 +156,6 @@ public class AdminTierService : IAdminTierService
             return ApiResponse<AdminTierDetail>.Fail("PUBLISH_FAILED", "Failed to publish the subscription tier.");
         }
     }
-
     public async Task<ApiResponse<AdminTierDetail>> DeactivateAsync(Guid id, Guid? actorUserId)
     {
         try
@@ -184,12 +163,10 @@ public class AdminTierService : IAdminTierService
             var tier = await _context.SubscriptionPlans.FirstOrDefaultAsync(p => p.Id == id);
             if (tier == null)
                 return ApiResponse<AdminTierDetail>.Fail(ErrTierNotFound, "No subscription tier exists with the given id.");
-
             // Draft / Active → Inactive. Archived is terminal.
             if (tier.LifecycleState is not (SubscriptionPlanLifecycleState.Draft or SubscriptionPlanLifecycleState.Active))
                 return ApiResponse<AdminTierDetail>.Fail(ErrInvalidTransition,
                     $"Cannot deactivate a tier in state '{tier.LifecycleState}'.");
-
             var now = DateTime.UtcNow;
             ApplyState(tier, SubscriptionPlanLifecycleState.Inactive, now, actorUserId);
             await _context.SaveChangesAsync();
@@ -197,7 +174,6 @@ public class AdminTierService : IAdminTierService
                 "TIER_DEACTIVATED", actorUserId, targetBusinessId: null, targetPlanId: tier.Id,
                 payloadJson: JsonSerializer.Serialize(new { tier.Id, tier.Key }),
                 reason: "Tier deactivated (existing subscribers keep access until expiry).");
-
             _logger.LogInformation("Admin deactivated subscription tier {TierKey} ({TierId}) by {Actor}.", tier.Key, tier.Id, actorUserId);
             return await GetAsync(id);
         }
@@ -207,6 +183,70 @@ public class AdminTierService : IAdminTierService
             return ApiResponse<AdminTierDetail>.Fail("DEACTIVATE_FAILED", "Failed to deactivate the subscription tier.");
         }
     }
+public async Task<ApiResponse<AdminTierDetail>> UnarchiveAsync(Guid id, Guid? actorUserId)
+    {
+        try
+        {
+            var tier = await _context.SubscriptionPlans.FirstOrDefaultAsync(p => p.Id == id);
+            if (tier == null)
+                return ApiResponse<AdminTierDetail>.Fail(ErrTierNotFound, "No subscription tier exists with the given id.");
+            // Archived is the only state that can be restored to a live-assignable
+            // state; Active/Inactive/Draft are terminal from the archive perspective.
+            if (tier.LifecycleState != SubscriptionPlanLifecycleState.Archived)
+                return ApiResponse<AdminTierDetail>.Fail(ErrInvalidTransition,
+                    $"Cannot unarchive a tier in state '{tier.LifecycleState}'. Only archived tiers can be restored.");
+            var now = DateTime.UtcNow;
+            ApplyState(tier, SubscriptionPlanLifecycleState.Inactive, now, actorUserId);
+            // ApplyState (Inactive branch) clears Scheduled/Last timestamps; ArchivedAt
+            // is cleared again for clarity.
+            tier.ArchivedAt = null;
+            await _context.SaveChangesAsync();
+            await _audit.RecordAsync(
+                "TIER_UNARCHIVED", actorUserId, targetBusinessId: null, targetPlanId: tier.Id,
+                payloadJson: JsonSerializer.Serialize(new { tier.Id, tier.Key }),
+                reason: "Tier restored from archive to active assignment.");
+            _logger.LogInformation("Admin unarchived subscription tier {TierKey} ({TierId}) by {Actor}.", tier.Key, tier.Id, actorUserId);
+            return await GetAsync(id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to unarchive subscription tier {TierId}.", id);
+            return ApiResponse<AdminTierDetail>.Fail("UNARCHIVE_FAILED", "Failed to restore the subscription tier.");
+        }
+    }
+    public async Task<ApiResponse<MessageResponse>> PurgeAsync(Guid id, Guid? actorUserId)
+    {
+        try
+        {
+            var tier = await _context.SubscriptionPlans.FirstOrDefaultAsync(p => p.Id == id);
+            if (tier == null)
+                return ApiResponse<MessageResponse>.Fail(ErrTierNotFound, "No subscription tier exists with the given id.");
+            if (tier.LifecycleState != SubscriptionPlanLifecycleState.Archived)
+                return ApiResponse<MessageResponse>.Fail(ErrInvalidTransition,
+                    $"Cannot permanently delete a tier in state '{tier.LifecycleState}'. Only archived tiers can be permanently deleted.");
+            var hasSubscribers = await _context.BusinessSubscriptions.AnyAsync(s => s.PlanId == id);
+            if (hasSubscribers)
+                return ApiResponse<MessageResponse>.Fail(ErrActiveSubscribers,
+                    "This tier has business subscriptions and cannot be permanently deleted. Deactivate and archive it first, then delete it permanently.");
+            _context.PlanModules.RemoveRange(tier.PlanModules);
+            _context.SubscriptionPlans.Remove(tier);
+            await _context.SaveChangesAsync();
+            await _audit.RecordAsync(
+                "TIER_PURGED", actorUserId, targetBusinessId: null, targetPlanId: tier.Id,
+                payloadJson: JsonSerializer.Serialize(new { tier.Id, tier.Key }),
+                reason: "Tier permanently deleted by admin.");
+            _logger.LogInformation("Admin permanently deleted subscription tier {TierKey} ({TierId}) by {Actor}.", tier.Key, tier.Id, actorUserId);
+            return ApiResponse<MessageResponse>.Ok(new MessageResponse
+            {
+                Message = $"Tier '{tier.Key}' permanently deleted."
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to permanently delete subscription tier {TierId}.", id);
+            return ApiResponse<MessageResponse>.Fail("PURGE_FAILED", "Failed to permanently delete the subscription tier.");
+        }
+    }
 public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? actorUserId)
     {
         try
@@ -214,19 +254,16 @@ public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? acto
             var tier = await _context.SubscriptionPlans.FirstOrDefaultAsync(p => p.Id == id);
             if (tier == null)
                 return ApiResponse<AdminTierDetail>.Fail(ErrTierNotFound, "No subscription tier exists with the given id.");
-
             // Draft / Inactive → Archived (terminal). Active must be deactivated first.
             if (tier.LifecycleState is not (SubscriptionPlanLifecycleState.Draft or SubscriptionPlanLifecycleState.Inactive))
                 return ApiResponse<AdminTierDetail>.Fail(ErrInvalidTransition,
                     $"Cannot archive a tier in state '{tier.LifecycleState}'. Deactivate it first.");
-
             var hasActiveSubscribers = await _context.BusinessSubscriptions.AnyAsync(s =>
                 s.PlanId == id && (s.Status == "active" || s.Status == "trial") &&
                 (!s.EndsAt.HasValue || s.EndsAt > DateTime.UtcNow));
             if (hasActiveSubscribers)
                 return ApiResponse<AdminTierDetail>.Fail(ErrActiveSubscribers,
                     "The tier has active subscribers and cannot be archived until they expire or are moved.");
-
             var now = DateTime.UtcNow;
             ApplyState(tier, SubscriptionPlanLifecycleState.Archived, now, actorUserId);
             tier.ArchivedAt = now;
@@ -235,7 +272,6 @@ public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? acto
                 "TIER_ARCHIVED", actorUserId, targetBusinessId: null, targetPlanId: tier.Id,
                 payloadJson: JsonSerializer.Serialize(new { tier.Id, tier.Key }),
                 reason: "Tier archived (terminal).");
-
             _logger.LogInformation("Admin archived subscription tier {TierKey} ({TierId}) by {Actor}.", tier.Key, tier.Id, actorUserId);
             return await GetAsync(id);
         }
@@ -248,7 +284,6 @@ public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? acto
 // ═════════════════════════════════════════════════════════════
     //  CREATE / UPDATE / DELETE
     // ═════════════════════════════════════════════════════════════
-
     public async Task<ApiResponse<AdminTierDetail>> CreateAsync(AdminTierCreateRequest request, Guid? actorUserId)
     {
         try
@@ -256,10 +291,8 @@ public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? acto
             var key = request.Key.Trim().ToLowerInvariant();
             if (await _context.SubscriptionPlans.AnyAsync(p => p.Key == key))
                 return ApiResponse<AdminTierDetail>.Fail(ErrDuplicateKey, $"A tier with key '{key}' already exists.");
-
             if (request.IsDefault)
                 await ClearDefaultFlagAsync();
-
             var now = DateTime.UtcNow;
             // New tiers always start as Draft (not assignable, IsActive mirrored false).
             var tier = new SubscriptionPlan
@@ -278,7 +311,6 @@ public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? acto
             };
             _context.SubscriptionPlans.Add(tier);
             await _context.SaveChangesAsync();
-
             if (request.ModuleKeys.Count > 0)
             {
                 var moduleError = await ApplyModuleSetAsync(tier, request.ModuleKeys);
@@ -292,12 +324,11 @@ public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? acto
                 }
                 await _context.SaveChangesAsync();
             }
-
             await _audit.RecordAsync(
                 "TIER_CREATED", actorUserId, targetBusinessId: null, targetPlanId: tier.Id,
                 payloadJson: JsonSerializer.Serialize(new { tier.Id, tier.Key, tier.Name, tier.Price }),
                 reason: "Tier created as Draft.");
-_logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as Draft by {Actor}.", tier.Key, tier.Id, actorUserId);
+            _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as Draft by {Actor}.", tier.Key, tier.Id, actorUserId);
             return await GetAsync(tier.Id);
         }
         catch (Exception ex)
@@ -306,7 +337,6 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
             return ApiResponse<AdminTierDetail>.Fail("CREATE_FAILED", "Failed to create the subscription tier.");
         }
     }
-
     public async Task<ApiResponse<AdminTierDetail>> UpdateAsync(Guid id, AdminTierUpdateRequest request, Guid? actorUserId)
     {
         try
@@ -314,30 +344,25 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
             var tier = await _context.SubscriptionPlans.FirstOrDefaultAsync(p => p.Id == id);
             if (tier == null)
                 return ApiResponse<AdminTierDetail>.Fail(ErrTierNotFound, "No subscription tier exists with the given id.");
-
             if (tier.LifecycleState == SubscriptionPlanLifecycleState.Archived)
                 return ApiResponse<AdminTierDetail>.Fail(ErrInvalidTransition, "Archived tiers cannot be edited.");
-
             var before = ToPayloadSnapshot(tier);
             tier.Name = request.Name.Trim();
             tier.Description = Normalize(request.Description);
             tier.Price = request.Price;
             tier.BillingInterval = request.BillingInterval;
             tier.DisplayOrder = request.DisplayOrder;
-
             if (request.IsDefault != tier.IsDefault)
             {
                 if (request.IsDefault)
                     await ClearDefaultFlagAsync();
                 tier.IsDefault = request.IsDefault;
             }
-
             await _context.SaveChangesAsync();
             await _audit.RecordAsync(
                 "TIER_UPDATED", actorUserId, targetBusinessId: null, targetPlanId: tier.Id,
                 payloadJson: JsonSerializer.Serialize(new { before, after = ToPayloadSnapshot(tier) }),
                 reason: "Tier metadata updated.");
-
             _logger.LogInformation("Admin updated subscription tier {TierKey} ({TierId}) by {Actor}.", tier.Key, tier.Id, actorUserId);
             return await GetAsync(id);
         }
@@ -347,7 +372,6 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
             return ApiResponse<AdminTierDetail>.Fail("UPDATE_FAILED", "Failed to update the subscription tier.");
         }
     }
-
     public async Task<ApiResponse<MessageResponse>> DeleteAsync(Guid id, Guid? actorUserId)
     {
         var archive = await ArchiveAsync(id, actorUserId);
@@ -360,11 +384,9 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
             Message = $"Tier '{archive.Data!.Key}' archived."
         });
     }
-
 // ═════════════════════════════════════════════════════════════
     //  TIER MODULES
     // ═════════════════════════════════════════════════════════════
-
     public async Task<ApiResponse<AdminTierModulesResponse>> GetModulesAsync(Guid id)
     {
         try
@@ -376,7 +398,6 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
                 .FirstOrDefaultAsync(p => p.Id == id);
             if (tier == null)
                 return ApiResponse<AdminTierModulesResponse>.Fail(ErrTierNotFound, "No subscription tier exists with the given id.");
-
             var included = tier.PlanModules.Select(pm => pm.Module.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var response = new AdminTierModulesResponse
             {
@@ -392,7 +413,6 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
             return ApiResponse<AdminTierModulesResponse>.Fail("GET_FAILED", "Failed to load tier modules.");
         }
     }
-
     public async Task<ApiResponse<AdminTierModulesResponse>> SetModulesAsync(Guid id, AdminTierModulesRequest request, Guid? actorUserId)
     {
         try
@@ -403,29 +423,23 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
                 .FirstOrDefaultAsync(p => p.Id == id);
             if (tier == null)
                 return ApiResponse<AdminTierModulesResponse>.Fail(ErrTierNotFound, "No subscription tier exists with the given id.");
-
-            if (tier.LifecycleState == SubscriptionPlanLifecycleState.Active)
-                return ApiResponse<AdminTierModulesResponse>.Fail(ErrActiveModuleEditDisabled,
-                    "This tier is live. Deactivate it to change its modules.");
-
+            // Module sets stay editable for live tiers — the matrix drives
+            // which entitlements active subscribers receive.
             if (tier.LifecycleState == SubscriptionPlanLifecycleState.Archived)
                 return ApiResponse<AdminTierModulesResponse>.Fail(ErrInvalidTransition,
                     "Archived tiers cannot have their modules edited.");
-
             var moduleError = await ApplyModuleSetAsync(tier, request.ModuleKeys);
             if (moduleError != null)
             {
                 var (sErrCode, sErrMsg) = moduleError.Value;
                 return ApiResponse<AdminTierModulesResponse>.Fail(sErrCode, sErrMsg);
             }
-
             await _context.SaveChangesAsync();
             await InvalidateSubscribersAsync(id);
             await _audit.RecordAsync(
                 "TIER_MODULES_SET", actorUserId, targetBusinessId: null, targetPlanId: tier.Id,
                 payloadJson: JsonSerializer.Serialize(new { moduleKeys = tier.PlanModules.Select(pm => pm.Module.Key).ToList() }),
                 reason: request.Reason ?? "Tier module set updated.");
-
             _logger.LogInformation("Admin set module set for tier {TierKey} ({TierId}) to {Count} modules by {Actor}.",
                 tier.Key, tier.Id, tier.PlanModules.Count, actorUserId);
             return await GetModulesAsync(id);
@@ -436,14 +450,12 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
             return ApiResponse<AdminTierModulesResponse>.Fail("UPDATE_FAILED", "Failed to update tier modules.");
         }
     }
-
     public async Task<ApiResponse<AdminModulesCatalogResponse>> GetCatalogModulesAsync()
     {
         try
         {
             var dbModules = (await _context.Modules.AsNoTracking().ToListAsync())
                 .ToDictionary(m => m.Key, StringComparer.OrdinalIgnoreCase);
-
             var catalog = ModuleCatalog.Modules
                 .OrderBy(m => m.Visibility)
                 .ThenBy(m => m.Name)
@@ -461,7 +473,6 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
                     };
                 })
                 .ToList();
-
             return ApiResponse<AdminModulesCatalogResponse>.Ok(new AdminModulesCatalogResponse { Modules = catalog });
         }
         catch (Exception ex)
@@ -473,7 +484,6 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
 // ═════════════════════════════════════════════════════════════
     //  HELPERS
     // ═════════════════════════════════════════════════════════════
-
     /// <summary>Atomically replaces a tier's module set (validating existence + dependencies).</summary>
     private async Task<(string Code, string Message)?> ApplyModuleSetAsync(SubscriptionPlan tier, IReadOnlyCollection<string> requestedKeys)
     {
@@ -487,36 +497,29 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
             .ToList();
         var allModules = await _context.Modules.AsNoTracking().ToListAsync();
         var modulesByKey = allModules.ToDictionary(m => m.Key, StringComparer.OrdinalIgnoreCase);
-
         if (modulesByKey.Count < normalized.Count || normalized.Any(k => !modulesByKey.ContainsKey(k)))
         {
             var missing = normalized.FirstOrDefault(k => !modulesByKey.ContainsKey(k));
             return (ErrInvalidModule, $"Module '{missing}' does not exist in the catalog.");
         }
-
         var dependencyProblem = FindDependencyProblem(normalized);
         if (dependencyProblem != null)
             return (ErrDependencyMissing, dependencyProblem);
-
         // Diff: insert missing rows, remove deleted rows, leave unchanged rows untouched.
         var requestedIds = normalized.Select(k => modulesByKey[k].Id).ToHashSet();
         var existing = tier.PlanModules.Select(pm => pm.ModuleId).ToHashSet();
-
         foreach (var moduleId in requestedIds.Where(id => !existing.Contains(id)))
         {
             tier.PlanModules.Add(new PlanModule { PlanId = tier.Id, ModuleId = moduleId });
         }
-
         var removed = tier.PlanModules.Where(pm => !requestedIds.Contains(pm.ModuleId)).ToList();
         foreach (var pm in removed)
         {
             tier.PlanModules.Remove(pm);
             _context.PlanModules.Remove(pm);
         }
-
         return null;
     }
-
     /// <summary>
     /// Dependency closure validation using the single source of truth
     /// (<see cref="ModuleCatalog"/>). A non-core included module must have all
@@ -526,12 +529,10 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
     private static string? FindDependencyProblem(IReadOnlyCollection<string> includedKeys)
     {
         var included = new HashSet<string>(includedKeys, StringComparer.OrdinalIgnoreCase);
-
         foreach (var key in includedKeys)
         {
             var definition = ModuleCatalog.Find(key);
             if (definition == null) continue;
-
             foreach (var dependency in definition.Dependencies)
             {
                 var depIsCore = ModuleCatalog.Find(dependency)?.Visibility == ModuleVisibility.Core;
@@ -544,10 +545,8 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
                     return $"Module '{key}' depends on '{dependency}', which is not included in this tier.";
             }
         }
-
         return null;
     }
-
     /// <summary>Invalidates every business subscribed to the given tier.</summary>
     private async Task InvalidateSubscribersAsync(Guid planId)
     {
@@ -559,7 +558,6 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
         foreach (var businessId in businessIds)
             _entitlements.Invalidate(businessId);
     }
-
     /// <summary>Clears the default flag on all tiers so a new one may become the sole default.</summary>
     private async Task ClearDefaultFlagAsync()
     {
@@ -570,13 +568,11 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
 // ═════════════════════════════════════════════════════════════
     //  MAPPING HELPERS
     // ═════════════════════════════════════════════════════════════
-
     /// <summary>Applies a lifecycle state transition, keeping the IsActive mirror invariant.</summary>
     private static void ApplyState(SubscriptionPlan tier, SubscriptionPlanLifecycleState next, DateTime now, Guid? actorUserId)
     {
         tier.LifecycleState = next;
         tier.IsActive = next == SubscriptionPlanLifecycleState.Active;
-
         if (next == SubscriptionPlanLifecycleState.Active)
         {
             tier.PublishedAt = now;
@@ -595,10 +591,8 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
             tier.DeactivatedAt ??= now;
         }
     }
-
     private static string? Normalize(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-
     private static Dictionary<string, object?> ToPayloadSnapshot(SubscriptionPlan p) => new()
     {
         ["key"] = p.Key,
@@ -609,7 +603,6 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
         ["isDefault"] = p.IsDefault,
         ["displayOrder"] = p.DisplayOrder
     };
-
     private static AdminTierSummary ToSummary(SubscriptionPlan p, Dictionary<Guid, int> counts) => new()
     {
         Id = p.Id,
@@ -626,7 +619,6 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
         CreatedAt = p.CreatedAt,
         UpdatedAt = p.DeactivatedAt ?? p.PublishedAt ?? p.CreatedAt
     };
-
     private static AdminTierDetail ToDetail(SubscriptionPlan p, int businessCount) => new()
     {
         Id = p.Id,
@@ -647,7 +639,6 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
         BusinessCount = businessCount,
         Modules = BuildModuleViews(p.PlanModules.Select(pm => pm.Module.Key).ToHashSet(StringComparer.OrdinalIgnoreCase))
     };
-
     private static List<TierModuleView> BuildModuleViews(HashSet<string> includedKeys) =>
         ModuleCatalog.Modules
             .OrderBy(m => m.Visibility)
@@ -663,4 +654,4 @@ _logger.LogInformation("Admin created subscription tier {TierKey} ({TierId}) as 
                 Dependencies = def.Dependencies.ToList()
             })
             .ToList();
-}
+    }

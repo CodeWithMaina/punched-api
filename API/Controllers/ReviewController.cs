@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using PunchedApi.API.Filters;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Interfaces;
@@ -37,9 +38,12 @@ public sealed class ReviewController : ControllerBase
     /// Staff: reviews left about the authenticated staff member's own work.
     /// The staff id is the token's userId — never a route/query parameter — so a
     /// staff member can only ever read reviews attributed to themselves.
+    /// Entitlement-gated like the owner surface: without the "reviews" module
+    /// the business has no reviews surface at all, staff included.
     /// </summary>
     [HttpGet("staff/me/reviews")]
     [Authorize(Roles = "Staff")]
+    [RequireModule("reviews")]
     public async Task<IActionResult> GetStaffMine([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     { var id = UserId(); return id == null ? Unauthorized() : Map(await _reviews.GetStaffReviewsAsync(id.Value, page, pageSize)); }
 
@@ -59,6 +63,7 @@ public sealed class ReviewController : ControllerBase
 
     [HttpGet("businesses/me/reviews")]
     [Authorize(Roles = "Business")]
+    [RequireModule("reviews")]
     public async Task<IActionResult> GetOwner(
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20,

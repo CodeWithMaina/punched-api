@@ -9,19 +9,28 @@ public static class PlanModuleSeedData
 {
     public static List<(string PlanKey, string ModuleKey)> GetPlanModules() => new()
     {
+        // Reviews / gallery / storefront are granted on EVERY tier by default
+        // (so no existing business loses access) but remain individually
+        // switchable per plan — admins toggle them off via
+        // AdminSubscriptionTiersController.SetModulesAsync, or per business
+        // via AdminModulesController overrides.
+
         // Starter
         ("starter", "customers"), ("starter", "staff"), ("starter", "settings"),
+        ("starter", "reviews"), ("starter", "gallery"), ("starter", "storefront"),
 
         // Growth
-                ("growth", "customers"), ("growth", "staff"), ("growth", "settings"),
+        ("growth", "customers"), ("growth", "staff"), ("growth", "settings"),
         ("growth", "appointments"), ("growth", "stamps"), ("growth", "notifications"),
         ("growth", "serviceCatalog"), ("growth", "attendance"), ("growth", "payments"),
+        ("growth", "reviews"), ("growth", "gallery"), ("growth", "storefront"),
 
         // Pro
         ("pro", "customers"), ("pro", "staff"), ("pro", "settings"),
         ("pro", "appointments"), ("pro", "stamps"), ("pro", "notifications"),
         ("pro", "loyalty"), ("pro", "analytics"), ("pro", "referral"), ("pro", "serviceCatalog"),
         ("pro", "attendance"), ("pro", "payments"),
+        ("pro", "reviews"), ("pro", "gallery"), ("pro", "storefront"),
 
         // Enterprise — the only tier that includes the optional Custom Card
         // Design enhancement. Every tier with "loyalty" keeps the DEFAULT card;
@@ -30,6 +39,7 @@ public static class PlanModuleSeedData
         ("enterprise", "appointments"), ("enterprise", "stamps"), ("enterprise", "notifications"),
         ("enterprise", "loyalty"), ("enterprise", "rewards"), ("enterprise", "analytics"), ("enterprise", "programs"),
         ("enterprise", "referral"), ("enterprise", "serviceCatalog"), ("enterprise", "attendance"),
-        ("enterprise", "customCardDesign"), ("enterprise", "payments")
+        ("enterprise", "customCardDesign"), ("enterprise", "payments"),
+        ("enterprise", "reviews"), ("enterprise", "gallery"), ("enterprise", "storefront")
     };
 }

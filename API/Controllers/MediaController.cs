@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Interfaces;
 
@@ -70,14 +71,19 @@ public sealed class MediaController : ControllerBase
     [HttpDelete("user/avatar")]
     public Task<IActionResult> ClearAvatar(CancellationToken cancellationToken) => HandleClearAvatar(cancellationToken);
     [HttpPost("business/gallery")]
+    [RequireModule("gallery")]
     public Task<IActionResult> AttachGallery([FromBody] AttachGalleryMediaRequest request, CancellationToken cancellationToken) => HandleAttachGallery(request, cancellationToken);
     [HttpGet("business/gallery")]
+    [RequireModule("gallery")]
     public Task<IActionResult> GetGallery(CancellationToken cancellationToken) => HandleGetGallery(cancellationToken);
     [HttpGet("business/gallery/capacity")]
+    [RequireModule("gallery")]
     public Task<IActionResult> GetGalleryCapacity(CancellationToken cancellationToken) => HandleGetGalleryCapacity(cancellationToken);
     [HttpPatch("business/gallery/order")]
+    [RequireModule("gallery")]
     public Task<IActionResult> ReorderGallery([FromBody] ReorderGalleryMediaRequest request, CancellationToken cancellationToken) => HandleReorderGallery(request, cancellationToken);
     [HttpDelete("business/gallery/{mediaId:guid}")]
+    [RequireModule("gallery")]
     public Task<IActionResult> DetachGallery(Guid mediaId, CancellationToken cancellationToken) => Detach("business-gallery", Guid.Empty, mediaId, cancellationToken);
     [HttpPut("service/{serviceId:guid}")]
     public Task<IActionResult> AttachService(Guid serviceId, [FromBody] AttachRelationshipMediaRequest request, CancellationToken cancellationToken) => HandleAttachService(serviceId, request, cancellationToken);

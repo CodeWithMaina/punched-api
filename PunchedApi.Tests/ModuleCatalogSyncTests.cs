@@ -149,4 +149,38 @@ public class ModuleCatalogSyncTests
         Assert.False(grantsByPlan["starter"].Contains("attendance"),
             "Plan 'starter' must NOT grant 'attendance'.");
     }
+
+    /// <summary>
+    /// Reviews / gallery / storefront are subscription-switchable modules:
+    /// registered in catalog + seed (non-core, no hard dependencies so each
+    /// can be switched off independently) and granted on every tier by
+    /// default so no existing business loses access.
+    /// </summary>
+    [Fact]
+    public void ReviewsGalleryStorefront_AreRegisteredAndGrantedOnEveryPlan()
+    {
+        var grantsByPlan = PlanModuleSeedData.GetPlanModules()
+            .GroupBy(pm => pm.PlanKey, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(pm => pm.ModuleKey).ToHashSet(StringComparer.Ordinal));
+
+        foreach (var key in new[] { "reviews", "gallery", "storefront" })
+        {
+            var definition = Catalog.Single(m => m.Key == key);
+            Assert.Equal(ModuleVisibility.Standard, definition.Visibility);
+            Assert.Empty(definition.Dependencies);
+            Assert.Contains("Business", definition.RequiredRoles);
+            Assert.Contains(definition.Permissions, p => p.Code == $"{key}.view");
+            Assert.Contains(definition.Permissions, p => p.Code == $"{key}.manage");
+
+            var seed = SeedModules.Single(m => m.Key == key);
+            Assert.False(seed.IsCore);
+            Assert.True(seed.IsActive);
+
+            foreach (var planKey in new[] { "starter", "growth", "pro", "enterprise" })
+            {
+                Assert.True(grantsByPlan[planKey].Contains(key),
+                    $"Plan '{planKey}' must grant '{key}'.");
+            }
+        }
+    }
 }

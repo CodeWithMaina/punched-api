@@ -128,6 +128,28 @@ public class AdminSubscriptionTiersController : ControllerBase
         return result.Success ? Ok(result) : StatusCode(FeatureErrorStatus(result.Error), result);
     }
 
+    /// <summary>Restores an Archived tier to Inactive (un-archive).</summary>
+    [HttpPost("subscription-tiers/{tierId:guid}/unarchive")]
+    [ProducesResponseType(typeof(ApiResponse<AdminTierDetail>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> UnarchiveTier(Guid tierId)
+    {
+        var result = await _tierService.UnarchiveAsync(tierId, CurrentUserId());
+        return result.Success ? Ok(result) : StatusCode(FeatureErrorStatus(result.Error), result);
+    }
+
+    /// <summary>Permanently deletes an Archived tier (requires zero business subscriptions).</summary>
+    [HttpDelete("subscription-tiers/{tierId:guid}/purge")]
+    [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> PurgeTier(Guid tierId)
+    {
+        var result = await _tierService.PurgeAsync(tierId, CurrentUserId());
+        return result.Success ? Ok(result) : StatusCode(FeatureErrorStatus(result.Error), result);
+    }
+
     // ── Tier modules / catalog ──────────────────────────────
 
     /// <summary>The tier's full module view (catalog + membership flags).</summary>
@@ -140,7 +162,7 @@ public class AdminSubscriptionTiersController : ControllerBase
         return result.Success ? Ok(result) : NotFound(result);
     }
 
-    /// <summary>Transactionally replaces the tier's module set (Draft/Inactive only).</summary>
+    /// <summary>Transactionally replaces the tier's module set (Draft, Inactive, or Active).</summary>
     [HttpPut("subscription-tiers/{tierId:guid}/modules")]
     [ProducesResponseType(typeof(ApiResponse<AdminTierModulesResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
