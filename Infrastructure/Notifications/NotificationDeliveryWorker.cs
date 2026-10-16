@@ -59,6 +59,8 @@ public sealed class NotificationDeliveryWorker : BackgroundService
         var context = provider.GetRequiredService<ApplicationDbContext>();
         var renderer = provider.GetRequiredService<ITemplateRenderer>();
         var channels = provider.GetServices<INotificationChannel>().ToArray();
+        // Optional so unit-test service providers without guards keep working.
+        var guard = provider.GetService<INotificationDispatchGuard>();
         var batchSize = Math.Max(1, _options.BatchSize);
 
         await store.ReclaimStaleProcessingAsync(TimeSpan.FromMinutes(Math.Max(1, _options.StaleProcessingMinutes)), ct);
@@ -73,14 +75,50 @@ public sealed class NotificationDeliveryWorker : BackgroundService
             try
             {
                 var row = await context.NotificationLogs.SingleAsync(item => item.Id == claimedRow.Id, ct);
+
+                // Unregistered mid-flight type: terminal immediately (classified as a
+                // permanent dead-letter) rather than throwing in BuildMessage forever.
+                if (!NotificationTypes.TryGet(row.TemplateType, out var definition))
+                {
+                    MarkFailed(row, $"permanent:unregistered_type:{row.TemplateType}");
+                    await context.SaveChangesAsync(ct);
+                    NotificationMetrics.RecordFailed(row.Channel);
+                    NotificationMetrics.RecordDeadLettered(row.Channel, "permanent");
+                    _logger.LogInformation(
+                        "Notification delivery dead-lettered {OutboxId} on channel {Channel}: unregistered type {TemplateType}",
+                        row.Id, row.Channel, row.TemplateType);
+                    continue;
+                }
+
                 var channel = Array.Find(channels, candidate =>
                     string.Equals(candidate.Name, row.Channel, StringComparison.Ordinal));
+
+                if (channel is not null && guard is not null)
+                {
+                    // Phase 1.6 dispatch guard: suppression / frequency cap / quiet
+                    // hours / tenant budget. Denials DEFER the row without consuming
+                    // a delivery attempt — deferral, never destruction.
+                    var verdict = await guard.EvaluateAsync(row, ct);
+                    if (!verdict.Allow)
+                    {
+                        row.Status = "pending";
+                        row.NextAttemptAt = verdict.RetryAtUtc ?? DateTime.UtcNow.AddHours(1);
+                        row.UpdatedAt = DateTime.UtcNow;
+                        await context.SaveChangesAsync(ct);
+                        NotificationMetrics.RecordSuppressed(definition.Category, verdict.Reason ?? "dispatch_guard");
+                        _logger.LogInformation(
+                            "Notification delivery deferred {OutboxId} on {Channel} for {TemplateType} until {RetryAtUtc}: {DeferralReason}",
+                            row.Id, row.Channel, row.TemplateType, row.NextAttemptAt, verdict.Reason);
+                        continue;
+                    }
+                }
 
                 if (channel is null)
                 {
                     MarkFailed(row, "permanent:no_channel_registered");
                     await context.SaveChangesAsync(ct);
                     NotificationMetrics.RecordFailed(row.Channel);
+                    NotificationMetrics.RecordDeadLettered(row.Channel, "permanent");
                     _logger.LogInformation(
                         "Notification delivery terminal {OutboxId} on channel {Channel} for {TemplateType}: no_channel_registered after {Attempts} attempts in {DurationMs} ms",
                         row.Id, row.Channel, row.TemplateType, row.Attempts, deliveryDurationMs);
@@ -131,6 +169,7 @@ public sealed class NotificationDeliveryWorker : BackgroundService
                 MarkFailed(row, $"permanent:{ex.Message}");
                 await context.SaveChangesAsync(ct);
                 NotificationMetrics.RecordFailed(row.Channel);
+                NotificationMetrics.RecordDeadLettered(row.Channel, "permanent");
                 _logger.LogInformation(
                     "Notification delivery terminal {OutboxId} on channel {Channel} for {TemplateType}: permanent failure after {Attempts} attempts in {DurationMs} ms",
                     row.Id, row.Channel, row.TemplateType, row.Attempts + 1, deliveryDurationMs);
@@ -144,21 +183,39 @@ public sealed class NotificationDeliveryWorker : BackgroundService
                     row.DeliveryAttemptsJson = attemptHistory.Serialize();
                 row.Attempts++;
                 row.UpdatedAt = DateTime.UtcNow;
-                if (row.Attempts >= 3)
+
+                // Per-type retry profile from the registry (Phase 1.4): attempts and
+                // exponential backoff come from the type definition — e.g.
+                // security.verification_code retries 10s → 60s for 3 attempts — with
+                // the legacy 3-attempt / 30s→5min shape as the fallback.
+                NotificationTypeDef? retryDefinition = null;
+                if (NotificationTypes.TryGet(row.TemplateType, out var retryDef))
+                    retryDefinition = retryDef;
+
+                var maxAttempts = retryDefinition?.RetryAttempts ?? 3;
+                if (row.Attempts >= maxAttempts)
                 {
                     MarkFailed(row, $"retry_exhausted:{ex.Message}");
                     await context.SaveChangesAsync(ct);
                     NotificationMetrics.RecordFailed(row.Channel);
+                    NotificationMetrics.RecordDeadLettered(row.Channel, "retry_exhausted");
                     _logger.LogInformation(
                         "Notification delivery terminal {OutboxId} on channel {Channel} for {TemplateType}: retries exhausted after {Attempts} attempts in {DurationMs} ms",
                         row.Id, row.Channel, row.TemplateType, row.Attempts, deliveryDurationMs);
                 }
                 else
                 {
+                    var backoff = retryDefinition?.InitialRetryDelay ?? TimeSpan.FromSeconds(30);
+                    var maxBackoff = retryDefinition?.MaxRetryDelay ?? TimeSpan.FromMinutes(5);
+                    for (var i = 1; i < row.Attempts; i++)
+                    {
+                        backoff = TimeSpan.FromTicks(backoff.Ticks * 2);
+                        if (backoff >= maxBackoff) break;
+                    }
+                    if (backoff > maxBackoff) backoff = maxBackoff;
+
                     row.Status = "pending";
-                    row.NextAttemptAt = row.UpdatedAt.Add(row.Attempts == 1
-                        ? TimeSpan.FromSeconds(30)
-                        : TimeSpan.FromMinutes(5));
+                    row.NextAttemptAt = row.UpdatedAt.Add(backoff);
                     await context.SaveChangesAsync(ct);
                     _logger.LogWarning(
                         "Notification delivery retry {OutboxId} on channel {Channel} for {TemplateType}; attempt {Attempts} took {DurationMs} ms and is scheduled for {NextAttemptAt}",
@@ -176,6 +233,16 @@ public sealed class NotificationDeliveryWorker : BackgroundService
     {
         row.Status = "failed";
         row.Error = error.Length <= 500 ? error : error[..500];
+
+        // Terminal rows carry the dead-letter classification (Phase 1.7): the admin
+        // failures view derives the same classes from the error prefix, and replay
+        // clears both fields when it requeues the row.
+        row.DeadLetteredAt = DateTime.UtcNow;
+        row.DeadLetterReason = error.StartsWith("retry_exhausted:", StringComparison.Ordinal)
+            ? "retry_exhausted"
+            : error.StartsWith("permanent:", StringComparison.Ordinal)
+                ? "permanent"
+                : "unknown";
         row.UpdatedAt = DateTime.UtcNow;
     }
 

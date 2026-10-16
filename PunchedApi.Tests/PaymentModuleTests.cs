@@ -35,11 +35,12 @@ public class PaymentModuleTests
             new PermissionService(),
             new PaymentCredentialProtector(Options.Create(new PaymentOptions()), env.Object),
             Options.Create(new PaymentOptions()),
+            BookingTestBase.CreateNotificationService(context),
             NullLogger<PaymentService>.Instance);
     }
 
     private static PaymentCallbackService CreateCallbackService(ApplicationDbContext context)
-        => new(context, new UnitOfWork(context), NullLogger<PaymentCallbackService>.Instance);
+        => new(context, new UnitOfWork(context), BookingTestBase.CreateNotificationService(context), NullLogger<PaymentCallbackService>.Instance);
 
     /// <summary>Seeds business + owner + customer + appointment with one 1,000 KES service.</summary>
     private static async Task<(Business business, User owner, User customer, Appointment appointment)>
@@ -58,6 +59,18 @@ public class PaymentModuleTests
             Status = "booked",
             CreatedAt = DateTime.UtcNow
         };
+        // The customer must be enrolled: payment notifications now run through the
+        // real NotificationService, which enforces recipient↔business association.
+        var enrollment = new CustomerBusinessEnrollment
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            BusinessId = business.Id,
+            Status = CustomerBusinessEnrollmentStatus.Active,
+            Source = "discovery",
+            EnrolledAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
         appointment.Resources.Add(new AppointmentResource
         {
             Id = Guid.NewGuid(),
@@ -69,6 +82,8 @@ public class PaymentModuleTests
             CreatedAt = DateTime.UtcNow
         });
         await BookingTestBase.SeedAsync(context, owner, business, customer, appointment);
+        context.CustomerBusinessEnrollments.Add(enrollment);
+        await context.SaveChangesAsync();
         return (business, owner, customer, appointment);
     }
 

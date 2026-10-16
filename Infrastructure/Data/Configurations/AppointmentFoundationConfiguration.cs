@@ -19,6 +19,7 @@ public class AppointmentConfiguration : IEntityTypeConfiguration<Appointment>
         builder.Property(x => x.EndAt).HasColumnName("end_at");
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(20);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
+        builder.Property(x => x.ReminderOptOut).HasColumnName("reminder_opt_out").HasDefaultValue(false);
 
         builder.HasOne<Business>()
             .WithMany()

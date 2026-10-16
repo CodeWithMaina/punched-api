@@ -109,6 +109,8 @@ public sealed class NotificationOutboxStore
             row.Attempts = 0;
             row.NextAttemptAt = now;
             row.UpdatedAt = now;
+            row.DeadLetteredAt = null;
+            row.DeadLetterReason = null;
             await _context.SaveChangesAsync(ct);
             return 1;
         }
@@ -123,7 +125,9 @@ public sealed class NotificationOutboxStore
                 .SetProperty(row => row.Attempts, 0)
                 .SetProperty(row => row.Error, (string?)null)
                 .SetProperty(row => row.NextAttemptAt, now)
-                .SetProperty(row => row.UpdatedAt, now), ct);
+                .SetProperty(row => row.UpdatedAt, now)
+                .SetProperty(row => row.DeadLetteredAt, (DateTime?)null)
+                .SetProperty(row => row.DeadLetterReason, (string?)null), ct);
     }
 
     private async Task<List<Guid>> ClaimPostgresIdsAsync(int take, CancellationToken ct)
@@ -137,6 +141,7 @@ public sealed class NotificationOutboxStore
             FROM notifications
             WHERE status = 'pending'
               AND next_attempt_at <= now()
+              AND (deliver_after_utc IS NULL OR deliver_after_utc <= now())
             ORDER BY created_at
             LIMIT @take
             FOR UPDATE SKIP LOCKED;

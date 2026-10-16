@@ -146,6 +146,24 @@ public class AppointmentController : ControllerBase
     }
 
     /// <summary>
+    /// Toggle the customer's reminder opt-out on an appointment. Opting out
+    /// cancels pending reminder jobs; opting back in recreates still-future ones.
+    /// </summary>
+    [HttpPost("{id:guid}/reminder-opt-out")]
+    [Authorize(Roles = "Customer")]
+    [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> ToggleReminderOptOut(Guid id, [FromBody] ToggleReminderOptOutRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.ToggleReminderOptOutAsync(userId.Value, "Customer", id, request.OptOut);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
     /// Maps an ApiResponse failure to the HTTP status dictated by backend.md §9.
     /// Success always returns 200 (Ok) via the callers.
     /// </summary>

@@ -204,7 +204,7 @@ public class SubscriptionLifecycleServiceTests : IDisposable
         AddFor(futureBiz, "starter", endsAt: asOf.AddDays(10));         // future → stays
         AddFor(infiniteBiz, "starter", endsAt: null);                   // infinite → stays
 
-        var businesses = await _expiryService.ExpireOverdueAsync(asOf);
+        var businesses = await _expiryService.ExpireOverdueAsync(asOf, default);
 
         Assert.Equal(2, businesses);
         Assert.Equal("expired", _db.BusinessSubscriptions.Single(s => s.BusinessId == overdueBiz).Status);
@@ -230,7 +230,7 @@ public class SubscriptionLifecycleServiceTests : IDisposable
     {
         AddSubscription("starter", endsAt: DateTime.UtcNow.AddDays(30));
 
-        var businesses = await _expiryService.ExpireOverdueAsync(DateTime.UtcNow);
+        var businesses = await _expiryService.ExpireOverdueAsync(DateTime.UtcNow, default);
 
         Assert.Equal(0, businesses);
     }

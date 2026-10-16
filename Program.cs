@@ -11,15 +11,19 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using PunchedApi.API.Middleware;
+using PunchedApi.Application;
 using PunchedApi.Application.Attendance;
 using PunchedApi.Application.Attendance.Verification;
 using PunchedApi.Application.Assets;
 using PunchedApi.Application.Authorization;
+using PunchedApi.Application.DomainEvents;
+using PunchedApi.Application.Handlers;
 using PunchedApi.Application.Loyalty;
 using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Modules;
 using PunchedApi.Application.Notifications;
 using PunchedApi.Application.Media;
+using PunchedApi.Application.Scheduling;
 using PunchedApi.Application.Services;
 using PunchedApi.Application.Settings;
 using PunchedApi.Application.Validators;
@@ -194,8 +198,17 @@ try
     builder.Services.AddSingleton<IMediaValidator, MediaValidator>();
     builder.Services.AddScoped<IMediaProcessor, MediaProcessor>();
     builder.Services.AddScoped<IObjectStore, R2ObjectStore>();
-    builder.Services.AddHostedService<MediaProcessingWorker>();
-    builder.Services.AddHostedService<MediaCleanupWorker>();
+
+    // WORKERS_ENABLED (Phase 1.5): one flag selects the API-only vs API+worker
+    // role. The env var WORKERS_ENABLED=false outranks appsettings.json; the
+    // default is enabled so existing deployments keep every worker until
+    // configured otherwise.
+    var workersEnabled = builder.Configuration.GetValue("WORKERS_ENABLED", true);
+    if (workersEnabled)
+    {
+        builder.Services.AddHostedService<MediaProcessingWorker>();
+        builder.Services.AddHostedService<MediaCleanupWorker>();
+    }
     builder.Services.AddScoped<IMediaService, MediaService>();
     builder.Services.AddScoped<PunchedApi.Application.Programs.IProgramRuleEngine, PunchedApi.Application.Programs.ProgramRuleEngine>();
     builder.Services.AddScoped<IIdempotencyService, IdempotencyService>();
@@ -207,13 +220,20 @@ try
     // one AddScoped line at a time (email = Phase 4, sms = Phase 6, push = Phase 7).
     builder.Services.AddScoped<INotificationService, NotificationService>();
     builder.Services.AddScoped<IPreferenceResolver, PreferenceResolver>();
+    // Phase 1.6: suppression / frequency / quiet-hours / budget guard consulted
+    // before external dispatch (and for in-app at acceptance).
+    builder.Services.AddScoped<INotificationDispatchGuard, NotificationDispatchGuard>();
     builder.Services.Configure<NotificationWorkerOptions>(
         builder.Configuration.GetSection(NotificationWorkerOptions.SectionName));
     builder.Services.Configure<SmsSettings>(builder.Configuration.GetSection(SmsSettings.SectionName));
     builder.Services.Configure<VapidSettings>(builder.Configuration.GetSection(VapidSettings.SectionName));
     builder.Services.AddScoped<NotificationOutboxStore>();
     builder.Services.AddScoped<ITemplateRenderer, TemplateRenderer>();
+builder.Services.AddScoped<EmailLayoutRenderer>();
+builder.Services.AddScoped<IUnsubscribeTokenService, UnsubscribeTokenService>();
+builder.Services.AddScoped<EmailLayoutRenderer>();
     builder.Services.AddScoped<INotificationSmtpDelivery, MailKitNotificationSmtpDelivery>();
+    builder.Services.AddScoped<INotificationOutboxService, NotificationOutboxService>();
     builder.Services.AddScoped<INotificationChannel, EmailChannel>();
     builder.Services.AddHttpClient<AfricaTalkingClient>();
     builder.Services.AddScoped<INotificationChannel, SmsChannel>();
@@ -224,6 +244,7 @@ try
     builder.Services.AddScoped<IReferralService, ReferralService>();
     builder.Services.AddScoped<IAdminService, AdminService>();
     builder.Services.AddScoped<AdminNotificationOperationsService>();
+    builder.Services.AddScoped<NotificationSuppressionService>();
     builder.Services.AddScoped<IAnalyticsAggregationService, AnalyticsAggregationService>();
     builder.Services.AddScoped<ISegmentationService, SegmentationService>();
     builder.Services.AddScoped<IInsightService, InsightService>();
@@ -328,12 +349,28 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     builder.Services.AddSingleton<ISseService, SseService>();
 
     // Periodic cleanup of expired tokens, QR tokens, and stale verification codes
-    builder.Services.AddHostedService<CleanupService>();
-    builder.Services.AddHostedService<NotificationDeliveryWorker>();
-    builder.Services.AddHostedService<PaymentExpiryWorker>();
-    builder.Services.AddHostedService<PayoutWorker>();
-    builder.Services.AddHostedService<AnalyticsWorker>();
-    builder.Services.AddHostedService<SubscriptionExpiryWorker>();
+    if (workersEnabled)
+    {
+        builder.Services.AddHostedService<CleanupService>();
+        builder.Services.AddHostedService<NotificationDeliveryWorker>();
+        builder.Services.AddHostedService<PaymentExpiryWorker>();
+        builder.Services.AddHostedService<PayoutWorker>();
+        builder.Services.AddHostedService<AnalyticsWorker>();
+        builder.Services.AddHostedService<SubscriptionExpiryWorker>();
+    }
+    if (workersEnabled)
+    {
+        builder.Services.AddHostedService<DomainEventRelayWorker>();
+        builder.Services.AddHostedService<ScheduledJobSchedulerWorker>();
+    }
+
+    // ── Domain-event relay (Phase 2) ────────────────────────
+    builder.Services.AddScoped<IDomainEventPublisher, DomainEventRelayService>();
+    builder.Services.AddScoped<IDomainEventHandler, AppointmentCompletedHandler>();
+    builder.Services.AddScoped<IDomainEventHandler, AppointmentCancelledHandler>();
+    builder.Services.AddScoped<IDomainEventHandler, AppointmentCreatedHandler>();
+    builder.Services.AddScoped<IDomainEventHandler, SubscriptionExpiringHandler>();
+builder.Services.AddScoped<AutomationRuleEvaluator>();
 
     // ── AutoMapper ──────────────────────────────────────────
     builder.Services.AddAutoMapper(typeof(MappingProfile));
@@ -618,16 +655,32 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     }
 
     // ── Apply pending database migrations on startup ────────
+    // In production, migrations run via an explicit release-step init job
+    // (dotnet ef database update) BEFORE the application starts. Boot-time
+    // MigrateAsync is disabled in production to prevent concurrent migration
+    // execution across multiple instances and to decouple schema changes from
+    // application deployment. Development/staging still auto-migrate for
+    // developer ergonomics.
+    var isProduction = app.Environment.IsProduction();
+    if (!isProduction)
+    {
+        using (var scope = app.Services.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await dbContext.Database.MigrateAsync();
+            Log.Information("Database migrations applied successfully (non-production).");
+        }
+    }
+    else
+    {
+        Log.Information("Skipping boot-time migrations in production. Migrations must be applied via the release-step init job before deployment.");
+    }
+
+    // ── Idempotent seed / backfill (runs in all environments) ────────
     using (var scope = app.Services.CreateScope())
     {
-        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        await dbContext.Database.MigrateAsync();
-        Log.Information("Database migrations applied successfully.");
-
-        // Assign subdomain slugs to any business still missing one (legacy
-        // rows, or rows inserted by an older app version during a rolling
-        // deploy). Idempotent; runs before the seeder so seeded slug
-        // availability checks see a fully provisioned table.
+        // Slug backfill, seeding, and admin bootstrapping are idempotent and
+        // safe to run in every environment (they do not mutate schema).
         var slugBackfill = scope.ServiceProvider.GetRequiredService<IBusinessSlugBackfill>();
         await slugBackfill.EnsureSlugsAsync();
 
@@ -683,7 +736,26 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     // endpoint that does not opt out, and liveness probes carry no token.
     app.MapGet("/", () => Results.Ok(new { status = "healthy", service = "Punched API", version = "1.0.0" }))
         .AllowAnonymous();
-    app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
+    app.MapGet("/health", async (ApplicationDbContext db) =>
+    {
+        var dbOk = false;
+        try
+        {
+            // Simple connectivity probe: can we reach the database?
+            dbOk = await db.Database.CanConnectAsync();
+        }
+        catch
+        {
+            // CanConnectAsync may throw on some providers; treat as unhealthy.
+        }
+        var workersEnabled = Environment.GetEnvironmentVariable("WORKERS_ENABLED") ?? "true";
+        return Results.Ok(new
+        {
+            status = dbOk ? "healthy" : "unhealthy",
+            database = dbOk ? "connected" : "disconnected",
+            workers = workersEnabled.Equals("true", StringComparison.OrdinalIgnoreCase) ? "enabled" : "disabled"
+        });
+    })
         .AllowAnonymous();
 
     app.Run();

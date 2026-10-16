@@ -19,4 +19,18 @@ public interface INotificationService
     /// </remarks>
     /// <exception cref="ArgumentException">Unknown type, or the recipient is not associated with <see cref="NotificationRequest.BusinessId"/>.</exception>
     Task<NotificationResult> SendAsync(NotificationRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// Accepts one notification intent WITHOUT saving: every row it produces (in-app
+    /// inbox, delivery ledger, external outbox) stays tracked in the caller's unit of
+    /// work so the caller's single <c>SaveChanges</c> commits the notification intent
+    /// atomically with the domain change that caused it (intent-level outbox).
+    /// </summary>
+    /// <remarks>
+    /// Call this BEFORE the caller's <c>SaveChanges</c>, never after — an unsaved intent
+    /// is discarded with the caller's transaction. Same acceptance semantics and
+    /// exceptions as <see cref="SendAsync"/>; the ledger's idempotency unique index
+    /// arbitrates any race at commit time.
+    /// </remarks>
+    Task<NotificationResult> QueueAsync(NotificationRequest request, CancellationToken ct = default);
 }

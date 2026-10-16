@@ -9,6 +9,7 @@ internal static class NotificationMetrics
     private static readonly Counter<long> Sent = Meter.CreateCounter<long>("notifications_sent_total");
     private static readonly Counter<long> Suppressed = Meter.CreateCounter<long>("notifications_suppressed_total");
     private static readonly Counter<long> Failed = Meter.CreateCounter<long>("notifications_failed_total");
+    private static readonly Counter<long> DeadLettered = Meter.CreateCounter<long>("notifications_dead_lettered_total");
     private static readonly Histogram<double> DeliveryDuration =
         Meter.CreateHistogram<double>("notifications_delivery_duration_ms", "ms");
     private static long _pendingQueueDepth;
@@ -34,6 +35,17 @@ internal static class NotificationMetrics
     }
 
     public static void RecordFailed(string channel) => Failed.Add(1, new KeyValuePair<string, object?>("channel", channel));
+
+    /// <summary>Terminal dead-letter, classified by reason (retry_exhausted | permanent | unknown).</summary>
+    public static void RecordDeadLettered(string channel, string reason)
+    {
+        var tags = new TagList
+        {
+            { "channel", channel },
+            { "reason", reason }
+        };
+        DeadLettered.Add(1, tags);
+    }
 
     public static void RecordDeliveryDuration(string channel, double milliseconds) =>
         DeliveryDuration.Record(milliseconds, new KeyValuePair<string, object?>("channel", channel));

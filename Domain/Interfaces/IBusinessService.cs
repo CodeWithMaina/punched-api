@@ -8,6 +8,9 @@ public interface IBusinessService
     Task<ApiResponse<BusinessResponse>> GetMyBusinessAsync(Guid ownerId);
     Task<ApiResponse<BusinessResponse>> UpdateMyBusinessAsync(Guid ownerId, UpdateBusinessRequest request);
 
+    /// <summary>Updates the business's reminder policy (enabled, offsets, channels).</summary>
+    Task<ApiResponse<BusinessResponse>> UpdateReminderPolicyAsync(Guid ownerId, UpdateBusinessReminderPolicyRequest request);
+
     /// <summary>
     /// Changes the owner's business subdomain slug (settings → Business URL).
     /// Validates format/reserved/availability server-side and archives the

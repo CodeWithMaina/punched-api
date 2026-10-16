@@ -15,8 +15,15 @@ namespace PunchedApi.API.Controllers;
 public sealed class AdminNotificationsController : ControllerBase
 {
     private readonly AdminNotificationOperationsService _service;
+    private readonly NotificationSuppressionService _suppressions;
 
-    public AdminNotificationsController(AdminNotificationOperationsService service) => _service = service;
+    public AdminNotificationsController(
+        AdminNotificationOperationsService service,
+        NotificationSuppressionService suppressions)
+    {
+        _service = service;
+        _suppressions = suppressions;
+    }
 
     [HttpGet("overview")]
     [ProducesResponseType(typeof(ApiResponse<AdminNotificationOperationsOverviewDto>), StatusCodes.Status200OK)]
@@ -118,6 +125,68 @@ public sealed class AdminNotificationsController : ControllerBase
             Accepted = true,
             Message = decision.Message
         }));
+    }
+
+    // ── Suppression management (Phase 1.6) ──────────────────────
+
+    /// <summary>Active (or, with includeExpired, all) suppression rows.</summary>
+    [HttpGet("suppressions")]
+    [ProducesResponseType(typeof(ApiResponse<List<NotificationSuppressionDto>>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetSuppressions(
+        [FromQuery] Guid? businessId = null,
+        [FromQuery] Guid? userId = null,
+        [FromQuery] string? channel = null,
+        [FromQuery] bool includeExpired = false,
+        CancellationToken cancellationToken = default)
+    {
+        NoStore();
+        if (channel is not null && !NotificationDefaults.AllChannels.Contains(channel))
+            return BadRequest(ApiResponse<List<NotificationSuppressionDto>>.Fail(
+                "VALIDATION_ERROR", "Channel is not supported."));
+
+        var result = await _suppressions.ListAsync(
+            businessId, userId, channel, includeExpired, limit: 100, cancellationToken);
+        return Ok(ApiResponse<List<NotificationSuppressionDto>>.Ok(result));
+    }
+
+    /// <summary>
+    /// Creates or updates the suppression for one (business, user, channel) triple —
+    /// the unique index keeps re-suppression idempotent.
+    /// </summary>
+    [HttpPost("suppressions")]
+    [ProducesResponseType(typeof(ApiResponse<NotificationSuppressionDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> UpsertSuppression(
+        [FromBody] UpsertNotificationSuppressionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        NoStore();
+        if (request.BusinessId == Guid.Empty || request.UserId == Guid.Empty)
+            return BadRequest(ApiResponse<NotificationSuppressionDto>.Fail(
+                "VALIDATION_ERROR", "businessId and userId are required."));
+        if (!NotificationDefaults.AllChannels.Contains(request.Channel))
+            return BadRequest(ApiResponse<NotificationSuppressionDto>.Fail(
+                "VALIDATION_ERROR", "Channel is not supported."));
+        if (string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Trim().Length > 64)
+            return BadRequest(ApiResponse<NotificationSuppressionDto>.Fail(
+                "VALIDATION_ERROR", "Reason is required and is limited to 64 characters."));
+
+        var result = await _suppressions.UpsertAsync(request, cancellationToken);
+        return Ok(ApiResponse<NotificationSuppressionDto>.Ok(result!));
+    }
+
+    /// <summary>Removes one suppression row; the channel resumes on next dispatch.</summary>
+    [HttpDelete("suppressions/{id:guid}")]
+    [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> DeleteSuppression(Guid id, CancellationToken cancellationToken = default)
+    {
+        NoStore();
+        var deleted = await _suppressions.DeleteAsync(id, cancellationToken);
+        if (!deleted)
+            return NotFound(ApiResponse<MessageResponse>.Fail("NOT_FOUND", "Suppression not found."));
+
+        return Ok(ApiResponse<MessageResponse>.Ok(new MessageResponse { Message = "Suppression removed." }));
     }
 
     private void NoStore() => Response.Headers.CacheControl = "no-store";

@@ -188,6 +188,42 @@ public class BusinessResponse
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
 
+    /// <summary>
+    /// The business's reminder policy (absent = platform defaults).
+    /// </summary>
+    [JsonPropertyName("reminderPolicy")]
+    public BusinessReminderPolicyResponse? ReminderPolicy { get; set; }
+
+}
+
+/// <summary>
+/// Business-level reminder policy exposed to the owner UI.
+/// </summary>
+public class BusinessReminderPolicyResponse
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
+
+    [JsonPropertyName("offsetMinutes")]
+    public int[] OffsetMinutes { get; set; } = [];
+
+    [JsonPropertyName("channels")]
+    public string[] Channels { get; set; } = [];
+}
+
+/// <summary>
+/// Request to update a business's reminder policy.
+/// </summary>
+public class UpdateBusinessReminderPolicyRequest
+{
+    [JsonPropertyName("enabled")]
+    public bool? Enabled { get; set; }
+
+    [JsonPropertyName("offsetMinutes")]
+    public int[]? OffsetMinutes { get; set; }
+
+    [JsonPropertyName("channels")]
+    public string[]? Channels { get; set; }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1203,6 +1239,9 @@ public class NotificationDto
 
     [JsonPropertyName("isRead")]
     public bool IsRead { get; set; }
+
+    [JsonPropertyName("archivedAt")]
+    public DateTime? ArchivedAt { get; set; }
 
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }

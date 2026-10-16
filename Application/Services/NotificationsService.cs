@@ -100,19 +100,79 @@ public class NotificationsService : INotificationsService
             .Take(limit)
             .ToListAsync();
 
-        return notifications.Select(notification => new NotificationDto
-            {
-                Id = notification.Id,
-                Type = notification.Type,
-                BusinessId = notification.BusinessId,
-                AppointmentId = notification.AppointmentId,
-                StampsCount = notification.StampsCount,
-                IsRead = notification.IsRead,
-                CreatedAt = notification.CreatedAt,
-                Payload = ParsePayload(notification.PayloadJson)
-            })
-            .ToList();
+        return notifications.Select(MapDto).ToList();
     }
+
+    /// <inheritdoc />
+    public async Task<PaginatedResponse<NotificationDto>> GetArchivedAsync(
+        Guid userId, int page, int pageSize, CancellationToken ct = default)
+    {
+        var query = _context.Notifications
+            .Where(n => n.UserId == userId && n.ArchivedAt != null)
+            .AsNoTracking();
+        if (TenantBusinessId is Guid tenantId)
+            query = query.Where(n => n.BusinessId == null || n.BusinessId == tenantId);
+
+        var totalCount = await query.CountAsync(ct);
+        var rows = await query
+            .OrderByDescending(n => n.ArchivedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(ct);
+
+        return new PaginatedResponse<NotificationDto>
+        {
+            Items = rows.Select(MapDto).ToList(),
+            TotalCount = totalCount,
+            Page = page,
+            PageSize = pageSize
+        };
+    }
+
+    /// <inheritdoc />
+    public Task<bool> ArchiveByIdAsync(Guid userId, Guid notificationId, CancellationToken ct = default)
+        => SetArchivedAsync(userId, notificationId, DateTime.UtcNow, ct);
+
+    /// <inheritdoc />
+    public Task<bool> UnarchiveByIdAsync(Guid userId, Guid notificationId, CancellationToken ct = default)
+        => SetArchivedAsync(userId, notificationId, null, ct);
+
+    /// <summary>
+    /// Sets or clears ArchivedAt for one owned row. The user filter is the
+    /// authorization check: another user's row is indistinguishable from a missing one.
+    /// </summary>
+    private async Task<bool> SetArchivedAsync(
+        Guid userId, Guid notificationId, DateTime? archivedAt, CancellationToken ct)
+    {
+        var query = _context.Notifications
+            .Where(n => n.Id == notificationId && n.UserId == userId);
+        if (TenantBusinessId is Guid tenantId)
+            query = query.Where(n => n.BusinessId == null || n.BusinessId == tenantId);
+
+        var notification = await query.FirstOrDefaultAsync(ct);
+        if (notification == null) return false;
+
+        if (notification.ArchivedAt != archivedAt)
+        {
+            notification.ArchivedAt = archivedAt;
+            await _unitOfWork.SaveChangesAsync();
+        }
+
+        return true;
+    }
+
+    private static NotificationDto MapDto(Notification notification) => new()
+    {
+        Id = notification.Id,
+        Type = notification.Type,
+        BusinessId = notification.BusinessId,
+        AppointmentId = notification.AppointmentId,
+        StampsCount = notification.StampsCount,
+        IsRead = notification.IsRead,
+        CreatedAt = notification.CreatedAt,
+        ArchivedAt = notification.ArchivedAt,
+        Payload = ParsePayload(notification.PayloadJson)
+    };
 
     private static Dictionary<string, object?> ParsePayload(string? payload)
     {

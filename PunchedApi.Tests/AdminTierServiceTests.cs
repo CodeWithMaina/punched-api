@@ -160,8 +160,10 @@ public class AdminTierServiceTests : IDisposable
     {
         var created = (await _service.CreateAsync(CreateRequest(), _actorId)).Data!;
         await _service.PublishAsync(created.Id, _actorId);
+        // Active tiers must be deactivated before archiving (state-machine rule).
+        await _service.DeactivateAsync(created.Id, _actorId);
         var archived = await _service.ArchiveAsync(created.Id, _actorId);
-        Assert.True(archived.Success);
+        Assert.True(archived.Success, archived.Error?.Message);
 
         var result = await _service.UnarchiveAsync(created.Id, _actorId);
         Assert.True(result.Success, result.Error?.Message);
@@ -190,8 +192,10 @@ public class AdminTierServiceTests : IDisposable
     {
         var created = (await _service.CreateAsync(CreateRequest(), _actorId)).Data!;
         await _service.PublishAsync(created.Id, _actorId);
+        // Active tiers must be deactivated before archiving (state-machine rule).
+        await _service.DeactivateAsync(created.Id, _actorId);
         var archived = await _service.ArchiveAsync(created.Id, _actorId);
-        Assert.True(archived.Success);
+        Assert.True(archived.Success, archived.Error?.Message);
 
         var result = await _service.PurgeAsync(created.Id, _actorId);
         Assert.True(result.Success, result.Error?.Message);
@@ -210,8 +214,10 @@ public class AdminTierServiceTests : IDisposable
 
         var created = (await _service.CreateAsync(CreateRequest(), _actorId)).Data!;
         await _service.PublishAsync(created.Id, _actorId);
+        // Active tiers must be deactivated before archiving (state-machine rule).
+        await _service.DeactivateAsync(created.Id, _actorId);
         var archived = await _service.ArchiveAsync(created.Id, _actorId);
-        Assert.True(archived.Success);
+        Assert.True(archived.Success, archived.Error?.Message);
 
         _db.BusinessSubscriptions.Add(new BusinessSubscription
         {

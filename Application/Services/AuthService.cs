@@ -3,6 +3,7 @@ using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 
@@ -17,6 +18,9 @@ public class AuthService : IAuthService
     private readonly IUnitOfWork _unitOfWork;
     private readonly JwtTokenService _jwtService;
     private readonly IEmailService _emailService;
+
+    /// <summary>Shared notification pipeline; null only in unit tests / legacy hosts.</summary>
+    private readonly INotificationService? _notifications;
     private readonly IMapper _mapper;
     private readonly ILogger<AuthService> _logger;
     private readonly ISubscriptionProvisioningService _subscriptionProvisioning;
@@ -41,11 +45,16 @@ public class AuthService : IAuthService
         ISubscriptionProvisioningService subscriptionProvisioning,
         IBusinessSlugGenerator slugGenerator,
         IBusinessMembershipResolver membershipResolver,
-        ITenantHostResolver tenantResolver)
+        ITenantHostResolver tenantResolver,
+        // Optional so existing unit-test construction keeps compiling; Program.cs
+        // injects the real pipeline and the OTP path falls back to direct email when
+        // it is absent.
+        INotificationService? notifications = null)
     {
         _unitOfWork = unitOfWork;
         _jwtService = jwtService;
         _emailService = emailService;
+        _notifications = notifications;
         _mapper = mapper;
         _logger = logger;
         _subscriptionProvisioning = subscriptionProvisioning;
@@ -86,6 +95,7 @@ public class AuthService : IAuthService
             // Generate verification code
             var verificationCode = GenerateVerificationCode();
             var verificationCodeHash = HashVerificationCode(verificationCode);
+            var verificationCodeExpiresAt = DateTime.UtcNow.AddMinutes(VerificationCodeExpiryMinutes);
 
             // Create UserAuth
             var userAuth = new UserAuth
@@ -95,7 +105,7 @@ public class AuthService : IAuthService
                 PasswordHash = passwordHash,
                 IsVerified = false,
                 VerificationCode = verificationCodeHash,
-                VerificationCodeExpiresAt = DateTime.UtcNow.AddMinutes(VerificationCodeExpiryMinutes),
+                VerificationCodeExpiresAt = verificationCodeExpiresAt,
                 VerificationCodeAttempts = 0,
                 CreatedAt = DateTime.UtcNow
             };
@@ -123,10 +133,12 @@ public class AuthService : IAuthService
             };
 
             await _unitOfWork.Users.AddAsync(user);
-            await _unitOfWork.SaveChangesAsync();
 
-            // Send verification code (placeholder: logs to console)
-            await _emailService.SendVerificationCodeAsync(normalizedEmail, verificationCode);
+            // Phase 1: the OTP intent joins this SaveChanges — the code email exists if
+            // and only if the auth record storing its hash does (intent-level outbox).
+            await QueueVerificationCodeSafelyAsync(user.Id, normalizedEmail, verificationCode, verificationCodeExpiresAt);
+
+            await _unitOfWork.SaveChangesAsync();
 
             _logger.LogInformation("User registered successfully: {Email}", normalizedEmail);
 
@@ -175,6 +187,7 @@ public class AuthService : IAuthService
             var passwordHash = BCrypt.Net.BCrypt.HashPassword(request.Password, BcryptWorkFactor);
             var verificationCode = GenerateVerificationCode();
             var verificationCodeHash = HashVerificationCode(verificationCode);
+            var verificationCodeExpiresAt = DateTime.UtcNow.AddMinutes(VerificationCodeExpiryMinutes);
 
             var userAuth = new UserAuth
             {
@@ -183,7 +196,7 @@ public class AuthService : IAuthService
                 PasswordHash = passwordHash,
                 IsVerified = false,
                 VerificationCode = verificationCodeHash,
-                VerificationCodeExpiresAt = DateTime.UtcNow.AddMinutes(VerificationCodeExpiryMinutes),
+                VerificationCodeExpiresAt = verificationCodeExpiresAt,
                 VerificationCodeAttempts = 0,
                 CreatedAt = DateTime.UtcNow
             };
@@ -219,6 +232,11 @@ public class AuthService : IAuthService
             };
             await _unitOfWork.Businesses.AddAsync(business);
 
+            // Phase 1: the OTP intent joins the atomic commit of auth + user + business
+            // (intent-level outbox) — no code email can reference an account that never
+            // exists, and no committed account can exist without its code intent.
+            await QueueVerificationCodeSafelyAsync(user.Id, normalizedEmail, verificationCode, verificationCodeExpiresAt);
+
             try
             {
                 // Atomic commit — all three records are persisted or none are.
@@ -237,8 +255,6 @@ public class AuthService : IAuthService
             // so it is not locked out. Best-effort: no-op if the Starter plan is
             // not yet seeded or provisioning fails.
             await _subscriptionProvisioning.EnsureDefaultSubscriptionAsync(business.Id);
-
-            await _emailService.SendVerificationCodeAsync(normalizedEmail, verificationCode);
 
             _logger.LogInformation("Business registered successfully: {Email} / {Business}", normalizedEmail, business.Name);
 
@@ -726,15 +742,21 @@ public class AuthService : IAuthService
             // Generate new code
             var verificationCode = GenerateVerificationCode();
             var verificationCodeHash = HashVerificationCode(verificationCode);
+            var verificationCodeExpiresAt = DateTime.UtcNow.AddMinutes(VerificationCodeExpiryMinutes);
 
             userAuth.VerificationCode = verificationCodeHash;
-            userAuth.VerificationCodeExpiresAt = DateTime.UtcNow.AddMinutes(VerificationCodeExpiryMinutes);
+            userAuth.VerificationCodeExpiresAt = verificationCodeExpiresAt;
             userAuth.VerificationCodeAttempts = 0;
             _unitOfWork.UserAuths.Update(userAuth);
-            await _unitOfWork.SaveChangesAsync();
 
-            // Send code
-            await _emailService.SendVerificationCodeAsync(normalizedEmail, verificationCode);
+            // Phase 1: the OTP intent joins this SaveChanges (intent-level outbox).
+            var recipient = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Email == normalizedEmail);
+            if (recipient != null)
+                await QueueVerificationCodeSafelyAsync(recipient.Id, normalizedEmail, verificationCode, verificationCodeExpiresAt);
+            else
+                await _emailService.SendVerificationCodeAsync(normalizedEmail, verificationCode);
+
+            await _unitOfWork.SaveChangesAsync();
 
             _logger.LogInformation("Verification code sent to: {Email}", normalizedEmail);
 
@@ -797,6 +819,46 @@ public class AuthService : IAuthService
     }
 
     // ── Private Helpers ─────────────────────────────────────
+
+    /// <summary>
+    /// Queues the OTP through the shared notification pipeline BEFORE the caller's
+    /// SaveChanges so the code email commits atomically with the auth record that stores
+    /// its hash (Phase 1 intent-level outbox; SECURITY category bypasses preferences —
+    /// R2 — and the worker applies the urgent retry profile from the type registry).
+    /// Falls back to the direct email path only when the pipeline cannot accept the
+    /// intent: an OTP must never be silently lost.
+    /// </summary>
+    private async Task QueueVerificationCodeSafelyAsync(
+        Guid userId, string email, string verificationCode, DateTime expiresAtUtc)
+    {
+        if (_notifications is null)
+        {
+            await _emailService.SendVerificationCodeAsync(email, verificationCode);
+            return;
+        }
+
+        try
+        {
+            await _notifications.QueueAsync(new NotificationRequest(
+                "security.verification_code",
+                userId,
+                null,
+                new Dictionary<string, object?>
+                {
+                    ["code"] = verificationCode,
+                    ["expiresInMinutes"] = VerificationCodeExpiryMinutes
+                },
+                $"otp:{userId}:{expiresAtUtc:yyyyMMddHHmmssfff}",
+                Force: true));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Verification code for {Email} could not be queued through the notification pipeline; falling back to direct email.",
+                email);
+            await _emailService.SendVerificationCodeAsync(email, verificationCode);
+        }
+    }
 
     /// <inheritdoc />
     public async Task<ApiResponse<MessageResponse>> ForgotPasswordAsync(ForgotPasswordRequest request)

@@ -8,7 +8,7 @@ public class NotificationTypeRegistryTests
     [Fact]
     public void Every_registered_type_has_email_and_in_app_templates()
     {
-        Assert.Equal(15, NotificationTypes.All.Count);
+        Assert.Equal(26, NotificationTypes.All.Count);
         foreach (var definition in NotificationTypes.All.Where(definition => definition.DefaultChannels.Contains(NotificationChannel.Email)))
         {
             Assert.Contains(NotificationChannel.InApp, definition.DefaultChannels);
@@ -21,7 +21,12 @@ public class NotificationTypeRegistryTests
             var tokens = Regex.Matches(definition.TitleTemplate + definition.BodyTemplate, @"\{\{([^{}]+)\}\}")
                 .Select(match => match.Groups[1].Value);
             Assert.All(tokens, token => Assert.Contains(token,
-                new[] { "businessName", "scheduledAt", "stamps", "amount", "code", "rewardName", "appointmentId" }));
+                new[]
+                {
+                    "businessName", "scheduledAt", "stamps", "amount", "code", "rewardName", "appointmentId",
+                    "customerName", "daysInactive", "renewalDate", "balance", "cardName",
+                    "BookLink", "BillingLink", "NotebookLink"
+                }));
         }
     }
 

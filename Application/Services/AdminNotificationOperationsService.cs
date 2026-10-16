@@ -279,7 +279,9 @@ public sealed class AdminNotificationOperationsService
                 .SetProperty(notification => notification.Attempts, 0)
                 .SetProperty(notification => notification.Error, (string?)null)
                 .SetProperty(notification => notification.NextAttemptAt, now)
-                .SetProperty(notification => notification.UpdatedAt, now), cancellationToken);
+                .SetProperty(notification => notification.UpdatedAt, now)
+                .SetProperty(notification => notification.DeadLetteredAt, (DateTime?)null)
+                .SetProperty(notification => notification.DeadLetterReason, (string?)null), cancellationToken);
 
         if (changed != 1)
             return RetryDecision.Rejected("RETRY_ALREADY_HANDLED", "The notification changed before retry was accepted.");

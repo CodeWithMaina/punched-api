@@ -107,6 +107,12 @@ namespace PunchedApi.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("end_at");
 
+                    b.Property<bool>("ReminderOptOut")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("reminder_opt_out");
+
                     b.Property<DateTime>("ScheduledAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("scheduled_at");
@@ -557,6 +563,228 @@ namespace PunchedApi.Migrations
                         });
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AutomationRule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ActionsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("actions_json");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<Guid?>("BusinessId1")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ConditionsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("conditions_json");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int?>("DailyActionCap")
+                        .HasColumnType("integer")
+                        .HasColumnName("daily_action_cap");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("description");
+
+                    b.Property<bool>("Enabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("enabled");
+
+                    b.Property<int?>("FrequencyCapMinutes")
+                        .HasColumnType("integer")
+                        .HasColumnName("frequency_cap_minutes");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<TimeSpan?>("QuietHoursEnd")
+                        .HasColumnType("interval")
+                        .HasColumnName("quiet_hours_end");
+
+                    b.Property<TimeSpan?>("QuietHoursStart")
+                        .HasColumnType("interval")
+                        .HasColumnName("quiet_hours_start");
+
+                    b.Property<string>("RecipientsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("recipients_json");
+
+                    b.Property<string>("Trigger")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("trigger");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<int>("Version")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId1");
+
+                    b.HasIndex("BusinessId", "Enabled")
+                        .HasDatabaseName("ix_automation_rules_business_enabled");
+
+                    b.HasIndex("BusinessId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ux_automation_rules_business_name");
+
+                    b.HasIndex("BusinessId", "Trigger")
+                        .HasDatabaseName("ix_automation_rules_business_trigger");
+
+                    b.ToTable("automation_rules", (string)null);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AutomationRuleRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<Guid?>("BusinessId1")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CreatedJobIdsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("created_job_ids_json");
+
+                    b.Property<string>("CreatedNotificationIntentIdsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("created_notification_intent_ids_json");
+
+                    b.Property<string>("ErrorDetailsJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("error_details_json");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("error_message");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<Guid>("RuleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rule_id");
+
+                    b.Property<Guid?>("RuleId1")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("RuleVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("rule_version");
+
+                    b.Property<Guid?>("SourceAggregateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_aggregate_id");
+
+                    b.Property<string>("SourceEventType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("source_event_type");
+
+                    b.Property<Guid?>("SourceJobId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_job_id");
+
+                    b.Property<DateTime>("StartedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("pending")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId1");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_automation_rule_runs_idempotency_key");
+
+                    b.HasIndex("RuleId1");
+
+                    b.HasIndex("BusinessId", "CreatedAt")
+                        .HasDatabaseName("ix_automation_rule_runs_business_created");
+
+                    b.HasIndex("SourceEventType", "SourceAggregateId")
+                        .HasDatabaseName("ix_automation_rule_runs_event_aggregate");
+
+                    b.HasIndex("BusinessId", "Status", "CreatedAt")
+                        .HasDatabaseName("ix_automation_rule_runs_business_status");
+
+                    b.HasIndex("RuleId", "RuleVersion", "CreatedAt")
+                        .HasDatabaseName("ix_automation_rule_runs_rule_version");
+
+                    b.ToTable("automation_rule_runs", (string)null);
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.Business", b =>
                 {
                     b.Property<Guid>("Id")
@@ -674,6 +902,9 @@ namespace PunchedApi.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("phone_number");
 
+                    b.Property<Guid?>("ReminderPolicyBusinessId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Slug")
                         .HasMaxLength(63)
                         .HasColumnType("character varying(63)")
@@ -696,6 +927,8 @@ namespace PunchedApi.Migrations
                     b.HasIndex("LogoMediaId");
 
                     b.HasIndex("OwnerId");
+
+                    b.HasIndex("ReminderPolicyBusinessId");
 
                     b.HasIndex("Slug")
                         .IsUnique();
@@ -968,6 +1201,41 @@ namespace PunchedApi.Migrations
                     b.HasIndex("MpesaShortCode");
 
                     b.ToTable("business_payment_configs", (string)null);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessReminderPolicy", b =>
+                {
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<string>("ChannelsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[\"in_app\",\"email\",\"push\"]")
+                        .HasColumnName("channels_json");
+
+                    b.Property<bool>("Enabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("enabled");
+
+                    b.Property<string>("OffsetMinutesJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[1440,60]")
+                        .HasColumnName("offset_minutes_json");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("BusinessId");
+
+                    b.ToTable("business_reminder_policies", (string)null);
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessSlugHistory", b =>
@@ -1447,6 +1715,99 @@ namespace PunchedApi.Migrations
                     b.HasIndex("CustomerId", "Status");
 
                     b.ToTable("customer_stamp_cards", (string)null);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.DomainEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("AggregateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("aggregate_id");
+
+                    b.Property<string>("AggregateType")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("aggregate_type");
+
+                    b.Property<int>("Attempts")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("attempts");
+
+                    b.Property<Guid?>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("error");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("event_type");
+
+                    b.Property<string>("HandledByJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("handled_by_json");
+
+                    b.Property<DateTime?>("LockedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("locked_at");
+
+                    b.Property<DateTime>("OccurredAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at_utc");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("payload_json");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("pending")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EventType")
+                        .HasDatabaseName("ix_domain_events_event_type");
+
+                    b.HasIndex("AggregateType", "AggregateId")
+                        .HasDatabaseName("ix_domain_events_aggregate");
+
+                    b.HasIndex("Status", "OccurredAtUtc")
+                        .HasDatabaseName("ix_domain_events_status_occurred");
+
+                    b.ToTable("domain_events", (string)null);
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.IdempotencyKey", b =>
@@ -2326,6 +2687,19 @@ namespace PunchedApi.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<string>("DeadLetterReason")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("dead_letter_reason");
+
+                    b.Property<DateTime?>("DeadLetteredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("dead_lettered_at");
+
+                    b.Property<DateTime?>("DeliverAfterUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deliver_after_utc");
+
                     b.Property<DateTime?>("DeliveredAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("delivered_at");
@@ -2361,15 +2735,30 @@ namespace PunchedApi.Migrations
                         .HasDefaultValue("{}")
                         .HasColumnName("payload_json");
 
+                    b.Property<string>("RuleId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("rule_id");
+
                     b.Property<DateTime>("SentAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("sent_at");
+
+                    b.Property<string>("SourceJobId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source_job_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("status");
+
+                    b.Property<string>("TemplateKey")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("template_key");
 
                     b.Property<string>("TemplateType")
                         .IsRequired()
@@ -2402,6 +2791,9 @@ namespace PunchedApi.Migrations
                     b.HasIndex("Status", "SentAt");
 
                     b.HasIndex("UserId", "SentAt");
+
+                    b.HasIndex("DeliverAfterUtc", "Status", "CreatedAt")
+                        .HasDatabaseName("ix_notifications_deliver_after_status");
 
                     b.HasIndex("Status", "NextAttemptAt", "CreatedAt")
                         .HasDatabaseName("ix_notifications_outbox_claim")
@@ -2482,6 +2874,60 @@ namespace PunchedApi.Migrations
                         {
                             t.HasCheckConstraint("ck_notification_preferences_scope", "\"user_id\" IS NOT NULL OR \"business_id\" IS NOT NULL");
                         });
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.NotificationSuppression", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("channel");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "Channel")
+                        .HasDatabaseName("ix_notification_suppressions_user_channel");
+
+                    b.HasIndex("BusinessId", "UserId", "Channel")
+                        .IsUnique()
+                        .HasDatabaseName("ux_notification_suppressions_one_per_user_channel")
+                        .HasFilter("\"user_id\" IS NOT NULL");
+
+                    b.ToTable("notification_suppressions", (string)null);
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.Payment", b =>
@@ -3529,6 +3975,103 @@ namespace PunchedApi.Migrations
                         .HasDatabaseName("IX_reward_entitlements_CardId_Status");
 
                     b.ToTable("reward_entitlements", (string)null);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.ScheduledJob", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("AggregateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("aggregate_id");
+
+                    b.Property<string>("AggregateType")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("aggregate_type");
+
+                    b.Property<int>("Attempts")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("attempts");
+
+                    b.Property<Guid?>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancelled_at");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DedupeKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("dedupe_key");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("error");
+
+                    b.Property<string>("JobType")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("job_type");
+
+                    b.Property<DateTime?>("LockedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("locked_at");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("payload_json");
+
+                    b.Property<DateTime>("ScheduledForUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("scheduled_for_utc");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("pending")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DedupeKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_scheduled_jobs_dedupe_key");
+
+                    b.HasIndex("AggregateType", "AggregateId")
+                        .HasDatabaseName("ix_scheduled_jobs_aggregate");
+
+                    b.HasIndex("Status", "ScheduledForUtc")
+                        .HasDatabaseName("ix_scheduled_jobs_status_due");
+
+                    b.ToTable("scheduled_jobs", (string)null);
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.ServiceCatalogItem", b =>
@@ -4680,6 +5223,48 @@ namespace PunchedApi.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AutomationRule", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
+                        .WithMany()
+                        .HasForeignKey("BusinessId1");
+
+                    b.Navigation("Business");
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AutomationRuleRun", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
+                        .WithMany()
+                        .HasForeignKey("BusinessId1");
+
+                    b.HasOne("PunchedApi.Domain.Entities.AutomationRule", null)
+                        .WithMany()
+                        .HasForeignKey("RuleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.AutomationRule", "Rule")
+                        .WithMany()
+                        .HasForeignKey("RuleId1");
+
+                    b.Navigation("Business");
+
+                    b.Navigation("Rule");
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.Business", b =>
                 {
                     b.HasOne("PunchedApi.Domain.Entities.Media", null)
@@ -4697,7 +5282,13 @@ namespace PunchedApi.Migrations
                         .HasForeignKey("OwnerId")
                         .OnDelete(DeleteBehavior.SetNull);
 
+                    b.HasOne("PunchedApi.Domain.Entities.BusinessReminderPolicy", "ReminderPolicy")
+                        .WithMany()
+                        .HasForeignKey("ReminderPolicyBusinessId");
+
                     b.Navigation("Owner");
+
+                    b.Navigation("ReminderPolicy");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessDailyAnalytics", b =>
@@ -4781,6 +5372,15 @@ namespace PunchedApi.Migrations
                         .IsRequired();
 
                     b.Navigation("Business");
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessReminderPolicy", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessSlugHistory", b =>
@@ -5097,6 +5697,21 @@ namespace PunchedApi.Migrations
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.NotificationSuppression", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.Payment", b =>

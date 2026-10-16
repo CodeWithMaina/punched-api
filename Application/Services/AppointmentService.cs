@@ -1,8 +1,10 @@
+using System.Text.Json;
 using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.DomainEvents;
 using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
@@ -23,6 +25,7 @@ public class AppointmentService : IAppointmentService
     private readonly IMapper _mapper;
     private readonly IPermissionService _permissionService;
     private readonly INotificationService _notifications;
+    private readonly IDomainEventPublisher _domainEventPublisher;
     private readonly ILogger<AppointmentService> _logger;
 
     /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
@@ -35,6 +38,7 @@ public class AppointmentService : IAppointmentService
         IMapper mapper,
         IPermissionService permissionService,
         INotificationService notifications,
+        IDomainEventPublisher domainEventPublisher,
         ILogger<AppointmentService> logger,
         ITenantContext? tenant = null)
     {
@@ -44,6 +48,7 @@ public class AppointmentService : IAppointmentService
         _mapper = mapper;
         _permissionService = permissionService;
         _notifications = notifications;
+        _domainEventPublisher = domainEventPublisher;
         _logger = logger;
         _tenant = tenant;
     }
@@ -66,6 +71,24 @@ public class AppointmentService : IAppointmentService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Notification {NotificationType} could not be queued for recipient {RecipientUserId}.",
+                request.Type, request.RecipientUserId);
+        }
+    }
+
+    /// <summary>
+    /// Queues a notification intent inside the caller's open unit of work so it commits
+    /// atomically with the domain change (Phase 1 intent-level outbox). Notification
+    /// problems are logged and never fail the domain operation.
+    /// </summary>
+    private async Task QueueNotificationSafelyAsync(NotificationRequest request)
+    {
+        try
+        {
+            await _notifications.QueueAsync(request);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Notification {NotificationType} could not be queued atomically for recipient {RecipientUserId}.",
                 request.Type, request.RecipientUserId);
         }
     }
@@ -349,6 +372,10 @@ public class AppointmentService : IAppointmentService
             }
 
             _unitOfWork.Appointments.Update(appointment);
+            // Phase 2: the rewritten reminder ladder + rescheduled event join the same
+            // transaction as the time change.
+            await RewriteReminderJobsAsync(appointment, _context, default);
+            await PublishAppointmentRescheduledAsync(appointment, default);
             await _unitOfWork.SaveChangesAsync();
             await transaction.CommitAsync();
         }
@@ -551,6 +578,11 @@ public class AppointmentService : IAppointmentService
             CreatedAt = DateTime.UtcNow
         });
 
+        // Phase 2: the rewritten reminder ladder + rescheduled event join the same
+        // SaveChanges as the approval.
+        await RewriteReminderJobsAsync(appointment, _context, default);
+        await PublishAppointmentRescheduledAsync(appointment, default);
+
         await _unitOfWork.SaveChangesAsync();
 
         await SendNotificationSafelyAsync(new NotificationRequest(
@@ -669,6 +701,40 @@ public class AppointmentService : IAppointmentService
             return ownershipError;
 
         return await TransitionAsync(appointment, "no_show", callerUserId, null, role, staffOrOwnerOnly: true);
+    }
+
+
+    /// <summary>
+    /// Toggles the customer's reminder opt-out on an appointment. Opting out
+    /// cancels the appointment's pending reminder jobs; opting back in recreates
+    /// the still-future ones. Runs inside the caller's unit of work.
+    /// </summary>
+    public async Task<ApiResponse<AppointmentResponse>> ToggleReminderOptOutAsync(
+        Guid callerUserId, string role, Guid appointmentId, bool optOut)
+    {
+        var appointment = await LoadAsync(appointmentId);
+        if (appointment == null)
+            return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "Appointment not found.");
+
+        var ownershipError = await AssertOwnershipAsync(callerUserId, role, appointment);
+        if (ownershipError != null)
+            return ownershipError;
+
+        appointment.ReminderOptOut = optOut;
+
+        if (optOut)
+        {
+            await CancelPendingJobsAsync(appointment.Id, _context, default);
+        }
+        else
+        {
+            await CreatePendingReminderJobsAsync(appointment, _context, default);
+        }
+
+        _unitOfWork.Appointments.Update(appointment);
+        await _unitOfWork.SaveChangesAsync();
+
+        return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -1070,11 +1136,45 @@ public class AppointmentService : IAppointmentService
                 CreatedAt = DateTime.UtcNow
             });
 
+            // Phase 1: the booking-confirmation intent joins this transaction — it exists
+            // if and only if the appointment row does (intent-level outbox).
+            await QueueNotificationSafelyAsync(new NotificationRequest(
+                "appointment.booked",
+                appointment.CustomerId,
+                appointment.BusinessId,
+                new Dictionary<string, object?>
+                {
+                    ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+                    ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+                    ["appointmentId"] = appointment.Id
+                },
+                $"appt:{appointment.Id}:booked"));
+
+            // Phase 2: the durable created-event and the reminder ladder join the same
+            // transaction — a crash can delay reminders but never lose them.
+            var createdBusiness = await _context.Businesses
+                .AsNoTracking()
+                .FirstOrDefaultAsync(b => b.Id == appointment.BusinessId);
+            await PublishAppointmentCreatedAsync(appointment, createdBusiness, default);
+            await CreatePendingReminderJobsAsync(appointment, _context, default);
+
+            // Reactivation: cancel any pending customer.lapsed jobs for this customer
+            // at this business so they stop receiving lapse nudges.
+            await _context.ScheduledJobs
+                .Where(j => j.JobType == "customer.lapsed"
+                    && j.BusinessId == appointment.BusinessId
+                    && j.Status == "pending"
+                    && EF.Functions.Like(j.DedupeKey, $"customer.lapsed:{appointment.CustomerId}:%"))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(j => j.Status, "cancelled")
+                    .SetProperty(j => j.CancelledAt, DateTime.UtcNow)
+                    .SetProperty(j => j.UpdatedAt, DateTime.UtcNow)
+                    .SetProperty(j => j.LockedAt, (DateTime?)null), default);
+
             await _unitOfWork.SaveChangesAsync();
             await transaction.CommitAsync();
 
-            var created = await LoadAsync(appointment.Id);
-            return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(created!));
+            return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync((await LoadAsync(appointment.Id))!));
         }
         catch (Npgsql.PostgresException pg) when (pg.SqlState == Npgsql.PostgresErrorCodes.ExclusionViolation)
         {
@@ -1088,6 +1188,172 @@ public class AppointmentService : IAppointmentService
             await transaction.RollbackAsync();
             return ApiResponse<AppointmentResponse>.Fail("BOOKING_FAILED", "Failed to create appointment.");
         }
+    }
+
+    /// <summary>
+    /// Cancels an appointment's pending scheduled jobs (reminders + follow-ups) so a
+    /// terminal transition (cancel/complete/no-show) leaves zero orphan jobs. Runs
+    /// inside the caller's unit of work.
+    /// </summary>
+    private static async Task CancelPendingJobsAsync(Guid appointmentId, ApplicationDbContext context, CancellationToken ct)
+    {
+        await context.ScheduledJobs
+            .Where(j => j.AggregateType == "appointment" && j.AggregateId == appointmentId && j.Status == "pending")
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(j => j.Status, "cancelled")
+                .SetProperty(j => j.CancelledAt, DateTime.UtcNow)
+                .SetProperty(j => j.UpdatedAt, DateTime.UtcNow)
+                .SetProperty(j => j.LockedAt, (DateTime?)null), ct);
+    }
+
+    /// <summary>
+    /// Schedules the post-completion follow-up (T+1 day) inside the caller's unit of
+    /// work. Stable dedupe key makes repeat completions a no-op.
+    /// </summary>
+    private static async Task ScheduleFollowUpAsync(Appointment appointment, ApplicationDbContext context, CancellationToken ct)
+    {
+        var key = $"appt:{appointment.Id}:follow-up";
+        var existing = await context.ScheduledJobs
+            .AnyAsync(j => j.DedupeKey == key, ct);
+        if (existing) return;
+
+        await context.ScheduledJobs.AddAsync(new ScheduledJob
+        {
+            JobType = "appointment.follow_up",
+            DedupeKey = key,
+            AggregateType = "appointment",
+            AggregateId = appointment.Id,
+            BusinessId = appointment.BusinessId,
+            PayloadJson = "{}",
+            ScheduledForUtc = DateTime.UtcNow.AddDays(1),
+            Status = "pending",
+            Attempts = 0,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        }, ct);
+    }
+
+    /// <summary>
+    /// Rewrites an appointment's pending reminder ladder for a new start time (stable
+    /// dedupe keys: same key, new due time). Jobs whose slot already passed are
+    /// cancelled instead of rescheduled. Runs inside the caller's unit of work.
+    /// </summary>
+    private async Task RewriteReminderJobsAsync(Appointment appointment, ApplicationDbContext context, CancellationToken ct)
+    {
+        // Per-appointment opt-out: cancel all pending reminder jobs, create none.
+        if (appointment.ReminderOptOut)
+        {
+            await CancelPendingJobsAsync(appointment.Id, context, ct);
+            return;
+        }
+
+        var policy = await context.BusinessReminderPolicies
+            .AsNoTracking()
+            .FirstOrDefaultAsync(p => p.BusinessId == appointment.BusinessId, ct)
+            ?? new BusinessReminderPolicy();
+        var offsets = ParseOffsetMinutes(policy.OffsetMinutesJson);
+        var now = DateTime.UtcNow;
+
+        var pending = await context.ScheduledJobs
+            .Where(j => j.JobType == "appointment.reminder"
+                && j.AggregateType == "appointment"
+                && j.AggregateId == appointment.Id
+                && j.Status == "pending")
+            .ToListAsync(ct);
+
+        var wanted = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+        foreach (var offsetMinutes in offsets)
+        {
+            var due = appointment.ScheduledAt.AddMinutes(-offsetMinutes);
+            if (due <= now.AddMinutes(5)) continue; // minimum lead time: skip stale slots
+            wanted[$"appt:{appointment.Id}:r-{offsetMinutes}m"] = due;
+        }
+
+        foreach (var job in pending)
+        {
+            if (wanted.TryGetValue(job.DedupeKey, out var due))
+            {
+                job.ScheduledForUtc = due;
+                job.UpdatedAt = now;
+                wanted.Remove(job.DedupeKey);
+            }
+            else
+            {
+                job.Status = "cancelled";
+                job.CancelledAt = now;
+                job.UpdatedAt = now;
+                job.LockedAt = null;
+            }
+        }
+
+        foreach (var (key, due) in wanted)
+        {
+            await context.ScheduledJobs.AddAsync(new ScheduledJob
+            {
+                JobType = "appointment.reminder",
+                DedupeKey = key,
+                AggregateType = "appointment",
+                AggregateId = appointment.Id,
+                BusinessId = appointment.BusinessId,
+                PayloadJson = "{}",
+                ScheduledForUtc = due,
+                Status = "pending",
+                Attempts = 0,
+                CreatedAt = now,
+                UpdatedAt = now
+            }, ct);
+        }
+    }
+
+    /// <summary>
+    /// Creates the reminder jobs for the new appointment (default ladder
+    /// <c>[1440,60]</c> minutes before <see cref="Appointment.ScheduledAt"/>). Jobs
+    /// reuse the globally unique <c>dedupe_key</c>, so rebooking rewrites the due
+    /// times instead of accumulating duplicate jobs. Failures are non-fatal to the
+    /// booking itself — the scheduler claims and delivers them.
+    /// </summary>
+    private async Task<bool> CreatePendingReminderJobsAsync(Appointment appointment, ApplicationDbContext context, CancellationToken ct)
+    {
+        // Per-appointment opt-out: never create reminder jobs for opted-out
+        // appointments. The scheduler worker also re-checks at dispatch time
+        // as a second line of defence.
+        if (appointment.ReminderOptOut) return false;
+
+        var policy = await context.BusinessReminderPolicies
+            .AsNoTracking()
+            .FirstOrDefaultAsync(p => p.BusinessId == appointment.BusinessId, ct)
+            ?? new BusinessReminderPolicy();
+        var offsets = ParseOffsetMinutes(policy.OffsetMinutesJson);
+        var now = DateTime.UtcNow;
+        var created = false;
+        foreach (var offsetMinutes in offsets)
+        {
+            var due = appointment.ScheduledAt.AddMinutes(-offsetMinutes);
+            if (due <= now.AddMinutes(5)) continue; // minimum lead time: skip stale slots
+            var key = $"appt:{appointment.Id}:r-{offsetMinutes}m";
+            var existing = await context.ScheduledJobs
+                .CountAsync(j => j.DedupeKey == key && j.AggregateType == "appointment" && j.AggregateId == appointment.Id && j.Status == "pending", ct);
+            if (existing > 0) continue;
+
+            var job = new ScheduledJob
+            {
+                JobType = "appointment.reminder",
+                DedupeKey = key,
+                AggregateType = "appointment",
+                AggregateId = appointment.Id,
+                BusinessId = appointment.BusinessId,
+                PayloadJson = "{}",
+                ScheduledForUtc = due,
+                Status = "pending",
+                Attempts = 0,
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+            await context.ScheduledJobs.AddAsync(job, ct);
+            created = true;
+        }
+
+        return created;
     }
 
     private async Task<ApiResponse<AppointmentResponse>> TransitionAsync(
@@ -1115,6 +1381,57 @@ public class AppointmentService : IAppointmentService
             Note = note,
             CreatedAt = DateTime.UtcNow
         });
+
+        if (toStatus == "cancelled")
+        {
+            // Phase 1: the cancellation notice joins this SaveChanges — it exists if and
+            // only if the status change does (intent-level outbox).
+            await QueueNotificationSafelyAsync(new NotificationRequest(
+                "appointment.cancelled",
+                appointment.CustomerId,
+                appointment.BusinessId,
+                new Dictionary<string, object?>
+                {
+                    ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+                    ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+                    ["appointmentId"] = appointment.Id
+                },
+                $"appt:{appointment.Id}:cancelled"));
+
+            await PublishAppointmentCancelledAsync(appointment, default);
+            // Phase 2: terminal states cancel the appointment's pending jobs so no
+            // stale reminder can fire after a cancel/complete/no-show.
+            await CancelPendingJobsAsync(appointment.Id, _context, default);
+        }
+
+        if (toStatus == "completed")
+        {
+            await PublishAppointmentCompletedAsync(appointment, default);
+            await CancelPendingJobsAsync(appointment.Id, _context, default);
+            await ScheduleFollowUpAsync(appointment, _context, default);
+        }
+
+        if (toStatus == "no_show")
+        {
+            await PublishAppointmentNoShowAsync(appointment, default);
+            await QueueNotificationSafelyAsync(new NotificationRequest(
+                "appointment.no_show_notice",
+                appointment.CustomerId,
+                appointment.BusinessId,
+                new Dictionary<string, object?>
+                {
+                    ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+                    ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+                    ["appointmentId"] = appointment.Id
+                },
+                $"appt:{appointment.Id}:no-show"));
+            await CancelPendingJobsAsync(appointment.Id, _context, default);
+        }
+
+        if (toStatus == "confirmed")
+        {
+            await PublishAppointmentConfirmedAsync(appointment, default);
+        }
 
         await _unitOfWork.SaveChangesAsync();
 
@@ -1153,6 +1470,138 @@ public class AppointmentService : IAppointmentService
             return (services, "SERVICE_NOT_FOUND", "One or more services were not found in this business.");
 
         return (services, null, null);
+    }
+
+    /// <summary>
+    /// Publishes <c>appointment.created</c> — the reminder job creation above and
+    /// the scheduler's authoritative re-reads both depend on this being durable
+    /// (same transaction as the booking).
+    /// </summary>
+    private async Task PublishAppointmentCreatedAsync(Appointment appointment, Business? business, CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["appointmentId"] = appointment.Id,
+            ["businessId"] = appointment.BusinessId,
+            ["businessName"] = business?.Name ?? "Your business",
+            ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+            ["endAt"] = appointment.EndAt.ToString("O")
+        };
+
+        await _domainEventPublisher.PublishAsync(new DomainEventRecord(
+            "appointment.created", "appointment", appointment.Id, appointment.BusinessId,
+            JsonSerializer.Serialize(payload, PayloadOptions), appointment.ScheduledAt), ct);
+    }
+
+    /// <summary>
+    /// Publishes <c>appointment.confirmed</c> for the confirmed transition.
+    /// </summary>
+    private async Task PublishAppointmentConfirmedAsync(Appointment appointment, CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["appointmentId"] = appointment.Id,
+            ["businessId"] = appointment.BusinessId,
+            ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+            ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+            ["endAt"] = appointment.EndAt.ToString("O")
+        };
+
+        await _domainEventPublisher.PublishAsync(new DomainEventRecord(
+            "appointment.confirmed", "appointment", appointment.Id, appointment.BusinessId,
+            JsonSerializer.Serialize(payload, PayloadOptions), DateTime.UtcNow), ct);
+    }
+
+    /// <summary>
+    /// Publishes <c>appointment.no_show</c> for the no-show transition.
+    /// </summary>
+    private async Task PublishAppointmentNoShowAsync(Appointment appointment, CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["appointmentId"] = appointment.Id,
+            ["businessId"] = appointment.BusinessId,
+            ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+            ["scheduledAt"] = appointment.ScheduledAt.ToString("O")
+        };
+
+        await _domainEventPublisher.PublishAsync(new DomainEventRecord(
+            "appointment.no_show", "appointment", appointment.Id, appointment.BusinessId,
+            JsonSerializer.Serialize(payload, PayloadOptions), DateTime.UtcNow), ct);
+    }
+
+    /// <summary>
+    /// Publishes <c>appointment.rescheduled</c> after an approved time change.
+    /// </summary>
+    private async Task PublishAppointmentRescheduledAsync(Appointment appointment, CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["appointmentId"] = appointment.Id,
+            ["businessId"] = appointment.BusinessId,
+            ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+            ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+            ["endAt"] = appointment.EndAt.ToString("O")
+        };
+
+        await _domainEventPublisher.PublishAsync(new DomainEventRecord(
+            "appointment.rescheduled", "appointment", appointment.Id, appointment.BusinessId,
+            JsonSerializer.Serialize(payload, PayloadOptions), DateTime.UtcNow), ct);
+    }
+
+    /// <summary>
+    /// Publishes <c>appointment.completed</c> for the completed transition.
+    /// </summary>
+    private async Task PublishAppointmentCompletedAsync(Appointment appointment, CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["appointmentId"] = appointment.Id,
+            ["businessId"] = appointment.BusinessId,
+            ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+            ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+            ["endAt"] = appointment.EndAt.ToString("O"),
+            ["completedAt"] = appointment.EndAt.ToString("O")
+        };
+
+        await _domainEventPublisher.PublishAsync(new DomainEventRecord(
+            "appointment.completed", "appointment", appointment.Id, appointment.BusinessId,
+            JsonSerializer.Serialize(payload, PayloadOptions), appointment.EndAt), ct);
+    }
+
+    /// <summary>
+    /// Publishes <c>appointment.cancelled</c> for the cancelled transition.
+    /// </summary>
+    private async Task PublishAppointmentCancelledAsync(Appointment appointment, CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["appointmentId"] = appointment.Id,
+            ["businessId"] = appointment.BusinessId,
+            ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+            ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+            ["completedAt"] = (string?)null
+        };
+
+        await _domainEventPublisher.PublishAsync(new DomainEventRecord(
+            "appointment.cancelled", "appointment", appointment.Id, appointment.BusinessId,
+            JsonSerializer.Serialize(payload, PayloadOptions), appointment.EndAt), ct);
+    }
+
+    private static readonly JsonSerializerOptions PayloadOptions = new(JsonSerializerDefaults.Web);
+
+    private static List<int> ParseOffsetMinutes(string json)
+    {
+        try
+        {
+            var values = JsonSerializer.Deserialize<List<int>>(json, PayloadOptions) ?? new();
+            var parsed = values.Where(m => m > 0).Distinct().OrderBy(m => m).ToList();
+            return parsed.Count > 0 ? parsed : new List<int> { 1440, 60 };
+        }
+        catch
+        {
+            return new List<int> { 1440, 60 };
+        }
     }
 
     private async Task<(User? Staff, string? ErrorCode, string? ErrorMessage)> ResolveStaffAsync(

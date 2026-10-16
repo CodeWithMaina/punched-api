@@ -548,12 +548,16 @@ public class StampingEcosystemTests : IDisposable
         Assert.Equal(0, card.TotalStamps);
         Assert.Equal(4, card.LifetimeStamps); // never touched
 
-        // Notification + dedupe log exist; re-run never notifies again.
-        var log = await _db.NotificationLogs.SingleAsync(n => n.UserId == t.Customer.Id);
-        Assert.Equal("loyalty.stamp_expired", log.TemplateType);
+        // Notification ledger rows exist (one per admitted channel) and all of
+        // them are the expiry type; a re-run never notifies again because the
+        // worker dedupes on any prior row for this customer+business, ever.
+        var logs = await _db.NotificationLogs
+            .Where(n => n.UserId == t.Customer.Id && n.TemplateType == "loyalty.stamp_expired")
+            .ToListAsync();
+        Assert.NotEmpty(logs);
         var second = await svc.ExpireStampsAsync();
         Assert.Equal(0, second);
-        Assert.Equal(1, await _db.NotificationLogs.CountAsync(n => n.TemplateType == "loyalty.stamp_expired"));
+        Assert.Equal(logs.Count, await _db.NotificationLogs.CountAsync(n => n.TemplateType == "loyalty.stamp_expired"));
 
         _db.ChangeTracker.Clear();
         var reloadedCard = await _db.LoyaltyCards.AsNoTracking().SingleAsync(c => c.Id == t.Card.Id);

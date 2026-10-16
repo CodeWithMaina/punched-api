@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -22,12 +23,18 @@ public class PaymentCallbackService : IPaymentCallbackService
 {
     private readonly ApplicationDbContext _context;
     private readonly IUnitOfWork _uow;
+    private readonly INotificationService _notifications;
     private readonly ILogger<PaymentCallbackService> _logger;
 
-    public PaymentCallbackService(ApplicationDbContext context, IUnitOfWork uow, ILogger<PaymentCallbackService> logger)
+    public PaymentCallbackService(
+        ApplicationDbContext context,
+        IUnitOfWork uow,
+        INotificationService notifications,
+        ILogger<PaymentCallbackService> logger)
     {
         _context = context;
         _uow = uow;
+        _notifications = notifications;
         _logger = logger;
     }
 
@@ -146,6 +153,24 @@ public class PaymentCallbackService : IPaymentCallbackService
             else
             {
                 ApplyFailure(payment, attempt, code, message, retryable);
+
+                // Durable payment-failed intent (Phase 3 trigger). Queued inside the
+                // same unit of work as the status change so a crash cannot lose it.
+                if (payment.CustomerId.HasValue)
+                {
+                    await _notifications.QueueAsync(new NotificationRequest(
+                        "payment.failed",
+                        payment.CustomerId.Value,
+                        payment.BusinessId,
+                        new Dictionary<string, object?>
+                        {
+                            ["businessName"] = await GetBusinessNameAsync(payment.BusinessId),
+                            ["amount"] = payment.Amount,
+                            ["reason"] = code,
+                            ["appointmentId"] = payment.AppointmentId
+                        },
+                        $"pay:{payment.Id}:failed"));
+                }
             }
         }
         else
@@ -250,6 +275,23 @@ public class PaymentCallbackService : IPaymentCallbackService
             record.Processed = true;
             record.ProcessedAt = DateTime.UtcNow;
             ApplyFailure(payment, payment.Attempts.OrderBy(a => a.AttemptNumber).LastOrDefault(), "C2B_" + resultCode, record.ResultDescription, false);
+
+            // Durable payment-failed intent (Phase 3 trigger).
+            if (payment.CustomerId.HasValue)
+            {
+                await _notifications.QueueAsync(new NotificationRequest(
+                    "payment.failed",
+                    payment.CustomerId.Value,
+                    payment.BusinessId,
+                    new Dictionary<string, object?>
+                    {
+                        ["businessName"] = await GetBusinessNameAsync(payment.BusinessId),
+                        ["amount"] = payment.Amount,
+                        ["reason"] = "C2B_" + resultCode,
+                        ["appointmentId"] = payment.AppointmentId
+                    },
+                    $"pay:{payment.Id}:failed"));
+            }
         }
 
         await _context.PaymentCallbacks.AddAsync(record);
@@ -412,4 +454,14 @@ public class PaymentCallbackService : IPaymentCallbackService
 
     private static string? Truncate(string? value, int max) =>
         string.IsNullOrEmpty(value) ? value : value.Length <= max ? value : value[..max];
+
+    /// <summary>Resolves the business display name for payment notification payloads.</summary>
+    private async Task<string> GetBusinessNameAsync(Guid businessId)
+    {
+        return await _context.Businesses
+            .AsNoTracking()
+            .Where(b => b.Id == businessId)
+            .Select(b => b.Name)
+            .FirstOrDefaultAsync() ?? string.Empty;
+    }
 }

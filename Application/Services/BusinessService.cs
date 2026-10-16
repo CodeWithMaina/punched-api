@@ -228,6 +228,7 @@ public partial class BusinessService : IBusinessService
             .AsNoTracking()
             .Include(b => b.LoyaltyPrograms.Where(p => p.IsActive))
             .Include(b => b.ReferralProgram)
+            .Include(b => b.ReminderPolicy)
             .FirstOrDefaultAsync(b => b.OwnerId == ownerId);
 
         if (business == null)
@@ -252,6 +253,47 @@ public partial class BusinessService : IBusinessService
         if (request.MpesaNumber != null) business.MpesaNumber = request.MpesaNumber.Trim();
 
         _unitOfWork.Businesses.Update(business);
+        await _unitOfWork.SaveChangesAsync();
+
+        return ApiResponse<BusinessResponse>.Ok(MapToResponse(business));
+    }
+
+    /// <summary>
+    /// Updates the business's reminder policy (enabled, offset minutes, channels).
+    /// Creates a policy row if none exists. Runs inside the caller's unit of work.
+    /// </summary>
+    public async Task<ApiResponse<BusinessResponse>> UpdateReminderPolicyAsync(
+        Guid ownerId, UpdateBusinessReminderPolicyRequest request)
+    {
+        var business = await _context.Businesses
+            .Include(b => b.ReminderPolicy)
+            .FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        if (business == null)
+            return ApiResponse<BusinessResponse>.Fail("NOT_FOUND", "No business found for this account.");
+
+        var policy = business.ReminderPolicy;
+        if (policy == null)
+        {
+            policy = new BusinessReminderPolicy
+            {
+                BusinessId = business.Id,
+                Enabled = true,
+                OffsetMinutesJson = "[1440,60]",
+                ChannelsJson = "[\"in_app\",\"email\",\"push\"]",
+                UpdatedAt = DateTime.UtcNow
+            };
+            _context.BusinessReminderPolicies.Add(policy);
+            business.ReminderPolicy = policy;
+        }
+
+        if (request.Enabled.HasValue) policy.Enabled = request.Enabled.Value;
+        if (request.OffsetMinutes != null)
+            policy.OffsetMinutesJson = System.Text.Json.JsonSerializer.Serialize(request.OffsetMinutes);
+        if (request.Channels != null)
+            policy.ChannelsJson = System.Text.Json.JsonSerializer.Serialize(request.Channels);
+        policy.UpdatedAt = DateTime.UtcNow;
+
+        _context.BusinessReminderPolicies.Update(policy);
         await _unitOfWork.SaveChangesAsync();
 
         return ApiResponse<BusinessResponse>.Ok(MapToResponse(business));
@@ -371,6 +413,7 @@ public partial class BusinessService : IBusinessService
             .AsNoTracking()
             .Include(b => b.LoyaltyPrograms)
             .Include(b => b.ReferralProgram)
+            .Include(b => b.ReminderPolicy)
             .FirstOrDefaultAsync(b => b.Id == businessId);
 
         if (business == null)
@@ -383,7 +426,7 @@ public partial class BusinessService : IBusinessService
     {
         var query = _context.Businesses
             .AsNoTracking()
-            .Include(b => b.LoyaltyPrograms).Include(b => b.ReferralProgram).AsQueryable();
+            .Include(b => b.LoyaltyPrograms).Include(b => b.ReferralProgram).Include(b => b.ReminderPolicy).AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(category))
             query = query.Where(b => EF.Functions.ILike(b.Category, category));
@@ -1006,8 +1049,42 @@ public partial class BusinessService : IBusinessService
             DefaultEnrollmentStamps = ap.DefaultEnrollmentStamps,
             CreatedAt = ap.CreatedAt
         } : null,
-        HasReferralProgram = b.ReferralProgram != null && b.ReferralProgram.IsActive
+        HasReferralProgram = b.ReferralProgram != null && b.ReferralProgram.IsActive,
+        ReminderPolicy = b.ReminderPolicy is { } rp
+            ? new BusinessReminderPolicyResponse
+            {
+                Enabled = rp.Enabled,
+                OffsetMinutes = ParseOffsetMinutes(rp.OffsetMinutesJson),
+                Channels = ParseChannels(rp.ChannelsJson)
+            }
+            : null
     };
+
+    private static int[] ParseOffsetMinutes(string json)
+    {
+        try
+        {
+            var parsed = System.Text.Json.JsonSerializer.Deserialize<int[]>(json);
+            return parsed ?? Array.Empty<int>();
+        }
+        catch
+        {
+            return Array.Empty<int>();
+        }
+    }
+
+    private static string[] ParseChannels(string json)
+    {
+        try
+        {
+            var parsed = System.Text.Json.JsonSerializer.Deserialize<string[]>(json);
+            return parsed ?? Array.Empty<string>();
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
 
     public async Task<ApiResponse<BusinessDashboardResponse>> GetDashboardAsync(Guid ownerId)
     {

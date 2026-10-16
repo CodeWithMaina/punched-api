@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Application.Settings;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
@@ -30,6 +31,7 @@ public partial class PaymentService : IPaymentService
     private readonly IPermissionService _permissions;
     private readonly PaymentCredentialProtector _protector;
     private readonly IOptions<PaymentOptions> _options;
+    private readonly INotificationService _notifications;
     private readonly ILogger<PaymentService> _logger;
 
     public PaymentService(
@@ -39,6 +41,7 @@ public partial class PaymentService : IPaymentService
         IPermissionService permissions,
         PaymentCredentialProtector protector,
         IOptions<PaymentOptions> options,
+        INotificationService notifications,
         ILogger<PaymentService> logger)
     {
         _context = context;
@@ -47,6 +50,7 @@ public partial class PaymentService : IPaymentService
         _permissions = permissions;
         _protector = protector;
         _options = options;
+        _notifications = notifications;
         _logger = logger;
     }
 
@@ -448,12 +452,14 @@ public partial class PaymentService : IPaymentService
             ? new ProviderReversalResult { Success = false, Supported = false }
             : await provider.ReverseAsync(payment, reason, config);
 
+        var isReversed = false;
         if (result.Success)
         {
             PaymentStateMachine.Transition(payment, PaymentStatus.Reversed);
             payment.ReversalReason = Truncate(reason, 500);
             if (!string.IsNullOrEmpty(result.TransactionId))
                 payment.ExternalReference = result.TransactionId;
+            isReversed = true;
         }
         else if (result.Supported)
         {
@@ -464,6 +470,24 @@ public partial class PaymentService : IPaymentService
         {
             PaymentStateMachine.Transition(payment, PaymentStatus.Refunded);
             payment.ReversalReason = Truncate("MANUAL REFUND: " + reason, 500);
+        }
+
+        // Durable payment.reversed intent (Phase 3 trigger) — committed in the same
+        // unit of work as the status change so the notification cannot be lost.
+        if (payment.CustomerId.HasValue && isReversed)
+        {
+            await _notifications.QueueAsync(new NotificationRequest(
+                "payment.reversed",
+                payment.CustomerId.Value,
+                payment.BusinessId,
+                new Dictionary<string, object?>
+                {
+                    ["businessName"] = await GetBusinessNameAsync(payment.BusinessId),
+                    ["amount"] = payment.Amount,
+                    ["reason"] = reason,
+                    ["appointmentId"] = payment.AppointmentId
+                },
+                $"pay:{payment.Id}:reversed"));
         }
 
         await _uow.SaveChangesAsync();
@@ -742,4 +766,14 @@ public partial class PaymentService : IPaymentService
             CompletedAt = a.CompletedAt
         }).ToList()
     };
+
+    /// <summary>Resolves the business display name for payment notification payloads.</summary>
+    private async Task<string> GetBusinessNameAsync(Guid businessId)
+    {
+        return await _context.Businesses
+            .AsNoTracking()
+            .Where(b => b.Id == businessId)
+            .Select(b => b.Name)
+            .FirstOrDefaultAsync() ?? string.Empty;
+    }
 }

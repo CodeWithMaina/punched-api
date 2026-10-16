@@ -2,6 +2,8 @@ using AutoMapper;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Moq;
+using PunchedApi.Application.DomainEvents;
 using PunchedApi.Application.Notifications;
 using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Services;
@@ -60,6 +62,7 @@ internal static class BookingTestBase
             CreateMapper(),
             new PunchedApi.Application.Authorization.PermissionService(),
             CreateNotificationService(context),
+            new Mock<IDomainEventPublisher>().Object,
             TestHelpers.CreateLogger<AppointmentService>());
 
     public static AppointmentAvailabilityService CreateAvailabilityService(ApplicationDbContext context)

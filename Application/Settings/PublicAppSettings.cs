@@ -15,6 +15,15 @@ public class PublicAppSettings
     public string BaseUrl { get; set; } = "http://localhost:3000";
 
     /// <summary>
+    /// Public base URL of THIS API (e.g. https://api.punched.app, local dev
+    /// http://localhost:5091). Absolute URLs embedded in outbound email
+    /// (unsubscribe links, logo image URLs) must target the API, not the
+    /// frontend, so this is distinct from <see cref="BaseUrl"/>. Empty → falls
+    /// back to <see cref="BaseUrl"/> (production must set this explicitly).
+    /// </summary>
+    public string ApiBaseUrl { get; set; } = string.Empty;
+
+    /// <summary>
     /// Registrable root domain that hosts business subdomains
     /// (e.g. <c>punched.app</c>; local dev falls back to the <see cref="BaseUrl"/>
     /// host, typically <c>localhost</c>). Empty → derive from <see cref="BaseUrl"/>.

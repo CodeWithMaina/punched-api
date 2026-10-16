@@ -67,6 +67,9 @@ public class AuthorizationPostureTests
         // Staff invitation acceptance from email links (token-gated)
         "Invitations|GET|{token}",
         "Invitations|POST|{token}/accept",
+        // Marketing unsubscribe (encrypted-token-gated, RFC 8058 one-click POST)
+        "Unsubscribe|GET|",
+        "Unsubscribe|POST|",
     };
 
     private sealed record ActionInfo(

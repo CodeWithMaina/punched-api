@@ -315,7 +315,7 @@ public class StampCardRulesChangeTests : IDisposable
     }
 
     [Fact]
-    public async Task DesignAssignment_WritesNoRulesAuditAndLeavesSnapshotUntouched()
+    public async Task PerCardDesignAssignment_IsRejected_AndLeavesSnapshotUntouched()
     {
         var cardId = await CreateActiveCardAsync(stampsRequired: 10);
         var loyaltyId = await EnrollBoundCustomerAsync(cardId, requiredStamps: 10, rulesVersion: 1);
@@ -324,16 +324,19 @@ public class StampCardRulesChangeTests : IDisposable
             new CreateCardDesignRequest { Name = "Christmas", HtmlTemplate = "<div>festive</div>" }, null);
         Assert.True(design.Success, design.Error?.Message);
 
+        // Design selection moved to the loyalty program (one design per program so
+        // every card renders consistently) — per-card assignment is rejected.
         var update = await _service.UpdateStampCardAsync(_ownerId, cardId, new UpdateStampCardRequest
         {
             CardDesignId = design.Data!.Id
         });
-        Assert.True(update.Success, update.Error?.Message);
+        Assert.False(update.Success);
+        Assert.Equal("PROGRAM_DESIGN_ONLY", update.Error!.Code);
 
         Reload();
 
-        // Presentation changed; loyalty state and version did not.
-        Assert.Equal(design.Data.Id, StampCard(cardId).CardDesignId);
+        // The rejected write changed nothing: no design, no version bump, no audit.
+        Assert.Null(StampCard(cardId).CardDesignId);
         Assert.Equal(1, StampCard(cardId).RulesVersion);
         Assert.Empty(AuditRows(cardId));
 

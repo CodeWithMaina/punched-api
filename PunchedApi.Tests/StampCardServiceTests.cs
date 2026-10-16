@@ -119,7 +119,7 @@ public class StampCardServiceTests : IDisposable
     }
 
         [Fact]
-    public async Task CreateAndAssignReusableCardDesign()
+    public async Task CreateStampCard_WithPerCardDesign_IsRejected_ProgramDesignOnly()
     {
         var programId = await FirstProgramIdAsync();
         var design = await _designService.CreateDesignAsync(_businessId, new CreateCardDesignRequest
@@ -130,6 +130,8 @@ public class StampCardServiceTests : IDisposable
         Assert.True(design.Success);
         Assert.DoesNotContain("script", design.Data!.HtmlTemplate, StringComparison.OrdinalIgnoreCase);
 
+        // Design selection moved to the loyalty program (one design per program so
+        // every card renders consistently) — per-card assignment is rejected.
         var card = await _service.CreateStampCardAsync(_ownerId, programId, new CreateStampCardRequest
         {
             Name = "Christmas Card",
@@ -138,10 +140,8 @@ public class StampCardServiceTests : IDisposable
             RewardValue = 100,
             CardDesignId = design.Data.Id
         });
-        Assert.True(card.Success);
-
-        var fetched = await _service.GetStampCardAsync(_ownerId, card.Data!.Id);
-        Assert.Equal("Christmas", fetched.Data!.CardDesignName);
+        Assert.False(card.Success);
+        Assert.Equal("PROGRAM_DESIGN_ONLY", card.Error!.Code);
     }
 
         [Fact]
@@ -186,13 +186,18 @@ public class StampCardServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task DeleteDesign_AssignedToCard_IsBlocked()
+    public async Task DeleteDesign_AssignedToProgram_IsBlocked()
     {
         var programId = await FirstProgramIdAsync();
         var design = await _designService.CreateDesignAsync(_businessId, new CreateCardDesignRequest
         { Name = "D", HtmlTemplate = "<div>x</div>" }, null);
-        await _service.CreateStampCardAsync(_ownerId, programId, new CreateStampCardRequest
-        { Name = "C", StampsRequired = 5, RewardDescription = "R", RewardValue = 10, CardDesignId = design.Data!.Id });
+        Assert.True(design.Success);
+
+        // Program-level assignment is the only kind since per-card designs were
+        // removed (PROGRAM_DESIGN_ONLY); the delete guard must still protect it.
+        var program = await _context.LoyaltyPrograms.SingleAsync(p => p.Id == programId);
+        program.CardDesignId = design.Data!.Id;
+        await _context.SaveChangesAsync();
 
         var delete = await _designService.DeleteDesignAsync(design.Data!.Id);
         Assert.False(delete.Success);

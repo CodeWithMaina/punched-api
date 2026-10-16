@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Loyalty;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -30,18 +31,27 @@ public partial class LoyaltyStampingService : ILoyaltyStampingService
     private readonly IModuleEntitlementService _entitlementService;
     private readonly ILogger<LoyaltyStampingService> _logger;
 
+    /// <summary>
+    /// Shared notification pipeline. Optional so existing unit-test construction keeps
+    /// compiling; Program.cs injects the real service and the balance path no-ops
+    /// notification intent when absent.
+    /// </summary>
+    private readonly INotificationService? _notifications;
+
     public LoyaltyStampingService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
         ILoyaltyScopeResolver scopeResolver,
         IModuleEntitlementService entitlementService,
-        ILogger<LoyaltyStampingService> logger)
+        ILogger<LoyaltyStampingService> logger,
+        INotificationService? notifications = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
         _scopeResolver = scopeResolver;
         _entitlementService = entitlementService;
         _logger = logger;
+        _notifications = notifications;
     }
 
     // ═══════════════════════════════════════════════════════════

@@ -12,8 +12,10 @@ namespace PunchedApi.Application.Notifications;
 /// <summary>
 /// The notification core. Producers hand it an intent; it resolves preferences,
 /// writes the in-app inbox row (with its ledger row, same unit of work — fixes the
-/// audit's B4/B7) and — from Phase 2 — queues external channels on the
-/// <c>notifications</c> outbox.
+/// audit's B4/B7) and queues external channels on the <c>notifications</c> outbox.
+/// <see cref="SendAsync"/> commits those rows itself; <see cref="QueueAsync"/> hands
+/// them to the caller's <c>SaveChanges</c> so the intent commits atomically with the
+/// domain change that produced it.
 /// </summary>
 /// <remarks>
 /// Provider-agnostic by construction: it knows nothing about SMTP, SMS vendors,
@@ -29,20 +31,40 @@ public sealed class NotificationService : INotificationService
     private readonly IPreferenceResolver _preferences;
     private readonly ILogger<NotificationService> _logger;
 
+    /// <summary>Dispatch guard (suppression etc.); null only in unit tests.</summary>
+    private readonly INotificationDispatchGuard? _dispatchGuard;
+
     public NotificationService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
         IPreferenceResolver preferences,
-        ILogger<NotificationService> logger)
+        ILogger<NotificationService> logger,
+        INotificationDispatchGuard? dispatchGuard = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
         _preferences = preferences;
         _logger = logger;
+        _dispatchGuard = dispatchGuard;
     }
 
     /// <inheritdoc />
-    public async Task<NotificationResult> SendAsync(NotificationRequest request, CancellationToken ct = default)
+    public Task<NotificationResult> SendAsync(NotificationRequest request, CancellationToken ct = default)
+        => AcceptAsync(request, persistInline: true, ct);
+
+    /// <inheritdoc />
+    public Task<NotificationResult> QueueAsync(NotificationRequest request, CancellationToken ct = default)
+        => AcceptAsync(request, persistInline: false, ct);
+
+    /// <summary>
+    /// Shared acceptance pipeline (registry → tenant guard → preferences → in-app write
+    /// → external outbox queue). With <paramref name="persistInline"/> each stage commits
+    /// its own rows here (fire-and-forget <see cref="SendAsync"/>); without it every row
+    /// stays tracked in the caller's unit of work so the caller's single SaveChanges
+    /// commits intent and domain change together (<see cref="QueueAsync"/> — Phase 1
+    /// intent-level outbox).
+    /// </summary>
+    private async Task<NotificationResult> AcceptAsync(NotificationRequest request, bool persistInline, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Data);
@@ -77,10 +99,27 @@ public sealed class NotificationService : INotificationService
 
         // 4. in_app is delivered inline: the inbox INSERT *is* the delivery, and its
         //    ledger row is written in the same unit of work so in-app is no longer
-        //    the only untracked channel (audit defect B4).
+        //    the only untracked channel (audit defect B4). Operational suppression
+        //    is consulted here because in-app rows never reach the dispatch worker.
         Guid? inboxId = null;
-        if (surviving.Contains(NotificationChannel.InApp))
-            inboxId = await WriteInboxRowAsync(request, ct);
+        string? inboxSuppression = null;
+        if (surviving.Contains(NotificationChannel.InApp) && _dispatchGuard is not null && request.BusinessId.HasValue)
+            inboxSuppression = await _dispatchGuard.GetChannelSuppressionReasonAsync(
+                request.RecipientUserId, request.BusinessId.Value, NotificationChannel.InApp, ct);
+
+        if (surviving.Contains(NotificationChannel.InApp) && inboxSuppression is null)
+            inboxId = await WriteInboxRowAsync(request, persistInline, ct);
+
+        if (surviving.Contains(NotificationChannel.InApp) && inboxSuppression is not null)
+        {
+            NotificationMetrics.RecordSuppressed(definition.Category, $"suppression:{inboxSuppression}");
+            _logger.LogInformation(
+                "notification in-app write suppressed {NotificationType} to user {RecipientUserId} for business {BusinessId} reason {SuppressReason}",
+                request.Type,
+                request.RecipientUserId,
+                request.BusinessId,
+                inboxSuppression);
+        }
 
         var accepted = new List<string>();
         if (inboxId.HasValue)
@@ -91,7 +130,7 @@ public sealed class NotificationService : INotificationService
 
         foreach (var channel in surviving.Where(channel => channel != NotificationChannel.InApp))
         {
-            if (await TryQueueOutboxRowAsync(request, channel, ct))
+            if (await TryQueueOutboxRowAsync(request, channel, persistInline, ct))
                 accepted.Add(channel);
         }
 
@@ -111,7 +150,7 @@ public sealed class NotificationService : INotificationService
     }
 
     /// <summary>Writes the inbox row plus its same-UoW ledger row and returns the inbox id.</summary>
-    private async Task<Guid?> WriteInboxRowAsync(NotificationRequest request, CancellationToken ct)
+    private async Task<Guid?> WriteInboxRowAsync(NotificationRequest request, bool persistInline, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var now = DateTime.UtcNow;
@@ -157,13 +196,15 @@ public sealed class NotificationService : INotificationService
             CreatedAt = now
         });
 
-        await _unitOfWork.SaveChangesAsync();
+        if (persistInline)
+            await _unitOfWork.SaveChangesAsync();
         return inboxId;
     }
 
     private async Task<bool> TryQueueOutboxRowAsync(
         NotificationRequest request,
         string channel,
+        bool persistInline,
         CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -189,11 +230,20 @@ public sealed class NotificationService : INotificationService
             DeliveryAttemptsJson = NotificationDeliveryAttemptHistory.ForNewRecord().Serialize(),
             NextAttemptAt = now,
             IdempotencyKey = key,
+            RuleId = request.RuleId,
             UpdatedAt = now,
             CreatedAt = now
         };
 
         _context.NotificationLogs.Add(row);
+        if (!persistInline)
+        {
+            // Intent-level outbox: the caller's SaveChanges persists this row in the
+            // same transaction as its domain change; the idempotency unique index
+            // arbitrates any race at commit time.
+            return true;
+        }
+
         try
         {
             // A separate SaveChanges per channel keeps an idempotency collision from

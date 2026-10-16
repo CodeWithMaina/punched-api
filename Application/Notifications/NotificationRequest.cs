@@ -17,13 +17,18 @@ namespace PunchedApi.Application.Notifications;
 /// Server-side only (no client flag exists). Bypasses preferences for
 /// <c>SECURITY</c> types exclusively — R2.
 /// </param>
+/// <param name="RuleId">
+/// Optional automation rule id that produced this intent. Stored on the outbox
+/// ledger row so frequency caps and run history can be tied back to the rule.
+/// </param>
 public sealed record NotificationRequest(
     string Type,
     Guid RecipientUserId,
     Guid? BusinessId,
     IReadOnlyDictionary<string, object?> Data,
     string? IdempotencyKey = null,
-    bool Force = false);
+    bool Force = false,
+    string? RuleId = null);
 
 /// <summary>
 /// Outcome of accepting a notification intent. Suppression is a normal result,

@@ -43,6 +43,25 @@ public class NotificationLogConfiguration : IEntityTypeConfiguration<Notificatio
             .HasColumnName("updated_at")
             .HasDefaultValueSql("now()");
 
+        // Additive scheduling / dead-letter columns (20261020000000): mapped
+        // explicitly because the context applies no global naming convention.
+        builder.Property(x => x.DeliverAfterUtc)
+            .HasColumnName("deliver_after_utc");
+        builder.Property(x => x.RuleId)
+            .HasColumnName("rule_id")
+            .HasMaxLength(64);
+        builder.Property(x => x.SourceJobId)
+            .HasColumnName("source_job_id")
+            .HasMaxLength(64);
+        builder.Property(x => x.DeadLetteredAt)
+            .HasColumnName("dead_lettered_at");
+        builder.Property(x => x.DeadLetterReason)
+            .HasColumnName("dead_letter_reason")
+            .HasMaxLength(200);
+        builder.Property(x => x.TemplateKey)
+            .HasColumnName("template_key")
+            .HasMaxLength(64);
+
         builder.HasOne<User>()
             .WithMany()
             .HasForeignKey(x => x.UserId)
@@ -68,5 +87,7 @@ public class NotificationLogConfiguration : IEntityTypeConfiguration<Notificatio
         builder.HasIndex(x => new { x.Status, x.UpdatedAt, x.Id })
             .HasDatabaseName("ix_notifications_failed_updated_id")
             .HasFilter("status = 'failed'");
+        builder.HasIndex(x => new { x.DeliverAfterUtc, x.Status, x.CreatedAt })
+            .HasDatabaseName("ix_notifications_deliver_after_status");
     }
 }

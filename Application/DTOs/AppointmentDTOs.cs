@@ -100,6 +100,15 @@ public class CancelAppointmentRequest
     public string? Note { get; set; }
 }
 
+/// <summary>
+/// Request to toggle a customer's reminder opt-out on an appointment.
+/// </summary>
+public class ToggleReminderOptOutRequest
+{
+    [JsonPropertyName("optOut")]
+    public bool OptOut { get; set; }
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  BOOKING — AVAILABILITY
 // ═══════════════════════════════════════════════════════════════
@@ -386,6 +395,13 @@ public class AppointmentResponse
     /// </summary>
     [JsonPropertyName("pendingReschedule")]
     public AppointmentRescheduleRequestResponse? PendingReschedule { get; set; }
+
+    /// <summary>
+    /// Customer opt-out for scheduled reminder jobs on this appointment.
+    /// When true, no reminder notifications fire for this appointment.
+    /// </summary>
+    [JsonPropertyName("reminderOptOut")]
+    public bool ReminderOptOut { get; set; }
 }
 
 /// <summary>

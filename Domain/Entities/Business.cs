@@ -189,6 +189,11 @@ public class Business : BaseEntity
     public virtual ICollection<Redemption> Redemptions { get; set; } = new List<Redemption>();
 
     /// <summary>
+    /// The business's reminder policy (one row per business, absent = platform defaults).
+    /// </summary>
+    public virtual BusinessReminderPolicy? ReminderPolicy { get; set; }
+
+    /// <summary>
     /// The user who owns this business.
     /// </summary>
     public virtual User? Owner { get; set; }

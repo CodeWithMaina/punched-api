@@ -151,6 +151,25 @@ public partial class BusinessController : ControllerBase
     }
 
     /// <summary>
+    /// Update the business's reminder policy (enabled, reminder offsets,
+    /// delivery channels). Creates a policy row if none exists.
+    /// </summary>
+    [HttpPut("me/reminder-policy")]
+    [Authorize(Roles = "Business")]
+    [ProducesResponseType(typeof(ApiResponse<BusinessResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> UpdateMyReminderPolicy([FromBody] UpdateBusinessReminderPolicyRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _businessService.UpdateReminderPolicyAsync(userId.Value, request);
+        if (!result.Success) return BadRequest(result);
+        return Ok(result);
+    }
+
+    /// <summary>
     /// Change the authenticated owner's business subdomain slug (settings →
     /// Business URL). Validates format/reserved/availability server-side;
     /// previous slugs are archived and keep redirecting to the new address.

@@ -227,3 +227,50 @@ public sealed class AdminNotificationRetryResponse
     [JsonPropertyName("message")]
     public string Message { get; set; } = string.Empty;
 }
+
+// ── Suppression management (Phase 1.6) ──────────────────────
+
+public class NotificationSuppressionDto
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    [JsonPropertyName("businessId")]
+    public Guid BusinessId { get; set; }
+
+    [JsonPropertyName("userId")]
+    public Guid UserId { get; set; }
+
+    [JsonPropertyName("channel")]
+    public string Channel { get; set; } = string.Empty;
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; set; } = string.Empty;
+
+    [JsonPropertyName("source")]
+    public string Source { get; set; } = string.Empty;
+
+    [JsonPropertyName("expiresAtUtc")]
+    public DateTime? ExpiresAtUtc { get; set; }
+
+    [JsonPropertyName("createdAtUtc")]
+    public DateTime CreatedAtUtc { get; set; }
+}
+
+public sealed class UpsertNotificationSuppressionRequest
+{
+    [JsonPropertyName("businessId")]
+    public Guid BusinessId { get; set; }
+
+    [JsonPropertyName("userId")]
+    public Guid UserId { get; set; }
+
+    [JsonPropertyName("channel")]
+    public string Channel { get; set; } = string.Empty;
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; set; } = string.Empty;
+
+    [JsonPropertyName("expiresAtUtc")]
+    public DateTime? ExpiresAtUtc { get; set; }
+}

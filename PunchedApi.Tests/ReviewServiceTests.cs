@@ -216,12 +216,12 @@ public sealed class ReviewServiceTests
     }
 
     [Fact]
-    public void Controller_ContainsOnlySevenV1Methods()
+    public void Controller_ContainsOnlyEightV1Methods()
     {
         var methods = typeof(ReviewController).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .SelectMany(m => m.GetCustomAttributes<HttpMethodAttribute>())
             .SelectMany(a => a.HttpMethods).ToArray();
-        Assert.Equal(7, methods.Length);
+        Assert.Equal(8, methods.Length);
         Assert.DoesNotContain("DELETE", methods);
         Assert.DoesNotContain(methods, m => m.Contains("response", StringComparison.OrdinalIgnoreCase)
             || m.Contains("report", StringComparison.OrdinalIgnoreCase)

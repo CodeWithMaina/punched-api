@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using PunchedApi.Domain.Entities;
 using PunchedApi.Infrastructure.Data;
 
 namespace PunchedApi.Application.Services;
@@ -31,12 +32,12 @@ public class SubscriptionExpiryService
     /// each affected business.
     /// </summary>
     /// <returns>The number of businesses whose subscriptions were expired.</returns>
-    public async Task<int> ExpireOverdueAsync(DateTime asOf)
+    public async Task<int> ExpireOverdueAsync(DateTime asOf, CancellationToken ct)
     {
         var overdue = await _context.BusinessSubscriptions
             .Where(s => (s.Status == "active" || s.Status == "trial" || s.Status == "past_due") &&
                 s.EndsAt != null && s.EndsAt < asOf)
-            .ToListAsync();
+            .ToListAsync(ct);
 
         if (overdue.Count == 0) return 0;
 
@@ -45,12 +46,29 @@ public class SubscriptionExpiryService
             row.Status = "expired";
         }
 
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(ct);
 
         var businessIds = overdue.Select(s => s.BusinessId).Distinct().ToList();
         foreach (var businessId in businessIds)
         {
             _entitlements.Invalidate(businessId);
+
+            var job = new ScheduledJob
+            {
+                JobType = "subscription.expiring",
+                // Same dedupe key every cycle → re-runs are idempotently skipped.
+                DedupeKey = $"subexp:{businessId}",
+                AggregateType = "business",
+                AggregateId = businessId,
+                BusinessId = businessId,
+                PayloadJson = "{}",
+                ScheduledForUtc = DateTime.UtcNow.AddHours(24),
+                Status = "pending",
+                Attempts = 0,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+            await _context.ScheduledJobs.AddAsync(job, ct);
         }
 
         _logger.LogInformation(

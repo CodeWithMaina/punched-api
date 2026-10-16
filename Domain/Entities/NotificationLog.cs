@@ -37,6 +37,32 @@ public class NotificationLog : BaseEntity
     /// <summary>Earliest UTC time at which a pending row may be claimed.</summary>
     public DateTime NextAttemptAt { get; set; } = DateTime.UtcNow;
 
+    /// <summary>
+    /// Earliest UTC time at which this row may be delivered. A row is eligible for
+    /// claiming when <c>DeliverAfterUtc &lt;= now()</c> (or null == invoice now).
+    /// Absent from legacy payloads; safe to backfill as NULL.
+    /// </summary>
+    public DateTime? DeliverAfterUtc { get; set; }
+
+    /// <summary>Trigger rule id pinned by the producer (Rule 3.x identity, immutable per intent).</summary>
+    [MaxLength(64)]
+    public string? RuleId { get; set; }
+
+    /// <summary>Job id that sourced the intent (scheduler or automation rule run).</summary>
+    [MaxLength(64)]
+    public string? SourceJobId { get; set; }
+
+    /// <summary>Terminal dead-letter timestamp, distinct from failed.</summary>
+    public DateTime? DeadLetteredAt { get; set; }
+
+    /// <summary>Codified reason for dead-lettering (classification).</summary>
+    [MaxLength(200)]
+    public string? DeadLetterReason { get; set; }
+
+    /// <summary>Template key pinned at intent time (e.g. 'platform|default|appointment.reminder').</summary>
+    [MaxLength(64)]
+    public string? TemplateKey { get; set; }
+
     /// <summary>Caller key or deterministic natural key used to collapse duplicate sends.</summary>
     [MaxLength(200)]
     public string? IdempotencyKey { get; set; }

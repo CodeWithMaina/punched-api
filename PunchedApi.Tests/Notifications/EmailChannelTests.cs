@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MimeKit;
+using Moq;
 using PunchedApi.Application.Notifications;
 using PunchedApi.Application.Settings;
 using PunchedApi.Domain.Entities;
@@ -120,6 +121,103 @@ public class EmailChannelTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => channel.SendAsync(Message(Guid.NewGuid()), source.Token));
     }
 
+    [Fact]
+    public async Task Marketing_message_carries_one_click_unsubscribe_and_absolute_link()
+    {
+        await using var context = CreateContext();
+        var recipient = CreateUser("marketing-recipient@example.com", verified: true);
+        context.Users.Add(recipient);
+        await context.SaveChangesAsync();
+        var smtp = new CapturingSmtpDelivery();
+        var channel = CreateChannel(context, smtp);
+
+        await channel.SendAsync(Message(recipient.Id, category: NotificationCategory.Marketing));
+
+        var mime = Assert.IsType<MimeMessage>(smtp.Message);
+        Assert.Equal(
+            "<http://localhost:5091/v1/notifications/unsubscribe?token=test-token>",
+            mime.Headers["List-Unsubscribe"]);
+        Assert.Equal("List-Unsubscribe=One-Click", mime.Headers["List-Unsubscribe-Post"]);
+        Assert.Contains(
+            "http://localhost:5091/v1/notifications/unsubscribe?token=test-token",
+            mime.HtmlBody);
+        // The conditional layout must never leak block syntax into an email.
+        Assert.DoesNotContain("{{#if", mime.HtmlBody);
+        Assert.DoesNotContain("{{^if", mime.HtmlBody);
+        Assert.DoesNotContain("{{/if}}", mime.HtmlBody);
+    }
+
+    [Fact]
+    public async Task Transactional_message_has_no_unsubscribe_headers()
+    {
+        await using var context = CreateContext();
+        var recipient = CreateUser("reminder-recipient@example.com", verified: true);
+        context.Users.Add(recipient);
+        await context.SaveChangesAsync();
+        var smtp = new CapturingSmtpDelivery();
+        var channel = CreateChannel(context, smtp);
+
+        await channel.SendAsync(Message(recipient.Id));
+
+        var mime = Assert.IsType<MimeMessage>(smtp.Message);
+        Assert.False(mime.Headers.Contains("List-Unsubscribe"));
+        Assert.False(mime.Headers.Contains("List-Unsubscribe-Post"));
+    }
+
+    [Fact]
+    public async Task Business_profile_overrides_from_display_name_and_reply_to()
+    {
+        await using var context = CreateContext();
+        var recipient = CreateUser("branded-recipient@example.com", verified: true);
+        var businessId = Guid.NewGuid();
+        context.Users.Add(recipient);
+        context.BusinessMessagingProfiles.Add(new BusinessMessagingProfile
+        {
+            Id = Guid.NewGuid(),
+            BusinessId = businessId,
+            DisplayName = "Java House",
+            ReplyTo = "hello@javahouse.example"
+        });
+        await context.SaveChangesAsync();
+        var smtp = new CapturingSmtpDelivery();
+        var channel = CreateChannel(context, smtp);
+
+        await channel.SendAsync(Message(recipient.Id, businessId: businessId));
+
+        var mime = Assert.IsType<MimeMessage>(smtp.Message);
+        Assert.Equal("sender@example.com", mime.From.Mailboxes.Single().Address);
+        Assert.Equal("Java House", mime.From.Mailboxes.Single().Name);
+        Assert.Equal("hello@javahouse.example", mime.ReplyTo.Mailboxes.Single().Address);
+        Assert.Contains("Java House", mime.HtmlBody);
+        Assert.DoesNotContain("{{", mime.HtmlBody);
+    }
+
+    [Fact]
+    public async Task Brand_text_renders_when_no_logo_is_configured()
+    {
+        await using var context = CreateContext();
+        var recipient = CreateUser("no-logo@example.com", verified: true);
+        var businessId = Guid.NewGuid();
+        context.Users.Add(recipient);
+        context.BusinessMessagingProfiles.Add(new BusinessMessagingProfile
+        {
+            Id = Guid.NewGuid(),
+            BusinessId = businessId,
+            DisplayName = "Style Studio"
+        });
+        await context.SaveChangesAsync();
+        var smtp = new CapturingSmtpDelivery();
+        var channel = CreateChannel(context, smtp);
+
+        await channel.SendAsync(Message(recipient.Id, businessId: businessId));
+
+        var mime = Assert.IsType<MimeMessage>(smtp.Message);
+        Assert.Contains("Style Studio", mime.HtmlBody);
+        Assert.DoesNotContain("<img", mime.HtmlBody);
+        Assert.DoesNotContain("{{^if", mime.HtmlBody);
+        Assert.DoesNotContain("{{/if}}", mime.HtmlBody);
+    }
+
     private static ApplicationDbContext CreateContext() => new(
         new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString("N"))
@@ -143,20 +241,44 @@ public class EmailChannelTests
     private static EmailChannel CreateChannel(
         ApplicationDbContext context,
         INotificationSmtpDelivery smtp,
-        ILogger<EmailChannel>? logger = null) =>
-        new(context, Options.Create(new EmailSettings
-        {
-            Enabled = true,
-            FromAddress = "sender@example.com",
-            FromName = "Punched"
-        }), smtp, logger ?? TestHelpers.CreateLogger<EmailChannel>());
+        ILogger<EmailChannel>? logger = null)
+    {
+        var unsubscribeTokens = new Mock<IUnsubscribeTokenService>();
+        unsubscribeTokens
+            .Setup(t => t.CreateToken(It.IsAny<Guid>(), It.IsAny<Guid?>()))
+            .Returns("test-token");
 
-    private static ChannelMessage Message(Guid recipientId, IReadOnlyDictionary<string, object?>? data = null) => new(
+        return new EmailChannel(
+            context,
+            Options.Create(new EmailSettings
+            {
+                Enabled = true,
+                FromAddress = "sender@example.com",
+                FromName = "Punched"
+            }),
+            smtp,
+            new EmailLayoutRenderer(
+                new TemplateRenderer(TestHelpers.CreateLogger<TemplateRenderer>()),
+                TestHelpers.CreateLogger<EmailLayoutRenderer>()),
+            unsubscribeTokens.Object,
+            Options.Create(new PublicAppSettings
+            {
+                BaseUrl = "http://localhost:3000",
+                ApiBaseUrl = "http://localhost:5091"
+            }),
+            logger ?? TestHelpers.CreateLogger<EmailChannel>());
+    }
+
+    private static ChannelMessage Message(
+        Guid recipientId,
+        IReadOnlyDictionary<string, object?>? data = null,
+        string category = NotificationCategory.Appointment,
+        Guid? businessId = null) => new(
         Guid.NewGuid(),
         "appointment.booked",
         recipientId,
-        null,
-        NotificationCategory.Appointment,
+        businessId,
+        category,
         data ?? new Dictionary<string, object?>
         {
             ["renderedSubject"] = "Subject",

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Loyalty;
+using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 
 namespace PunchedApi.Application.Services;
@@ -79,6 +80,7 @@ public partial class LoyaltyStampingService
                 _unitOfWork.LoyaltyCards.Update(card);
 
                 var unlocked = await UnlockReachedRewardsAsync(card, card.Program, now);
+                await QueueLoyaltyNotificationsAsync(card, entry, signed, unlocked);
                 await _unitOfWork.SaveChangesAsync();
                 if (transaction != null) await transaction.CommitAsync();
 
@@ -128,6 +130,59 @@ public partial class LoyaltyStampingService
         {
             _logger.LogError(ex, "Failed to apply stamp balance change for card {CardId}.", card.Id);
             return ApiResponse<ManualStampResponse>.Fail("STAMP_FAILED", "Failed to record the stamp change.");
+        }
+    }
+
+    /// <summary>
+    /// Queues stamp/reward notification intents inside the caller's open transaction
+    /// (Phase 1 intent-level outbox): each intent commits exactly when the ledger entry
+    /// that caused it does. Credits produce <c>loyalty.stamp_received</c> (and, for every
+    /// reward unlocked by this same balance change, <c>loyalty.reward_ready</c>); debits
+    /// produce nothing. Notification problems never fail the balance change.
+    /// </summary>
+    private async Task QueueLoyaltyNotificationsAsync(
+        LoyaltyCard card, StampTransaction entry, int signed, List<RewardEntitlementResponse> unlocked)
+    {
+        if (signed <= 0 || _notifications is null) return;
+
+        try
+        {
+            var businessName = await _context.Businesses
+                .AsNoTracking()
+                .Where(business => business.Id == card.BusinessId)
+                .Select(business => business.Name)
+                .FirstOrDefaultAsync() ?? string.Empty;
+
+            await _notifications.QueueAsync(new NotificationRequest(
+                "loyalty.stamp_received",
+                card.CustomerId,
+                card.BusinessId,
+                new Dictionary<string, object?>
+                {
+                    ["businessName"] = businessName,
+                    ["stamps"] = card.TotalStamps
+                },
+                $"stamp:{entry.Id}:received"));
+
+            foreach (var reward in unlocked)
+            {
+                await _notifications.QueueAsync(new NotificationRequest(
+                    "loyalty.reward_ready",
+                    card.CustomerId,
+                    card.BusinessId,
+                    new Dictionary<string, object?>
+                    {
+                        ["businessName"] = businessName,
+                        ["rewardName"] = reward.RewardName
+                    },
+                    $"reward:{reward.Id}:ready"));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Loyalty notifications could not be queued atomically for card {CardId} (txn {TxnId}).",
+                card.Id, entry.Id);
         }
     }
 }

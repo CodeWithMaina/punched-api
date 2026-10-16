@@ -23,5 +23,12 @@ public class Appointment : BaseEntity
     [MaxLength(20)]
     public string Status { get; set; } = "booked";
 
+    /// <summary>
+    /// Customer opt-out for scheduled reminder jobs (Phase 2 toggle). Opting out
+    /// cancels the appointment's pending reminder jobs; opting back in recreates
+    /// the still-future ones.
+    /// </summary>
+    public bool ReminderOptOut { get; set; } = false;
+
     public ICollection<AppointmentResource> Resources { get; set; } = new List<AppointmentResource>();
 }

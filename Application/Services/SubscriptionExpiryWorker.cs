@@ -31,7 +31,7 @@ public sealed class SubscriptionExpiryWorker : BackgroundService
             {
                 await using var scope = _scopeFactory.CreateAsyncScope();
                 var expiryService = scope.ServiceProvider.GetRequiredService<SubscriptionExpiryService>();
-                var expired = await expiryService.ExpireOverdueAsync(DateTime.UtcNow);
+                var expired = await expiryService.ExpireOverdueAsync(DateTime.UtcNow, stoppingToken);
                 if (expired > 0)
                 {
                     _logger.LogInformation("SubscriptionExpiryWorker expired {Count} business(es).", expired);

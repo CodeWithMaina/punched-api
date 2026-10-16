@@ -45,6 +45,9 @@ public interface IAppointmentService
     /// <summary>Transitions a confirmed appointment to no_show.</summary>
     Task<ApiResponse<AppointmentResponse>> MarkNoShowAsync(Guid callerUserId, string role, Guid appointmentId);
 
+    /// <summary>Toggles the customer's reminder opt-out on an appointment.</summary>
+    Task<ApiResponse<AppointmentResponse>> ToggleReminderOptOutAsync(Guid callerUserId, string role, Guid appointmentId, bool optOut);
+
     /// <summary>
     /// Lists the caller's own appointments, DB-first: filters + sorting + pagination
     /// all happen in the database. Only the requested page is returned.

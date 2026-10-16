@@ -33,6 +33,20 @@ public class ApplicationDbContext : DbContext
     public DbSet<StaffDailyAnalytics> StaffDailyAnalytics => Set<StaffDailyAnalytics>();
     public DbSet<StaffShift> StaffShifts => Set<StaffShift>();
     public DbSet<NotificationLog> NotificationLogs => Set<NotificationLog>();
+    public DbSet<NotificationSuppression> NotificationSuppressions => Set<NotificationSuppression>();
+
+    // Phase 2: durable scheduling + domain-event relay.
+    public DbSet<ScheduledJob> ScheduledJobs => Set<ScheduledJob>();
+    public DbSet<DomainEvent> DomainEvents => Set<DomainEvent>();
+    public DbSet<BusinessReminderPolicy> BusinessReminderPolicies => Set<BusinessReminderPolicy>();
+
+    // Phase 3: automation rules engine.
+    public DbSet<AutomationRule> AutomationRules => Set<AutomationRule>();
+    public DbSet<AutomationRuleRun> AutomationRuleRuns => Set<AutomationRuleRun>();
+
+    // Phase 4: templates and branding.
+    public DbSet<NotificationTemplateOverride> NotificationTemplateOverrides => Set<NotificationTemplateOverride>();
+    public DbSet<BusinessMessagingProfile> BusinessMessagingProfiles => Set<BusinessMessagingProfile>();
     public DbSet<PushDevice> PushDevices => Set<PushDevice>();
     public DbSet<Review> Reviews => Set<Review>();
     public DbSet<ApiEventLog> ApiEventLogs => Set<ApiEventLog>();
