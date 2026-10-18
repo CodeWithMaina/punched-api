@@ -33,7 +33,7 @@ public class AutomationRuleConfiguration : IEntityTypeConfiguration<AutomationRu
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");
 
-        builder.HasOne<Business>()
+        builder.HasOne(x => x.Business)
             .WithMany()
             .HasForeignKey(x => x.BusinessId)
             .OnDelete(DeleteBehavior.Cascade);

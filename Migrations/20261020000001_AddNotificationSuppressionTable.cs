@@ -1,10 +1,15 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using PunchedApi.Infrastructure.Data;
 
 #nullable disable
 
 namespace PunchedApi.Migrations
 {
     /// <inheritdoc />
+    [DbContext(typeof(ApplicationDbContext))]
+    [Migration("20261020000001_AddNotificationSuppressionTable")]
     public partial class AddNotificationSuppressionTable : Migration
     {
         /// <inheritdoc />

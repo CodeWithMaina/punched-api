@@ -41,12 +41,12 @@ public class AutomationRuleRunConfiguration : IEntityTypeConfiguration<Automatio
         builder.Property(x => x.CompletedAt).HasColumnName("completed_at");
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
 
-        builder.HasOne<AutomationRule>()
+        builder.HasOne(x => x.Rule)
             .WithMany()
             .HasForeignKey(x => x.RuleId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasOne<Business>()
+        builder.HasOne(x => x.Business)
             .WithMany()
             .HasForeignKey(x => x.BusinessId)
             .OnDelete(DeleteBehavior.Cascade);

@@ -25,10 +25,11 @@ public class NotificationTemplateOverrideConfiguration : IEntityTypeConfiguratio
         builder.Property(x => x.BodyTemplateHtml).HasColumnName("body_template_html").IsRequired();
         builder.Property(x => x.BodyTemplateText).HasColumnName("body_template_text").IsRequired();
         builder.Property(x => x.Version).HasColumnName("version").HasDefaultValue(1);
+        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");
         builder.Property(x => x.UpdatedBy).HasColumnName("updated_by").HasMaxLength(200).IsRequired();
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
 
-        builder.HasOne<Business>()
+        builder.HasOne(x => x.Business)
             .WithMany()
             .HasForeignKey(x => x.BusinessId)
             .OnDelete(DeleteBehavior.Cascade);

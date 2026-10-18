@@ -94,9 +94,20 @@ public class BusinessReminderPolicyConfiguration : IEntityTypeConfiguration<Busi
         builder.Property(x => x.ChannelsJson).HasColumnName("channels_json").HasColumnType("jsonb").HasDefaultValue("[\"in_app\",\"email\",\"push\"]");
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");
 
+        // One-to-one, shared primary key: business_id is BOTH the PK (above) and
+        // the FK to businesses.id. The inverse navigation lives on the Business
+        // side (Business.ReminderPolicy), so it MUST be wired here via
+        // WithOne(b => b.ReminderPolicy). The previous form used a bare
+        // .WithOne()/HasOne<Business>() with no inverse expression, which left
+        // Business.ReminderPolicy unpaired; EF then auto-created a SECOND
+        // relationship for that orphaned navigation with a shadow FK
+        // "ReminderPolicyBusinessId" on businesses. That column does not exist in
+        // the schema (the migration only adds business_reminder_policies), so any
+        // Businesses query — including the startup slug backfill — selected a
+        // nonexistent column and Postgres failed with 42703.
         builder.HasOne<Business>()
-            .WithMany()
-            .HasForeignKey(x => x.BusinessId)
+            .WithOne(b => b.ReminderPolicy)
+            .HasForeignKey<BusinessReminderPolicy>(x => x.BusinessId)
             .OnDelete(DeleteBehavior.Cascade);
     }
 }

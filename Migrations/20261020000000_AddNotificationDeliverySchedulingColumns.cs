@@ -1,10 +1,15 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using PunchedApi.Infrastructure.Data;
 
 #nullable disable
 
 namespace PunchedApi.Migrations
 {
     /// <inheritdoc />
+    [DbContext(typeof(ApplicationDbContext))]
+    [Migration("20261020000000_AddNotificationDeliverySchedulingColumns")]
     public partial class AddNotificationDeliverySchedulingColumns : Migration
     {
         /// <inheritdoc />

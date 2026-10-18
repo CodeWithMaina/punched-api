@@ -1,5 +1,8 @@
 using System;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using PunchedApi.Infrastructure.Data;
 
 #nullable disable
 
@@ -11,16 +14,18 @@ namespace PunchedApi.Migrations
     /// unlocked by the customer's first verified business stamping action.
     /// Existing rows are backfilled as unlocked to preserve current behaviour.
     /// </summary>
+    [DbContext(typeof(ApplicationDbContext))]
     [Migration("20260904100000_AddStampUnlockedAt")]
     public partial class AddStampUnlockedAt : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<DateTime>(
-                name: "unlocked_at",
-                table: "stamps",
-                type: "timestamp with time zone",
-                nullable: true);
+            // Idempotent: stamps.unlocked_at may already exist (added by the
+            // EnsureStampUnlockedAtColumn / FixStampUnlockedAtColumn repair
+            // migrations), so use IF NOT EXISTS to avoid a duplicate-column error
+            // when this recovered migration is applied to an existing database.
+            migrationBuilder.Sql(
+                "ALTER TABLE stamps ADD COLUMN IF NOT EXISTS unlocked_at timestamp with time zone;");
 
             // Legacy stamps (including all previously-granted welcome stamps) are
             // considered verified — only new enrollments create locked stamps.

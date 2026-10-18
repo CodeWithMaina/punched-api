@@ -1,4 +1,7 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using PunchedApi.Infrastructure.Data;
 
 #nullable disable
 
@@ -9,6 +12,8 @@ namespace PunchedApi.Migrations;
 /// Creates <c>automation_rules</c> and <c>automation_rule_runs</c>.
 /// Additive only — no existing tables or columns are modified.
 /// </summary>
+[DbContext(typeof(ApplicationDbContext))]
+[Migration("20261016000000_AddAutomationRulesAndRuleRuns")]
 public partial class AddAutomationRulesAndRuleRuns : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)

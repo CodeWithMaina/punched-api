@@ -581,9 +581,6 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("business_id");
 
-                    b.Property<Guid?>("BusinessId1")
-                        .HasColumnType("uuid");
-
                     b.Property<string>("ConditionsJson")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -653,8 +650,6 @@ namespace PunchedApi.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("BusinessId1");
-
                     b.HasIndex("BusinessId", "Enabled")
                         .HasDatabaseName("ix_automation_rules_business_enabled");
 
@@ -678,9 +673,6 @@ namespace PunchedApi.Migrations
                     b.Property<Guid>("BusinessId")
                         .HasColumnType("uuid")
                         .HasColumnName("business_id");
-
-                    b.Property<Guid?>("BusinessId1")
-                        .HasColumnType("uuid");
 
                     b.Property<DateTime?>("CompletedAt")
                         .HasColumnType("timestamp with time zone")
@@ -723,9 +715,6 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("rule_id");
 
-                    b.Property<Guid?>("RuleId1")
-                        .HasColumnType("uuid");
-
                     b.Property<int>("RuleVersion")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
@@ -762,13 +751,9 @@ namespace PunchedApi.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("BusinessId1");
-
                     b.HasIndex("IdempotencyKey")
                         .IsUnique()
                         .HasDatabaseName("ux_automation_rule_runs_idempotency_key");
-
-                    b.HasIndex("RuleId1");
 
                     b.HasIndex("BusinessId", "CreatedAt")
                         .HasDatabaseName("ix_automation_rule_runs_business_created");
@@ -902,9 +887,6 @@ namespace PunchedApi.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("phone_number");
 
-                    b.Property<Guid?>("ReminderPolicyBusinessId")
-                        .HasColumnType("uuid");
-
                     b.Property<string>("Slug")
                         .HasMaxLength(63)
                         .HasColumnType("character varying(63)")
@@ -927,8 +909,6 @@ namespace PunchedApi.Migrations
                     b.HasIndex("LogoMediaId");
 
                     b.HasIndex("OwnerId");
-
-                    b.HasIndex("ReminderPolicyBusinessId");
 
                     b.HasIndex("Slug")
                         .IsUnique();
@@ -1093,6 +1073,72 @@ namespace PunchedApi.Migrations
 
                             t.HasCheckConstraint("ck_business_media_role", "\"role\" = 'Gallery'");
                         });
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessMessagingProfile", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("display_name");
+
+                    b.Property<string>("FooterNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("footer_note");
+
+                    b.Property<Guid?>("LogoMediaId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("logo_media_id");
+
+                    b.Property<string>("PrimaryColor")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("primary_color");
+
+                    b.Property<string>("ReminderPolicyJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("[1440,60]")
+                        .HasColumnName("reminder_policy_json");
+
+                    b.Property<string>("ReplyTo")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("reply_to");
+
+                    b.Property<string>("SenderDomainId")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("sender_domain_id");
+
+                    b.Property<string>("Timezone")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("timezone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_business_messaging_profiles_business_id");
+
+                    b.ToTable("business_messaging_profiles", (string)null);
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessModule", b =>
@@ -2928,6 +2974,147 @@ namespace PunchedApi.Migrations
                         .HasFilter("\"user_id\" IS NOT NULL");
 
                     b.ToTable("notification_suppressions", (string)null);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.NotificationTemplateOverride", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("BodyTemplateHtml")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("body_template_html");
+
+                    b.Property<string>("BodyTemplateText")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("body_template_text");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("channel");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("SubjectTemplate")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("subject_template");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("type");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("updated_by");
+
+                    b.Property<int>("Version")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId", "Type")
+                        .HasDatabaseName("ix_notification_template_overrides_business_type");
+
+                    b.HasIndex("BusinessId", "Type", "Channel")
+                        .IsUnique()
+                        .HasDatabaseName("ux_notification_template_overrides_business_type_channel");
+
+                    b.ToTable("notification_template_overrides", (string)null);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.NotificationTemplateOverrideVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("BodyTemplateHtml")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("body_template_html");
+
+                    b.Property<string>("BodyTemplateText")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("body_template_text");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("channel");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("OverrideId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("override_id");
+
+                    b.Property<string>("SubjectTemplate")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("subject_template");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("type");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("updated_by");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OverrideId")
+                        .HasDatabaseName("ix_notification_template_override_versions_override_id");
+
+                    b.HasIndex("OverrideId", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("ux_notification_template_override_versions_override_version");
+
+                    b.HasIndex("BusinessId", "Type", "Channel")
+                        .HasDatabaseName("ix_notification_template_override_versions_business_type_channel");
+
+                    b.ToTable("notification_template_override_versions", (string)null);
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.Payment", b =>
@@ -5225,40 +5412,28 @@ namespace PunchedApi.Migrations
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.AutomationRule", b =>
                 {
-                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
                         .WithMany()
                         .HasForeignKey("BusinessId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
-                        .WithMany()
-                        .HasForeignKey("BusinessId1");
 
                     b.Navigation("Business");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.AutomationRuleRun", b =>
                 {
-                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
                         .WithMany()
                         .HasForeignKey("BusinessId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
-                        .WithMany()
-                        .HasForeignKey("BusinessId1");
-
-                    b.HasOne("PunchedApi.Domain.Entities.AutomationRule", null)
+                    b.HasOne("PunchedApi.Domain.Entities.AutomationRule", "Rule")
                         .WithMany()
                         .HasForeignKey("RuleId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.HasOne("PunchedApi.Domain.Entities.AutomationRule", "Rule")
-                        .WithMany()
-                        .HasForeignKey("RuleId1");
 
                     b.Navigation("Business");
 
@@ -5282,13 +5457,7 @@ namespace PunchedApi.Migrations
                         .HasForeignKey("OwnerId")
                         .OnDelete(DeleteBehavior.SetNull);
 
-                    b.HasOne("PunchedApi.Domain.Entities.BusinessReminderPolicy", "ReminderPolicy")
-                        .WithMany()
-                        .HasForeignKey("ReminderPolicyBusinessId");
-
                     b.Navigation("Owner");
-
-                    b.Navigation("ReminderPolicy");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessDailyAnalytics", b =>
@@ -5337,6 +5506,17 @@ namespace PunchedApi.Migrations
                     b.Navigation("Media");
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessMessagingProfile", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Business");
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessModule", b =>
                 {
                     b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
@@ -5377,8 +5557,8 @@ namespace PunchedApi.Migrations
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessReminderPolicy", b =>
                 {
                     b.HasOne("PunchedApi.Domain.Entities.Business", null)
-                        .WithMany()
-                        .HasForeignKey("BusinessId")
+                        .WithOne("ReminderPolicy")
+                        .HasForeignKey("PunchedApi.Domain.Entities.BusinessReminderPolicy", "BusinessId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
@@ -5712,6 +5892,28 @@ namespace PunchedApi.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.NotificationTemplateOverride", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Business");
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.NotificationTemplateOverrideVersion", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.NotificationTemplateOverride", "Override")
+                        .WithMany()
+                        .HasForeignKey("OverrideId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Override");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.Payment", b =>
@@ -6240,6 +6442,8 @@ namespace PunchedApi.Migrations
                     b.Navigation("Redemptions");
 
                     b.Navigation("ReferralProgram");
+
+                    b.Navigation("ReminderPolicy");
 
                     b.Navigation("Stamps");
                 });

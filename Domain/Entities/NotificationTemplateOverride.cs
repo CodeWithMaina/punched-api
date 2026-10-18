@@ -41,6 +41,9 @@ public class NotificationTemplateOverride : BaseEntity
     /// <summary>Version number — incremented on each material change.</summary>
     public int Version { get; set; } = 1;
 
+    /// <summary>Last write timestamp (for ordering + concurrency hints).</summary>
+    public DateTime? UpdatedAt { get; set; }
+
     /// <summary>User who last wrote this override.</summary>
     [Required]
     [MaxLength(200)]

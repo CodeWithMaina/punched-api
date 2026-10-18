@@ -55,6 +55,7 @@ try
     // ── Serilog ─────────────────────────────────────────────
     builder.Host.UseSerilog((context, config) =>
         config.ReadFrom.Configuration(context.Configuration)
+              .Enrich.FromLogContext()
               .WriteTo.Console());
 
     // ═══════════════════════════════════════════════════════════
@@ -234,6 +235,10 @@ builder.Services.AddScoped<IUnsubscribeTokenService, UnsubscribeTokenService>();
 builder.Services.AddScoped<EmailLayoutRenderer>();
     builder.Services.AddScoped<INotificationSmtpDelivery, MailKitNotificationSmtpDelivery>();
     builder.Services.AddScoped<INotificationOutboxService, NotificationOutboxService>();
+
+    // ── Phase 2: template management (overrides + version history + delivery-path resolution) ──
+    builder.Services.AddScoped<ITemplateOverrideResolver, TemplateOverrideResolver>();
+    builder.Services.AddScoped<TemplateOverrideService>();
     builder.Services.AddScoped<INotificationChannel, EmailChannel>();
     builder.Services.AddHttpClient<AfricaTalkingClient>();
     builder.Services.AddScoped<INotificationChannel, SmsChannel>();
@@ -557,6 +562,22 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
                 });
         });
 
+        // Template override management: 60 per hour per authenticated user (protects
+        // the version-history write path from abuse).
+        options.AddPolicy("template-overrides", httpContext =>
+        {
+            var userId = httpContext.User?.FindFirst("userId")?.Value ?? "anon";
+            var partitionKey = $"{httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown"}:{userId}";
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey,
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = RateLimit("template-overrides", 60),
+                    Window = TimeSpan.FromHours(1),
+                    QueueLimit = 0
+                });
+        });
+
         options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     });
 
@@ -723,6 +744,7 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
     // the frontend can offer switch/re-auth. It never grants data access —
     // module gating ([RequireModule]) + identity-scoped authorization stay
     // authoritative. Runs after authentication so claims are available.
+    app.UseMiddleware<CorrelationIdMiddleware>();
     app.UseMiddleware<TenantConsistencyMiddleware>();
     // Module gating is enforced per-endpoint via [RequireModule] filters
     // (MODULE_SYSTEM_STATUS_AND_PLAN.md Step 4); no coarse middleware by design.
@@ -749,11 +771,31 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
             // CanConnectAsync may throw on some providers; treat as unhealthy.
         }
         var workersEnabled = Environment.GetEnvironmentVariable("WORKERS_ENABLED") ?? "true";
+        var workersEnabledBool = workersEnabled.Equals("true", StringComparison.OrdinalIgnoreCase);
+
+        // Queue depth: pending notification outbox rows waiting for the delivery worker.
+        long queueDepth = -1;
+        try
+        {
+            queueDepth = await db.NotificationLogs
+                .AsNoTracking()
+                .CountAsync(n => n.Status == "pending");
+        }
+        catch
+        {
+            // If the table doesn't exist yet (migrations not applied), report unknown.
+        }
+
+        var overall = dbOk && (workersEnabledBool || queueDepth <= 0)
+            ? "healthy"
+            : "unhealthy";
+
         return Results.Ok(new
         {
-            status = dbOk ? "healthy" : "unhealthy",
+            status = overall,
             database = dbOk ? "connected" : "disconnected",
-            workers = workersEnabled.Equals("true", StringComparison.OrdinalIgnoreCase) ? "enabled" : "disabled"
+            workers = workersEnabledBool ? "enabled" : "disabled",
+            queue_depth = queueDepth
         });
     })
         .AllowAnonymous();

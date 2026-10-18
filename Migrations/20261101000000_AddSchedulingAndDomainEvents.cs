@@ -1,4 +1,7 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using PunchedApi.Infrastructure.Data;
 
 #nullable disable
 
@@ -11,6 +14,8 @@ namespace PunchedApi.Migrations
     /// Hand-written additive migration (repo convention for Phase 1-2 changes);
     /// the model snapshot is updated in step with it.
     /// </summary>
+    [DbContext(typeof(ApplicationDbContext))]
+    [Migration("20261101000000_AddSchedulingAndDomainEvents")]
     public partial class AddSchedulingAndDomainEvents : Migration
     {
         /// <inheritdoc />

@@ -1,4 +1,7 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using PunchedApi.Infrastructure.Data;
 
 #nullable disable
 
@@ -9,6 +12,8 @@ namespace PunchedApi.Migrations;
 /// Creates <c>notification_template_overrides</c> and
 /// <c>business_messaging_profiles</c>. Additive only.
 /// </summary>
+[DbContext(typeof(ApplicationDbContext))]
+[Migration("20261017000000_AddTemplateOverridesAndMessagingProfiles")]
 public partial class AddTemplateOverridesAndMessagingProfiles : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)

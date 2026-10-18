@@ -61,6 +61,9 @@ public sealed class NotificationDeliveryWorker : BackgroundService
         var channels = provider.GetServices<INotificationChannel>().ToArray();
         // Optional so unit-test service providers without guards keep working.
         var guard = provider.GetService<INotificationDispatchGuard>();
+        // Optional so unit-test service providers without the resolver keep working
+        // (they fall back to the platform default in BuildMessageAsync).
+        var resolver = provider.GetService<ITemplateOverrideResolver>();
         var batchSize = Math.Max(1, _options.BatchSize);
 
         await store.ReclaimStaleProcessingAsync(TimeSpan.FromMinutes(Math.Max(1, _options.StaleProcessingMinutes)), ct);
@@ -125,7 +128,7 @@ public sealed class NotificationDeliveryWorker : BackgroundService
                     continue;
                 }
 
-                var channelMessage = BuildMessage(row, renderer);
+                var channelMessage = await BuildMessageAsync(row, renderer, resolver, ct);
                 attemptHistory = NotificationDeliveryAttemptHistory.Deserialize(row.DeliveryAttemptsJson);
                 currentAttempt = attemptHistory.Start(DateTime.UtcNow);
                 row.DeliveryAttemptsJson = attemptHistory.Serialize();
@@ -256,15 +259,40 @@ public sealed class NotificationDeliveryWorker : BackgroundService
         attempt.CompletedAtUtc = completedAtUtc;
     }
 
-    private static ChannelMessage BuildMessage(NotificationLog row, ITemplateRenderer renderer)
+    private async Task<ChannelMessage> BuildMessageAsync(
+        NotificationLog row,
+        ITemplateRenderer renderer,
+        ITemplateOverrideResolver resolver,
+        CancellationToken ct)
     {
         var data = DeserializePayload(row.PayloadJson);
+
+        // Effective template: business override wins, platform default is the
+        // safe fallback. An unregistered type was already dead-lettered before
+        // BuildMessageAsync is called, so ResolveAsync will always return the
+        // platform default at minimum — never a silent bypass.
+        EffectiveTemplate effective;
+        if (resolver is not null)
+        {
+            effective = await resolver.ResolveAsync(row.BusinessId, row.TemplateType, row.Channel, ct)
+                ?? throw new InvalidOperationException(
+                    $"No template resolvable for {row.TemplateType}/{row.Channel}.");
+        }
+        else
+        {
+            // No resolver registered (e.g. unit-test service providers): fall back
+            // to the platform default template.
+            var fallback = NotificationTemplates.Get(row.TemplateType, row.Channel);
+            effective = new EffectiveTemplate(fallback.Subject, fallback.Title, fallback.Body, fallback.Body, EffectiveTemplateSource.Default);
+        }
+
         var definition = NotificationTypes.Get(row.TemplateType);
-        var template = NotificationTemplates.Get(row.TemplateType, row.Channel);
-        data["renderedSubject"] = renderer.RenderText(template.Subject, data);
-        data["renderedTitle"] = renderer.RenderText(template.Title, data);
-        data["renderedBody"] = renderer.RenderText(template.Body, data);
-        data["renderedHtmlBody"] = renderer.RenderHtml(template.Body, data);
+
+        data["renderedSubject"] = renderer.RenderText(effective.Subject ?? string.Empty, data);
+        data["renderedTitle"] = renderer.RenderText(effective.Title, data);
+        data["renderedBody"] = renderer.RenderText(effective.Body, data);
+        data["renderedHtmlBody"] = renderer.RenderHtml(effective.BodyHtml, data);
+
         return new ChannelMessage(
             row.Id,
             row.TemplateType,

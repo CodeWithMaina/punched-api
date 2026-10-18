@@ -46,6 +46,7 @@ public class ApplicationDbContext : DbContext
 
     // Phase 4: templates and branding.
     public DbSet<NotificationTemplateOverride> NotificationTemplateOverrides => Set<NotificationTemplateOverride>();
+    public DbSet<NotificationTemplateOverrideVersion> NotificationTemplateOverrideVersions => Set<NotificationTemplateOverrideVersion>();
     public DbSet<BusinessMessagingProfile> BusinessMessagingProfiles => Set<BusinessMessagingProfile>();
     public DbSet<PushDevice> PushDevices => Set<PushDevice>();
     public DbSet<Review> Reviews => Set<Review>();

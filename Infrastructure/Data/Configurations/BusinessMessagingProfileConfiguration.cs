@@ -28,7 +28,7 @@ public class BusinessMessagingProfileConfiguration : IEntityTypeConfiguration<Bu
         builder.Property(x => x.ReminderPolicyJson).HasColumnName("reminder_policy_json").HasDefaultValue("[1440,60]");
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
 
-        builder.HasOne<Business>()
+        builder.HasOne(x => x.Business)
             .WithMany()
             .HasForeignKey(x => x.BusinessId)
             .OnDelete(DeleteBehavior.Cascade);
