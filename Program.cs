@@ -623,6 +623,15 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
             builder.Expire(TimeSpan.FromSeconds(10))
                    .SetVaryByHeader("Authorization, " + TenantConsistencyMiddleware.TenantHeader)
                    .Tag("dashboard"));
+
+        // Public storefront bootstrap (30s, per slug): anonymous + tenant-safe.
+        // The slug is IN the path (a different address is a different cache
+        // entry), and the tenant header joins the key so a spoofed host can
+        // never serve another business's cached payload.
+        options.AddPolicy("storefront-bootstrap", builder =>
+            builder.Expire(TimeSpan.FromSeconds(30))
+                   .SetVaryByHeader(TenantConsistencyMiddleware.TenantHeader)
+                   .Tag("storefront-bootstrap"));
     });
 
     builder.Services.AddSwaggerGen(c =>

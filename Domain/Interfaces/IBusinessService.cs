@@ -28,6 +28,26 @@ public interface IBusinessService
 
     Task<ApiResponse<BusinessResponse>> GetBusinessByIdAsync(Guid businessId);
     Task<ApiResponse<PublicBusinessProfileResponse>> GetPublicProfileAsync(Guid businessId);
+
+    /// <summary>
+    /// Public storefront bootstrap: resolves a slug and returns the minimum
+    /// data to render the storefront shell (identity + profile + landing
+    /// page) in ONE call. Returns NOT_FOUND for unknown slugs; moved=true
+    /// + canonical slug for superseded slugs.
+    /// </summary>
+    Task<ApiResponse<StorefrontBootstrapResponse>> GetStorefrontBootstrapBySlugAsync(string slug);
+
+    /// <summary>
+    /// Owner-dashboard bootstrap: ONE call returning the minimum data every
+    /// dashboard shell render needs — business identity + program flags,
+    /// effective module entitlements, owner-role permissions, plan status,
+    /// navigation tabs and reminder settings — so cold dashboard loads stop
+    /// fanning out to /businesses/me and /me/modules independently.
+    /// Resolved entirely server-side from the authenticated owner (the
+    /// client never supplies a business id).
+    /// </summary>
+    Task<ApiResponse<DashboardBootstrapResponse>> GetDashboardBootstrapAsync(Guid ownerId);
+
     Task<ApiResponse<PaginatedResponse<BusinessResponse>>> ListBusinessesAsync(string? category, string? search, int page, int pageSize);
     Task<ApiResponse<PaginatedResponse<BusinessCustomerResponse>>> GetBusinessCustomersAsync(
         Guid ownerId,

@@ -156,23 +156,12 @@ public class LoyaltyService : ILoyaltyService
 
     // ── Business program management ─────────────────────────
 
-    public async Task<ApiResponse<List<LoyaltyProgramResponse>>> GetBusinessProgramsAsync(Guid ownerId)
-    {
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
-        if (business == null)
-            return ApiResponse<List<LoyaltyProgramResponse>>.Fail("NOT_FOUND", "No business found for this account.");
-
-        var programs = await _context.LoyaltyPrograms
-            .Include(p => p.CardDesign)
-            .Where(p => p.BusinessId == business.Id)
-            .OrderBy(p => p.CreatedAt)
-            .ToListAsync();
-
-        var responses = new List<LoyaltyProgramResponse>(programs.Count);
-        foreach (var program in programs)
-            responses.Add(await MapProgramWithDesignAsync(program, business));
-        return ApiResponse<List<LoyaltyProgramResponse>>.Ok(responses);
-    }
+    /// <summary>
+    /// GET /programs/me (general card-face list) — shares the batched,
+    /// no-tracking core with <see cref="GetBusinessProgramCardsAsync"/>.
+    /// </summary>
+    public Task<ApiResponse<List<LoyaltyProgramResponse>>> GetBusinessProgramsAsync(Guid ownerId)
+        => ListProgramFacesCoreAsync(ownerId);
 
     /// <summary>
     /// GET /programs/me/cards — the CARDS ALONE payload for the card
@@ -184,7 +173,104 @@ public class LoyaltyService : ILoyaltyService
     /// active/tapped card.
     /// </summary>
     public Task<ApiResponse<List<LoyaltyProgramResponse>>> GetBusinessProgramCardsAsync(Guid ownerId)
-        => GetBusinessProgramsAsync(ownerId);
+        => ListProgramFacesCoreAsync(ownerId);
+
+    /// <summary>
+    /// Shared list core for the card-face payloads: business context +
+    /// active programs (with design rows) in TWO no-tracking queries, then
+    /// design resolution from the preloaded rows. The previous path ran the
+    /// per-program design lookup once per row (N+1 design queries on every
+    /// overview load); semantics mirror CardDesignResolver exactly — an
+    /// entitled business picks its selected active design, everything else
+    /// falls back to the global default template.
+    /// </summary>
+    private async Task<ApiResponse<List<LoyaltyProgramResponse>>> ListProgramFacesCoreAsync(Guid ownerId)
+    {
+        var business = await _context.Businesses
+            .AsNoTracking()
+            .FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        if (business == null)
+            return ApiResponse<List<LoyaltyProgramResponse>>.Fail("NOT_FOUND", "No business found for this account.");
+
+        var programs = await _context.LoyaltyPrograms
+            .AsNoTracking()
+            .Include(p => p.CardDesign)
+            .Where(p => p.BusinessId == business.Id)
+            .OrderBy(p => p.CreatedAt)
+            .ToListAsync();
+
+        // One (memory-cached) entitlement check for the whole list instead
+        // of one per program.
+        var entitled = await _cardDesignResolver.BusinessHasCustomCardDesignAsync(business.Id);
+
+        // Preload every design this list could resolve: the selected ids
+        // plus the global default, scoped to this business or the platform.
+        var designIds = programs
+            .Where(p => p.CardDesignId.HasValue)
+            .Select(p => p.CardDesignId!.Value)
+            .ToHashSet();
+        var designs = await _context.CardDesigns
+            .AsNoTracking()
+            .Where(d => d.IsActive &&
+                (d.BusinessId == null || d.BusinessId == business.Id) &&
+                (designIds.Contains(d.Id) || d.IsDefault))
+            .ToListAsync();
+        var designsById = designs.ToDictionary(d => d.Id);
+        var defaultDesign = designs.FirstOrDefault(d => d.IsDefault && d.BusinessId == null);
+
+        var responses = new List<LoyaltyProgramResponse>(programs.Count);
+        foreach (var program in programs)
+        {
+            var response = MapProgram(program);
+
+            ResolvedCardDesign resolved;
+            if (program.CardDesignId.HasValue &&
+                entitled &&
+                designsById.TryGetValue(program.CardDesignId.Value, out var selected))
+            {
+                resolved = new ResolvedCardDesign
+                {
+                    Template = selected.HtmlTemplate,
+                    DesignId = selected.Id,
+                    DesignName = selected.Name,
+                    IsDefault = selected.IsDefault,
+                    BusinessHasEntitlement = true,
+                    Config = CardDesignConfig.TryParse(selected.ConfigJson),
+                    BusinessId = business.Id,
+                    Version = selected.CurrentVersion,
+                };
+            }
+            else
+            {
+                resolved = new ResolvedCardDesign
+                {
+                    Template = defaultDesign?.HtmlTemplate ?? DefaultCardTemplate.Html,
+                    DesignId = defaultDesign?.Id,
+                    DesignName = defaultDesign?.Name ?? DefaultCardTemplate.Name,
+                    IsDefault = true,
+                    IsFallback = program.CardDesignId.HasValue,
+                    BusinessHasEntitlement = entitled,
+                    Config = CardDesignConfig.TryParse(defaultDesign?.ConfigJson),
+                    BusinessId = business.Id,
+                    Version = defaultDesign?.CurrentVersion ?? 0,
+                };
+            }
+
+            var renderContext = BuildCardContext(
+                new LoyaltyCard
+                {
+                    RequiredStamps = program.StampsRequired,
+                    Customer = new User { FullName = string.Empty },
+                },
+                business, program, 0, resolved.Config);
+            response.CardDesignHtml = _cardDesignResolver.Render(resolved, renderContext);
+            response.CardDesignIsDefault = resolved.IsDefault;
+            response.CardDesignVersion = resolved.Version;
+            responses.Add(response);
+        }
+
+        return ApiResponse<List<LoyaltyProgramResponse>>.Ok(responses);
+    }
 
     public async Task<ApiResponse<LoyaltyProgramResponse>> GetBusinessProgramAsync(Guid ownerId, Guid programId)
     {

@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Programs;
 using PunchedApi.Domain.Entities;
 
@@ -194,6 +195,36 @@ public class BusinessResponse
     [JsonPropertyName("reminderPolicy")]
     public BusinessReminderPolicyResponse? ReminderPolicy { get; set; }
 
+}
+
+/// <summary>
+/// Public storefront bootstrap: the minimum data needed to render the
+/// storefront shell (identity + profile + landing page) in ONE request.
+/// Replaces the old triple fetch (by-slug → public profile → landing page)
+/// for initial storefront renders. Heavy section data (services, reviews,
+/// gallery, availability) stays on its own endpoints and loads after.
+/// </summary>
+public class StorefrontBootstrapResponse
+{
+    [JsonPropertyName("businessId")]
+    public Guid BusinessId { get; set; }
+
+    /// <summary>The business's canonical (current) slug.</summary>
+    [JsonPropertyName("slug")]
+    public string Slug { get; set; } = string.Empty;
+
+    /// <summary>
+    /// True when the requested address only redirects here (superseded slug).
+    /// Frontend should redirect the visitor to the canonical slug URL.
+    /// </summary>
+    [JsonPropertyName("moved")]
+    public bool Moved { get; set; }
+
+    [JsonPropertyName("business")]
+    public PublicBusinessProfileResponse Business { get; set; } = new();
+
+    [JsonPropertyName("landingPage")]
+    public PublicLandingPageResponse LandingPage { get; set; } = new();
 }
 
 /// <summary>
@@ -491,6 +522,99 @@ public class CustomerProgramResponse
 
     [JsonPropertyName("cardDesignHtml")]
     public string? CardDesignHtml { get; set; }
+}
+
+/// <summary>
+/// Shared dashboard bootstrap payload. Resolved server-side from the
+/// authenticated context — no client-supplied businessId is accepted.
+/// Returns the minimum identity + permissions + navigation for every
+/// dashboard section so no two components independently re-request the
+/// same data.
+/// </summary>
+public class DashboardBootstrapResponse
+{
+    [JsonPropertyName("business")]
+    public DashboardBusinessBootstrap Business { get; set; } = new();
+
+    [JsonPropertyName("entitlements")]
+    public List<string> ModuleKeys { get; set; } = new();
+
+    [JsonPropertyName("permissions")]
+    public List<string> PermissionCodes { get; set; } = new();
+
+    [JsonPropertyName("plan")]
+    public CallerPlanInfo? Plan { get; set; }
+
+    [JsonPropertyName("navigation")]
+    public DashboardNavigationBootstrap Navigation { get; set; } = new();
+
+    [JsonPropertyName("settings")]
+    public BusinessSettingsBootstrap Settings { get; set; } = new();
+}
+
+public class DashboardBusinessBootstrap
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("category")]
+    public string? Category { get; set; }
+
+    [JsonPropertyName("location")]
+    public string? Location { get; set; }
+
+    [JsonPropertyName("description")]
+    public string? Description { get; set; }
+
+    [JsonPropertyName("logoUrl")]
+    public string? LogoUrl { get; set; }
+
+    [JsonPropertyName("phoneNumber")]
+    public string? PhoneNumber { get; set; }
+
+    [JsonPropertyName("email")]
+    public string? Email { get; set; }
+
+    [JsonPropertyName("slug")]
+    public string Slug { get; set; } = string.Empty;
+
+    /// <summary>Whether the business has at least one active loyalty program.</summary>
+    [JsonPropertyName("hasLoyaltyProgram")]
+    public bool HasLoyaltyProgram { get; set; }
+
+    /// <summary>Whether the business has an active referral program.</summary>
+    [JsonPropertyName("hasReferralProgram")]
+    public bool HasReferralProgram { get; set; }
+}
+
+public class DashboardNavigationBootstrap
+{
+    /// <summary>Anchor tabs / module groups the shell renders below the header.</summary>
+    [JsonPropertyName("tabs")]
+    public List<string> Tabs { get; set; } = new();
+
+    /// <summary>Enabled module keys for the active user within this shell scope.</summary>
+    [JsonPropertyName("enabledModules")]
+    public List<string> EnabledModules { get; set; } = new();
+
+    /// <summary>Permissions granted to the caller's role (no dependency closure).</summary>
+    [JsonPropertyName("permissions")]
+    public List<string> Permissions { get; set; } = new();
+}
+
+public class BusinessSettingsBootstrap
+{
+    [JsonPropertyName("reminderPolicyEnabled")]
+    public bool ReminderPolicyEnabled { get; set; }
+
+    [JsonPropertyName("reminderOffsetMinutes")]
+    public int[]? ReminderOffsetMinutes { get; set; }
+
+    [JsonPropertyName("reminderChannels")]
+    public string[]? ReminderChannels { get; set; }
 }
 
 // ═══════════════════════════════════════════════════════════════

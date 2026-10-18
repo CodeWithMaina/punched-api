@@ -208,6 +208,29 @@ public partial class BusinessController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// Public storefront bootstrap — the single call that renders the initial
+    /// storefront (slug → identity + public profile + landing page).
+    /// Unknown slugs are 404 NOT_FOUND; superseded slugs return moved=true +
+    /// the canonical slug (still 200 + full payload so the client redirects
+    /// without a second fetch). Malformed/reserved slugs are 400.
+    /// Output-cached (30 s, per slug) — public + immutable per config version.
+    /// </summary>
+    [HttpGet("by-slug/{slug}/bootstrap")]
+    [AllowAnonymous]
+    [OutputCache(PolicyName = "storefront-bootstrap")]
+    [ProducesResponseType(typeof(ApiResponse<StorefrontBootstrapResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetStorefrontBootstrap(string slug)
+    {
+        if (string.IsNullOrWhiteSpace(slug))
+            return BadRequest(ApiResponse<StorefrontBootstrapResponse>.Fail("SLUG_INVALID", "A business address is required."));
+        var result = await _businessService.GetStorefrontBootstrapBySlugAsync(slug);
+        if (!result.Success)
+            return result.Error?.Code == "NOT_FOUND" ? NotFound(result) : BadRequest(result);
+        return Ok(result);
+    }
+
 
 
 
