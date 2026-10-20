@@ -9,4 +9,6 @@ public interface IAnalyticsAggregationService
     Task RecomputeTodayForBusinessAsync(Guid businessId, CancellationToken cancellationToken = default);
     Task BackfillBusinessAsync(Guid businessId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
     Task BackfillAllBusinessesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
+    Task RecomputeBusinessRangeAsync(Guid businessId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
+    Task RecomputeStaffRangeAsync(Guid businessId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
 }

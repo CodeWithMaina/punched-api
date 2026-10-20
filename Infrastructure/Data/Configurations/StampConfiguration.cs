@@ -59,6 +59,8 @@ public class StampConfiguration : IEntityTypeConfiguration<Stamp>
         builder.HasIndex(e => e.CardId);
         builder.HasIndex(e => new { e.CardId, e.StampedAt });
         builder.HasIndex(e => new { e.AwardedByUserId, e.StampedAt });
+        // Analytics backfill ranges StampedAt per business (via Card join).
+        builder.HasIndex(e => e.StampedAt).HasDatabaseName("ix_stamps_stamped_at");
 
         // Relationships
         builder.HasOne(e => e.Card)

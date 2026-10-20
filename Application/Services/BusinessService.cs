@@ -21,6 +21,7 @@ public partial class BusinessService : IBusinessService
     private readonly IModuleEntitlementService _moduleEntitlementService;
     private readonly IBusinessSlugGenerator _slugGenerator;
     private readonly ICardDesignResolver? _cardDesignResolver;
+    private readonly IBusinessMembershipResolver _businessMembershipResolver;
     private readonly ILogger<BusinessService> _logger;
 
     /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
@@ -34,6 +35,7 @@ public partial class BusinessService : IBusinessService
         ISubscriptionProvisioningService subscriptionProvisioning,
         IModuleEntitlementService moduleEntitlementService,
         IBusinessSlugGenerator slugGenerator,
+        IBusinessMembershipResolver businessMembershipResolver,
         ILogger<BusinessService> logger,
         ITenantContext? tenant = null,
         ICardDesignResolver? cardDesignResolver = null)
@@ -45,6 +47,7 @@ public partial class BusinessService : IBusinessService
         _subscriptionProvisioning = subscriptionProvisioning;
         _moduleEntitlementService = moduleEntitlementService;
         _slugGenerator = slugGenerator;
+        _businessMembershipResolver = businessMembershipResolver;
         _logger = logger;
         _tenant = tenant;
         _cardDesignResolver = cardDesignResolver;

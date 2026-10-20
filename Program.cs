@@ -251,6 +251,7 @@ builder.Services.AddScoped<EmailLayoutRenderer>();
     builder.Services.AddScoped<AdminNotificationOperationsService>();
     builder.Services.AddScoped<NotificationSuppressionService>();
     builder.Services.AddScoped<IAnalyticsAggregationService, AnalyticsAggregationService>();
+    builder.Services.AddScoped<IAnalyticsBackfillRunner, AnalyticsBackfillRunner>();
     builder.Services.AddScoped<ISegmentationService, SegmentationService>();
     builder.Services.AddScoped<IInsightService, InsightService>();
     builder.Services.AddScoped<IPayoutService, PayoutService>();
@@ -706,7 +707,13 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
         Log.Information("Skipping boot-time migrations in production. Migrations must be applied via the release-step init job before deployment.");
     }
 
-    // ── Idempotent seed / backfill (runs in all environments) ────────
+    // ── Lightweight initialization only (bounded, predictable) ────
+    // Normal startup NEVER runs synthetic seeding or historical analytics
+    // backfills. Both are explicit CLI operations:
+    //   dotnet run -- db seed                                   (synthetic demo data)
+    //   dotnet run -- db backfill --from <yyyy-MM-dd> --to ...  (historical analytics)
+    // The seeder self-skips unless Seed:RunOnStartup=true, and its analytics
+    // step self-skips unless Seed:IncludeAnalyticsBackfill=true.
     using (var scope = app.Services.CreateScope())
     {
         // Slug backfill, seeding, and admin bootstrapping are idempotent and

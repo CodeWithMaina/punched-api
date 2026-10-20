@@ -107,6 +107,8 @@ public class RedemptionConfiguration : IEntityTypeConfiguration<Redemption>
 
         // Indexes
         builder.HasIndex(e => e.Status);
+        builder.HasIndex(e => e.RedeemedAt).HasDatabaseName("ix_redemptions_redeemed_at");
+        builder.HasIndex(e => e.PaidAt).HasDatabaseName("ix_redemptions_paid_at");
         builder.HasIndex(e => e.PerformedByUserId)
             .HasDatabaseName("IX_redemptions_UserId");
         builder.HasIndex(e => new { e.CardId, e.RedeemedAt });

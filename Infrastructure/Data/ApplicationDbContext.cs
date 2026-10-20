@@ -108,6 +108,9 @@ public class ApplicationDbContext : DbContext
     public DbSet<Reward> Rewards => Set<Reward>();
     public DbSet<RewardEntitlement> RewardEntitlements => Set<RewardEntitlement>();
 
+    // ── Durable analytics backfill tracking (Phase: resumable backfills) ──
+    public DbSet<AnalyticsBackfillRun> AnalyticsBackfillRuns => Set<AnalyticsBackfillRun>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

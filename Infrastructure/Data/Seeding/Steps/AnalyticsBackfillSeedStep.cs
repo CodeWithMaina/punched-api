@@ -11,29 +11,28 @@ public sealed class AnalyticsBackfillSeedStep : ISeedStep
 
     public async Task ExecuteAsync(SeedExecutionContext context, CancellationToken cancellationToken)
     {
-        // Determine the date range from seeded activity
-        var minDate = DateOnly.MinValue;
-        var maxDate = DateOnly.MinValue;
-
+        // Explicit opt-in only: DatabaseSeeder skips this step entirely unless
+        // Seed:IncludeAnalyticsBackfill=true. The supported path for historical
+        // analytics is the dedicated CLI (`db backfill --from --to`), which uses
+        // the durable AnalyticsBackfillRunner (checkpoints + resume + idempotent
+        // replaceable aggregates). This seed step only handles the small
+        // seeded-data range so a synthetic seed stays self-consistent.
         if (context.Db.Stamps.Any())
         {
             var minStamp = await context.Db.Stamps.MinAsync(s => s.StampedAt, cancellationToken);
             var maxStamp = await context.Db.Stamps.MaxAsync(s => s.StampedAt, cancellationToken);
-            minDate = DateOnly.FromDateTime(minStamp);
-            maxDate = DateOnly.FromDateTime(maxStamp);
+            var minDate = DateOnly.FromDateTime(minStamp);
+            var maxDate = DateOnly.FromDateTime(maxStamp);
+
+            var aggregator = context.ServiceProvider.GetService(typeof(IAnalyticsAggregationService)) as IAnalyticsAggregationService;
+            if (aggregator != null)
+            {
+                await aggregator.BackfillAllBusinessesAsync(minDate, maxDate, cancellationToken);
+            }
         }
 
-        if (minDate == DateOnly.MinValue)
-            return;
-
-        var aggregator = context.ServiceProvider.GetService(typeof(IAnalyticsAggregationService)) as IAnalyticsAggregationService;
         var segmentation = context.ServiceProvider.GetService(typeof(ISegmentationService)) as ISegmentationService;
         var loyalty = context.ServiceProvider.GetService(typeof(ILoyaltyService)) as ILoyaltyService;
-
-        if (aggregator != null)
-        {
-            await aggregator.BackfillAllBusinessesAsync(minDate, maxDate, cancellationToken);
-        }
 
         if (segmentation != null)
         {

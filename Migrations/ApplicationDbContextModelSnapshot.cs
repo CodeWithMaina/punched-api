@@ -22,6 +22,87 @@ namespace PunchedApi.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.AnalyticsBackfillRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<int>("CompletedDays")
+                        .HasColumnType("integer")
+                        .HasColumnName("completed_days");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("error");
+
+                    b.Property<DateOnly>("FromDate")
+                        .HasColumnType("date")
+                        .HasColumnName("from_date");
+
+                    b.Property<DateOnly?>("LastCompletedDate")
+                        .HasColumnType("date")
+                        .HasColumnName("last_completed_date");
+
+                    b.Property<DateTime?>("LastProgressAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_progress_at");
+
+                    b.Property<Guid>("RunGroupId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("run_group_id");
+
+                    b.Property<DateTime?>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<DateOnly>("ToDate")
+                        .HasColumnType("date")
+                        .HasColumnName("to_date");
+
+                    b.Property<int>("TotalDays")
+                        .HasColumnType("integer")
+                        .HasColumnName("total_days");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId")
+                        .HasDatabaseName("ix_backfill_runs_business");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("ix_backfill_runs_status");
+
+                    b.HasIndex("RunGroupId", "BusinessId")
+                        .HasDatabaseName("ix_backfill_runs_group_business");
+
+                    b.ToTable("analytics_backfill_runs", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_backfill_range_valid", "\"to_date\" >= \"from_date\"");
+
+                            t.HasCheckConstraint("chk_backfill_status_valid", "\"status\" IN ('Pending','Running','Completed','Failed','Cancelled')");
+                        });
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.ApiEventLog", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2076,6 +2157,9 @@ namespace PunchedApi.Migrations
 
                     b.HasIndex("CustomerId");
 
+                    b.HasIndex("EnrolledAt")
+                        .HasDatabaseName("ix_loyalty_cards_enrolled_at");
+
                     b.HasIndex("ProgramId");
 
                     b.HasIndex("StampCardId");
@@ -3563,8 +3647,14 @@ namespace PunchedApi.Migrations
                     b.HasIndex("FulfilledByUserId")
                         .HasDatabaseName("IX_redemptions_FulfilledByUserId");
 
+                    b.HasIndex("PaidAt")
+                        .HasDatabaseName("ix_redemptions_paid_at");
+
                     b.HasIndex("PerformedByUserId")
                         .HasDatabaseName("IX_redemptions_UserId");
+
+                    b.HasIndex("RedeemedAt")
+                        .HasDatabaseName("ix_redemptions_redeemed_at");
 
                     b.HasIndex("Status");
 
@@ -4600,6 +4690,9 @@ namespace PunchedApi.Migrations
 
                     b.HasIndex("QrTokenId")
                         .IsUnique();
+
+                    b.HasIndex("StampedAt")
+                        .HasDatabaseName("ix_stamps_stamped_at");
 
                     b.HasIndex("AwardedByUserId", "StampedAt");
 

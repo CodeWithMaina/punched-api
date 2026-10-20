@@ -49,6 +49,7 @@ public class BusinessSlugTests
             new Mock<ISubscriptionProvisioningService>().Object,
             moduleEntitlements ?? new Mock<IModuleEntitlementService>().Object,
             CreateGenerator(context),
+            new Mock<IBusinessMembershipResolver>().Object,
             TestHelpers.CreateLogger<BusinessService>());
 
     private static AuthService CreateAuthService(ApplicationDbContext context)

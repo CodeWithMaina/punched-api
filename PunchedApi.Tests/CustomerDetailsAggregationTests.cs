@@ -155,6 +155,7 @@ public class CustomerDetailsAggregationTests
             new Mock<ISubscriptionProvisioningService>().Object,
             new Mock<IModuleEntitlementService>().Object,
             new Mock<IBusinessSlugGenerator>().Object,
+            new Mock<IBusinessMembershipResolver>().Object,
             TestHelpers.CreateLogger<BusinessService>());
 
         return new Env(ctx, svc, owner.Id, business, program, alice, bob, dave);

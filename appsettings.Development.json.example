@@ -12,6 +12,8 @@
   },
   "Seed": {
     "Enabled": true,
+    "RunOnStartup": false,
+    "IncludeAnalyticsBackfill": false,
     "ResetDatabase": false,
     "ClearExistingData": false,
     "AppendData": false,

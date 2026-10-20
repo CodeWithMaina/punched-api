@@ -8,6 +8,9 @@ public sealed class LoyaltyActivitySeedStep : ISeedStep
 {
     public string Name => "LoyaltyActivity";
 
+    /// <summary>Flush to the database every N tracked rows to bound memory.</summary>
+    private const int BatchSize = 500;
+
     public async Task ExecuteAsync(SeedExecutionContext context, CancellationToken cancellationToken)
     {
         var cardsCreated = 0;
@@ -23,12 +26,37 @@ public sealed class LoyaltyActivitySeedStep : ISeedStep
             var stampAwarders = new List<Guid> { context.UsersByKey[businessDef.OwnerUserKey].Id };
             stampAwarders.AddRange(businessDef.StaffUserKeys.Select(k => context.UsersByKey[k].Id));
 
+            // Preload this business's cards/QRs/stamps/redemptions once instead
+            // of one query per row (N+1). Deterministic IDs make upsert idempotent.
+            var businessId = business.Id;
+            var existingCards = await context.Db.LoyaltyCards
+                .AsNoTracking()
+                .Where(c => c.BusinessId == businessId)
+                .Select(c => c.Id)
+                .ToListAsync(cancellationToken);
+            var cardIds = existingCards.ToHashSet();
+            var existingQrIds = (await context.Db.QrTokens
+                .AsNoTracking()
+                .Where(q => q.BusinessId == businessId)
+                .Select(q => q.Id)
+                .ToListAsync(cancellationToken)).ToHashSet();
+            var existingStampTokenIds = (await context.Db.Stamps
+                .AsNoTracking()
+                .Where(s => s.Card.BusinessId == businessId && s.QrTokenId != null)
+                .Select(s => s.QrTokenId!.Value)
+                .ToListAsync(cancellationToken)).ToHashSet();
+            var existingRedemptionIds = (await context.Db.Redemptions
+                .AsNoTracking()
+                .Where(r => r.BusinessId == businessId)
+                .Select(r => r.Id)
+                .ToListAsync(cancellationToken)).ToHashSet();
+
+            var pending = 0;
+
             for (var i = 0; i < businessDef.CustomerUserKeys.Length; i++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var customer = context.UsersByKey[businessDef.CustomerUserKeys[i]];
-
-                var card = await context.Db.LoyaltyCards
-                    .FirstOrDefaultAsync(c => c.CustomerId == customer.Id && c.BusinessId == business.Id, cancellationToken);
 
                 var enrolledAt = business.CreatedAt.AddDays(3 + (i * 2));
                 var baseLifetime = businessDef.IsFocusBusiness ? 18 + (i % 14) : 6 + (i % 7);
@@ -40,15 +68,28 @@ public sealed class LoyaltyActivitySeedStep : ISeedStep
                 var lifetimeStamps = (completedCycles * program.StampsRequired) + totalStamps;
                 var lastStampAt = enrolledAt.AddDays(Math.Max(1, lifetimeStamps) * (businessDef.IsFocusBusiness ? 3 : 6));
 
-                if (card == null)
+                var cardId = DeterministicSeed.GuidFor("card", $"{businessDef.Key}:{customer.Id}");
+                Domain.Entities.LoyaltyCard? card = null;
+                var cardExists = cardIds.Contains(cardId);
+                if (!cardExists)
                 {
                     card = new Domain.Entities.LoyaltyCard
                     {
-                        Id = DeterministicSeed.GuidFor("card", $"{businessDef.Key}:{customer.Id}"),
+                        Id = cardId,
                         CreatedAt = enrolledAt,
                     };
                     context.Db.LoyaltyCards.Add(card);
+                    cardIds.Add(cardId);
                     cardsCreated++;
+                    if (++pending >= BatchSize)
+                    {
+                        await context.Db.SaveChangesAsync(cancellationToken);
+                        pending = 0;
+                    }
+                }
+                else
+                {
+                    card = await context.Db.LoyaltyCards.FirstAsync(c => c.Id == cardId, cancellationToken);
                 }
 
                 card.CustomerId = customer.Id;
@@ -66,71 +107,119 @@ public sealed class LoyaltyActivitySeedStep : ISeedStep
                 for (var stampNo = 1; stampNo <= lifetimeStamps; stampNo++)
                 {
                     var stampedAt = enrolledAt.AddDays(stampNo * (businessDef.IsFocusBusiness ? 3 : 6));
-                    var qrId = DeterministicSeed.GuidFor("qr", $"{card.Id}:{stampNo}");
+                    var qrId = DeterministicSeed.GuidFor("qr", $"{cardId}:{stampNo}");
 
-                    var qr = await context.Db.QrTokens.FirstOrDefaultAsync(q => q.Id == qrId, cancellationToken);
-                    if (qr == null)
+                    if (!existingQrIds.Contains(qrId))
                     {
-                        qr = new Domain.Entities.QrToken
+                        context.Db.QrTokens.Add(new Domain.Entities.QrToken
                         {
                             Id = qrId,
+                            CustomerId = customer.Id,
+                            BusinessId = business.Id,
+                            TokenHash = DeterministicSeed.TokenFor("qr", $"{cardId}:{stampNo}"),
+                            ExpiresAt = stampedAt.AddSeconds(45),
+                            IsUsed = true,
                             CreatedAt = stampedAt.AddSeconds(-15),
-                        };
-                        context.Db.QrTokens.Add(qr);
+                        });
+                        existingQrIds.Add(qrId);
                         qrCreated++;
-                    }
-
-                    qr.CustomerId = customer.Id;
-                    qr.BusinessId = business.Id;
-                    qr.TokenHash = DeterministicSeed.TokenFor("qr", $"{card.Id}:{stampNo}");
-                    qr.ExpiresAt = stampedAt.AddSeconds(45);
-                    qr.IsUsed = true;
-
-                    var stamp = await context.Db.Stamps.FirstOrDefaultAsync(s => s.QrTokenId == qrId, cancellationToken);
-                    if (stamp == null)
-                    {
-                        stamp = new Domain.Entities.Stamp
+                        if (++pending >= BatchSize)
                         {
-                            Id = DeterministicSeed.GuidFor("stamp", $"{card.Id}:{stampNo}"),
-                            CreatedAt = stampedAt,
-                        };
-                        context.Db.Stamps.Add(stamp);
-                        stampsCreated++;
+                            await context.Db.SaveChangesAsync(cancellationToken);
+                            pending = 0;
+                        }
                     }
 
-                    stamp.CardId = card.Id;
-                    stamp.StampNumber = (short)stampNo;
-                    stamp.StampedAt = stampedAt;
-                    stamp.QrTokenId = qrId;
-                    stamp.AwardedByUserId = stampAwarders[stampNo % stampAwarders.Count];
+                    if (!existingStampTokenIds.Contains(qrId))
+                    {
+                        context.Db.Stamps.Add(new Domain.Entities.Stamp
+                        {
+                            Id = DeterministicSeed.GuidFor("stamp", $"{cardId}:{stampNo}"),
+                            CardId = cardId,
+                            StampNumber = (short)stampNo,
+                            StampedAt = stampedAt,
+                            QrTokenId = qrId,
+                            AwardedByUserId = stampAwarders[stampNo % stampAwarders.Count],
+                            CreatedAt = stampedAt,
+                        });
+                        existingStampTokenIds.Add(qrId);
+                        stampsCreated++;
+                        if (++pending >= BatchSize)
+                        {
+                            await context.Db.SaveChangesAsync(cancellationToken);
+                            pending = 0;
+                        }
+                    }
                 }
 
                 for (var redemptionNo = 1; redemptionNo <= completedCycles; redemptionNo++)
                 {
-                    var redemptionId = DeterministicSeed.GuidFor("redemption", $"{card.Id}:{redemptionNo}");
+                    var redemptionId = DeterministicSeed.GuidFor("redemption", $"{cardId}:{redemptionNo}");
                     var redeemedAt = enrolledAt.AddDays((redemptionNo * program.StampsRequired * (businessDef.IsFocusBusiness ? 3 : 6)) + 1);
 
-                    var redemption = await context.Db.Redemptions.FirstOrDefaultAsync(r => r.Id == redemptionId, cancellationToken);
-                    if (redemption == null)
+                    if (!existingRedemptionIds.Contains(redemptionId))
                     {
-                        redemption = new Domain.Entities.Redemption
+                        context.Db.Redemptions.Add(new Domain.Entities.Redemption
                         {
                             Id = redemptionId,
+                            CardId = cardId,
+                            BusinessId = business.Id,
+                            RewardValue = program.RewardValue,
+                            Status = RedemptionStatus.Fulfilled,
+                            PayoutStatus = "completed",
+                            RedeemedAt = redeemedAt,
+                            PaidAt = redeemedAt.AddMinutes(15),
+                            MpesaRef = $"MPESA-{businessDef.Key.ToUpperInvariant()}-{redemptionNo:D4}",
                             CreatedAt = redeemedAt,
-                        };
-                        context.Db.Redemptions.Add(redemption);
+                        });
+                        existingRedemptionIds.Add(redemptionId);
                         redemptionsCreated++;
+                        if (++pending >= BatchSize)
+                        {
+                            await context.Db.SaveChangesAsync(cancellationToken);
+                            pending = 0;
+                        }
                     }
-
-                    redemption.CardId = card.Id;
-                    redemption.BusinessId = business.Id;
-                    redemption.RewardValue = program.RewardValue;
-                    redemption.Status = RedemptionStatus.Fulfilled;
-                    redemption.PayoutStatus = "completed";
-                    redemption.RedeemedAt = redeemedAt;
-                    redemption.PaidAt = redeemedAt.AddMinutes(15);
-                    redemption.MpesaRef = $"MPESA-{businessDef.Key.ToUpperInvariant()}-{redemptionNo:D4}";
                 }
+
+                // Keep the card aggregate in sync via a single batched UPDATE per
+                // card (EfCore-less raw SQL keeps this provider-agnostic enough
+                // for tests while avoiding re-materializing every card row).
+                if (cardExists)
+                {
+                    await context.Db.LoyaltyCards
+                        .Where(c => c.Id == cardId)
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(c => c.CustomerId, customer.Id)
+                            .SetProperty(c => c.BusinessId, business.Id)
+                            .SetProperty(c => c.ProgramId, program.Id)
+                            .SetProperty(c => c.EnrolledAt, enrolledAt)
+                            .SetProperty(c => c.TotalStamps, totalStamps)
+                            .SetProperty(c => c.LifetimeStamps, lifetimeStamps)
+                            .SetProperty(c => c.TotalRedemptions, completedCycles)
+                            .SetProperty(c => c.LastStampAt, lifetimeStamps > 0 ? lastStampAt : null),
+                            cancellationToken);
+                }
+                else
+                {
+                    card!.CustomerId = customer.Id;
+                    card.BusinessId = business.Id;
+                    card.ProgramId = program.Id;
+                    card.EnrolledAt = enrolledAt;
+                    card.TotalStamps = totalStamps;
+                    card.LifetimeStamps = lifetimeStamps;
+                    card.TotalRedemptions = completedCycles;
+                    card.LastStampAt = lifetimeStamps > 0 ? lastStampAt : null;
+                    card.RewardExpiresAt = rewardHold == 1
+                        ? lastStampAt.AddHours(program.RewardExpirationHours)
+                        : null;
+                }
+            }
+
+            if (pending > 0)
+            {
+                await context.Db.SaveChangesAsync(cancellationToken);
+                pending = 0;
             }
         }
 

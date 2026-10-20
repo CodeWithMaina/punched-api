@@ -80,6 +80,8 @@ public class LoyaltyCardConfiguration : IEntityTypeConfiguration<LoyaltyCard>
         builder.HasIndex(e => new { e.BusinessId, e.LastStampAt });
         builder.HasIndex(e => new { e.BusinessId, e.EnrolledAt });
         builder.HasIndex(e => new { e.BusinessId, e.ProgramId });
+        // Analytics backfill ranges enrollments on EnrolledAt per business.
+        builder.HasIndex(e => e.EnrolledAt).HasDatabaseName("ix_loyalty_cards_enrolled_at");
         builder.HasIndex(e => e.CustomerId);
         // Audit/ops read pattern: progress rows bound to a stamp card
         // ("which customers are affected by a rules change?").

@@ -7,6 +7,13 @@ namespace PunchedApi.Infrastructure.Data.Seeding;
 
 public sealed class DatabaseSeeder : IDatabaseSeeder
 {
+    private static readonly HashSet<string> NonTransactionalSteps = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "DatabasePreparation",
+        "ValidationAndReport",
+        "UnsupportedDomains",
+    };
+
     private readonly ApplicationDbContext _db;
     private readonly IOptions<SeedOptions> _options;
     private readonly IWebHostEnvironment _environment;
@@ -43,9 +50,29 @@ public sealed class DatabaseSeeder : IDatabaseSeeder
             return;
         }
 
+        if (_environment.IsProduction() && (options.ResetDatabase || options.ClearExistingData))
+        {
+            throw new InvalidOperationException(
+                "Refusing destructive seed preparation in Production " +
+                "(Seed:ResetDatabase / Seed:ClearExistingData must be false).");
+        }
+
         if (!options.Enabled)
         {
-            _logger.LogInformation("Database seeding skipped. Seed.Enabled is false.");
+            _logger.LogInformation(
+                "Database seeding skipped (Seed.Enabled is false). " +
+                "Synthetic seeding is disabled during normal API startup by default. " +
+                "To run it explicitly: dotnet run -- db seed (Development only).");
+            return;
+        }
+
+        if (!explicitInvocation && !options.RunOnStartup)
+        {
+            _logger.LogInformation(
+                "Database seeding skipped on startup (Seed.RunOnStartup is false). " +
+                "Normal startup stays bounded; run synthetic seeding explicitly via: " +
+                "dotnet run -- db seed. Historical analytics backfill is never part of startup; " +
+                "run it via: dotnet run -- db backfill --from <yyyy-MM-dd> --to <yyyy-MM-dd>.");
             return;
         }
 
@@ -89,10 +116,11 @@ public sealed class DatabaseSeeder : IDatabaseSeeder
 
         try
         {
-            _logger.LogInformation("Starting database seed run. Mode={Mode}, Businesses={BusinessCount}, Seed={Seed}",
+            _logger.LogInformation("Starting database seed run. Mode={Mode}, Businesses={BusinessCount}, Seed={Seed}, Explicit={Explicit}",
                 report.Mode,
                 selectedCount,
-                report.RandomSeed);
+                report.RandomSeed,
+                explicitInvocation);
 
             if (explicitInvocation && _environment.IsProduction())
             {
@@ -106,24 +134,55 @@ public sealed class DatabaseSeeder : IDatabaseSeeder
                 return;
             }
 
-            // Run database prep outside the transaction (reset/clear may require DDL).
+            // Run database prep outside any transaction (reset/clear may require DDL).
+
             var prepStep = steps[0];
             var prepWatch = Stopwatch.StartNew();
             _logger.LogInformation("Running seed step: {Step}", prepStep.Name);
             await prepStep.ExecuteAsync(context, cancellationToken);
             _logger.LogInformation("Completed seed step: {Step} in {ElapsedMs}ms", prepStep.Name, prepWatch.ElapsedMilliseconds);
 
-            await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+            // Per-step bounded transactions (never one transaction across the run).
 
             foreach (var step in steps.Skip(1))
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (step.Name.Equals("AnalyticsBackfill", StringComparison.OrdinalIgnoreCase)
+                    && !options.IncludeAnalyticsBackfill)
+                {
+                    _logger.LogInformation(
+                        "Skipping seed step: {Step} (Seed.IncludeAnalyticsBackfill is false). " +
+                        "Run historical analytics explicitly via: " +
+                        "dotnet run -- db backfill --from <yyyy-MM-dd> --to <yyyy-MM-dd>.",
+                        step.Name);
+                    continue;
+                }
+
                 var stepWatch = Stopwatch.StartNew();
                 _logger.LogInformation("Running seed step: {Step}", step.Name);
-                await step.ExecuteAsync(context, cancellationToken);
+
+                if (NonTransactionalSteps.Contains(step.Name))
+                {
+                    await step.ExecuteAsync(context, cancellationToken);
+                }
+                else
+                {
+                    await using var stepTx = await _db.Database.BeginTransactionAsync(cancellationToken);
+                    try
+                    {
+                        await step.ExecuteAsync(context, cancellationToken);
+                        await stepTx.CommitAsync(cancellationToken);
+                    }
+                    catch
+                    {
+                        try { await stepTx.RollbackAsync(cancellationToken); } catch { }
+                        throw;
+                    }
+                }
+
                 _logger.LogInformation("Completed seed step: {Step} in {ElapsedMs}ms", step.Name, stepWatch.ElapsedMilliseconds);
             }
-
-            await transaction.CommitAsync(cancellationToken);
 
             watch.Stop();
             report.ExecutionTime = watch.Elapsed;
@@ -136,7 +195,7 @@ public sealed class DatabaseSeeder : IDatabaseSeeder
 
             _logger.LogInformation("Database seeding completed successfully in {ElapsedMs}ms", watch.ElapsedMilliseconds);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             report.Errors.Add(ex.Message);
             _logger.LogError(ex, "Database seeding failed.");

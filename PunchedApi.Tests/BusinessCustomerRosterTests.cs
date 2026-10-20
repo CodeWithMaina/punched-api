@@ -149,6 +149,7 @@ public class BusinessCustomerRosterTests
             new Mock<ISubscriptionProvisioningService>().Object,
             new Mock<IModuleEntitlementService>().Object,
             new Mock<IBusinessSlugGenerator>().Object,
+            new Mock<IBusinessMembershipResolver>().Object,
             TestHelpers.CreateLogger<BusinessService>());
 
         return new Env(ctx, svc, owner.Id, programA, programB, alice, bob, carol);
