@@ -52,6 +52,15 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
 
+    // ── Configuration ──────────────────────────────────────
+    // WebApplication.CreateBuilder registers the standard providers in the
+    // documented precedence (appsettings.json < appsettings.{Env}.json < user
+    // secrets in Development < environment variables < CLI args). User secrets
+    // are loaded from the project's UserSecretsId (punched-api-secrets) — the
+    // same store `dotnet user-secrets --project` reads — so no manual source
+    // re-ordering is required. DATABASE_URL and ConnectionStrings__DefaultConnection
+    // environment variables still take precedence over user secrets.
+
     // ── Serilog ─────────────────────────────────────────────
     builder.Host.UseSerilog((context, config) =>
         config.ReadFrom.Configuration(context.Configuration)
@@ -834,7 +843,8 @@ finally
 
 static string ResolveConnectionString(IConfiguration configuration)
 {
-    var databaseUrl = configuration["DATABASE_URL"];
+var databaseUrl = configuration["DATABASE_URL"]
+                         ?? Environment.GetEnvironmentVariable("DATABASE_URL");
     if (!string.IsNullOrWhiteSpace(databaseUrl))
     {
         if (!Uri.TryCreate(databaseUrl, UriKind.Absolute, out var uri) ||
@@ -865,10 +875,34 @@ static string ResolveConnectionString(IConfiguration configuration)
             builder["Channel Binding"] = query["channel_binding"];
         }
 
+        var resolvedHost = builder.Host;
+        var resolvedDatabase = builder.Database;
+        Log.Information("Database connection resolved: host={Host}, database={Database}", resolvedHost, resolvedDatabase);
+
         return builder.ConnectionString;
     }
 
-    return configuration.GetConnectionString("DefaultConnection")
-        ?? throw new InvalidOperationException(
-            "Configure DATABASE_URL or ConnectionStrings__DefaultConnection.");
+    // ── Fallback: ConnectionStrings:DefaultConnection ────────
+    // appsettings.json ships a localhost placeholder. Reaching it means the
+    // real database configuration was never supplied, so fail loudly instead
+    // of silently talking to a local Postgres that does not exist.
+    var fallback = configuration.GetConnectionString("DefaultConnection");
+    if (string.IsNullOrWhiteSpace(fallback))
+    {
+        throw new InvalidOperationException(
+            "Configure DATABASE_URL (user secrets or environment) or ConnectionStrings__DefaultConnection. " +
+            "The database connection string could not be resolved.");
+    }
+
+    if (fallback.Contains("localhost", StringComparison.OrdinalIgnoreCase) ||
+        fallback.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException(
+            "The resolved database connection string points at localhost, which means DATABASE_URL was not " +
+            "configured for this environment. Set DATABASE_URL (via user secrets, an environment variable, or " +
+            "ConnectionStrings__DefaultConnection) to the Neon PostgreSQL URL before starting the API.");
+    }
+
+    Log.Information("Database connection resolved from ConnectionStrings:DefaultConnection (DATABASE_URL was not set).");
+    return fallback;
 }

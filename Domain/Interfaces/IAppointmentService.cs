@@ -65,6 +65,27 @@ public interface IAppointmentService
     Task<ApiResponse<AppointmentResponse>> GetAppointmentAsync(Guid callerUserId, string role, Guid appointmentId);
 
     /// <summary>Paged business appointment list with filters.</summary>
+
+    /// <summary>
+    /// Owner-dashboard appointment list with DB-first filtering, sorting,
+    /// pagination and lightweight reference data for filters. Resolves customer/
+    /// staff/service names server-side; only the requested page plus the
+    /// reference buckets are returned.
+    /// </summary>
+    Task<ApiResponse<AppointmentDashboardResponse>> GetAppointmentDashboardAsync(
+        Guid ownerUserId,
+        DateTime? from,
+        DateTime? to,
+        Guid? staffUserId,
+        Guid? customerId,
+        Guid? serviceId,
+        string? status,
+        string? search,
+        string sortBy,
+        string sortDirection,
+        int page,
+        int pageSize);
+
     Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetBusinessAppointmentsAsync(Guid ownerUserId, string? status, DateTime? from, DateTime? to, Guid? staffUserId, Guid? customerId, Guid? serviceId, int page, int pageSize);
 
         /// <summary>

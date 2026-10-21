@@ -330,26 +330,6 @@ public class SmartInsight
 
 // ── Paginated List Responses ────────────────────────────────
 
-public class PaginatedResponse<T>
-{
-    [JsonPropertyName("items")]
-    public List<T> Items { get; set; } = [];
-
-    [JsonPropertyName("totalCount")]
-    public int TotalCount { get; set; }
-
-    [JsonPropertyName("page")]
-    public int Page { get; set; }
-
-    [JsonPropertyName("pageSize")]
-    public int PageSize { get; set; }
-
-    [JsonPropertyName("totalPages")]
-    public int TotalPages => (int)Math.Ceiling((double)TotalCount / PageSize);
-}
-
-// ── Admin User Management ───────────────────────────────────
-
 public class AdminUserResponse
 {
     [JsonPropertyName("id")]

@@ -840,7 +840,11 @@ public partial class BusinessService : IBusinessService
     /// </summary>
     public async Task<ApiResponse<CustomerOverviewResponse>> GetCustomerOverviewAsync(Guid ownerId)
     {
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var businessId = await _businessScopeResolver.GetOwnedBusinessIdAsync(ownerId);
+        if (businessId == null)
+            return ApiResponse<CustomerOverviewResponse>.Fail("NOT_FOUND", "No business found for this account.");
+
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Id == businessId.Value);
         if (business == null)
             return ApiResponse<CustomerOverviewResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -853,28 +857,58 @@ public partial class BusinessService : IBusinessService
             .Select(p => (int?)p.StampsRequired)
             .FirstOrDefaultAsync();
 
-        // Single aggregate query over the business's loyalty cards — no N+1.
-        var customers = await _context.LoyaltyCards
-            .Where(c => c.BusinessId == business.Id)
-            .AsNoTracking()
-            .Select(c => new BusinessCustomerResponse
+        var rows = await (
+            from e in _context.CustomerBusinessEnrollments.AsNoTracking()
+            where e.BusinessId == business.Id
+                  && e.Status == CustomerBusinessEnrollmentStatus.Active
+            join c in _context.LoyaltyCards.AsNoTracking()
+                on new { e.CustomerId, e.BusinessId } equals new { c.CustomerId, c.BusinessId } into cards
+            from c in cards.DefaultIfEmpty()
+            select new
             {
-                UserId = c.CustomerId,
-                FullName = c.Customer.FullName,
-                Email = c.Customer.Email,
-                PhoneNumber = c.Customer.PhoneNumber,
-                DateOfBirth = c.Customer.DateOfBirth,
-                Gender = c.Customer.Gender,
-                AvatarUrl = c.Customer.AvatarUrl,
-                CardId = c.Id,
-                TotalStamps = c.TotalStamps,
-                LifetimeStamps = c.LifetimeStamps,
-                TotalRedemptions = c.TotalRedemptions,
-                EnrolledAt = c.EnrolledAt,
-                LastStampAt = c.LastStampAt,
-                StampsRequired = stampsRequired
+                e.CustomerId,
+                e.EnrolledAt,
+                FullName = e.Customer.FullName,
+                Email = e.Customer.Email,
+                PhoneNumber = e.Customer.PhoneNumber,
+                DateOfBirth = e.Customer.DateOfBirth,
+                Gender = e.Customer.Gender,
+                AvatarUrl = e.Customer.AvatarUrl,
+                CardId = c != null ? (Guid?)c.Id : null,
+                TotalStamps = c != null ? c.TotalStamps : 0,
+                LifetimeStamps = c != null ? c.LifetimeStamps : 0,
+                TotalRedemptions = c != null ? c.TotalRedemptions : 0,
+                LastStampAt = c != null ? c.LastStampAt : null
+            }).ToListAsync();
+
+        var customers = rows
+            .GroupBy(r => r.CustomerId)
+            .Select(g =>
+            {
+                var best = g.Where(r => r.CardId.HasValue)
+                            .OrderByDescending(r => r.TotalStamps)
+                            .ThenByDescending(r => r.LifetimeStamps)
+                            .FirstOrDefault() ?? g.First();
+                return new BusinessCustomerResponse
+                {
+                    UserId = best.CustomerId,
+                    FullName = best.FullName,
+                    Email = best.Email,
+                    PhoneNumber = best.PhoneNumber,
+                    DateOfBirth = best.DateOfBirth,
+                    Gender = best.Gender,
+                    AvatarUrl = best.AvatarUrl,
+                    CardId = best.CardId,
+                    EnrollmentStatus = "active",
+                    TotalStamps = best.TotalStamps,
+                    LifetimeStamps = best.LifetimeStamps,
+                    TotalRedemptions = best.TotalRedemptions,
+                    EnrolledAt = best.EnrolledAt,
+                    LastStampAt = best.LastStampAt,
+                    StampsRequired = stampsRequired
+                };
             })
-            .ToListAsync();
+            .ToList();
 
         var stampsThisWeek = await _context.Stamps
             .CountAsync(s => s.Card.BusinessId == business.Id && s.StampedAt >= weekAgo);
@@ -890,13 +924,14 @@ public partial class BusinessService : IBusinessService
             AtRisk = customers.Count(c => !c.LastStampAt.HasValue || c.LastStampAt.Value < riskCutoff),
             StampsThisWeek = stampsThisWeek,
             TopCustomers = customers
+                .Where(c => c.CardId.HasValue)
                 .OrderByDescending(c => c.LifetimeStamps)
                 .ThenByDescending(c => c.TotalStamps)
                 .Take(5)
                 .ToList(),
             SoonToReward = threshold > 0
                 ? customers
-                    .Where(c => c.TotalStamps < threshold && c.TotalStamps >= Math.Max(threshold - 3, 1))
+                    .Where(c => c.CardId.HasValue && c.TotalStamps < threshold && c.TotalStamps >= Math.Max(threshold - 3, 1))
                     .OrderByDescending(c => c.TotalStamps)
                     .Take(5)
                     .ToList()

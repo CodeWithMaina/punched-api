@@ -918,12 +918,221 @@ public class AppointmentService : IAppointmentService
             })
             .ToList();
 
+
         return ApiResponse<PaginatedResponse<AppointmentResponse>>.Ok(new PaginatedResponse<AppointmentResponse>
         {
             Items = responses,
             TotalCount = total,
             Page = page,
             PageSize = pageSize
+        });
+    }
+
+    public async Task<ApiResponse<AppointmentDashboardResponse>> GetAppointmentDashboardAsync(
+        Guid ownerUserId,
+        DateTime? from,
+        DateTime? to,
+        Guid? staffUserId,
+        Guid? customerId,
+        Guid? serviceId,
+        string? status,
+        string? search,
+        string sortBy,
+        string sortDirection,
+        int page,
+        int pageSize)
+    {
+        // 1. Resolve the owner's business (server-side scoping only; never trusted from a request DTO).
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerUserId);
+        if (business == null)
+            return ApiResponse<AppointmentDashboardResponse>.Fail("NOT_FOUND", "No business found for this account.");
+
+        page = Math.Max(page, 1);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        // 2. Base query includes resources so service snapshot names are available.
+        var query = _context.Appointments
+            .Include(a => a.Resources)
+            .Where(a => a.BusinessId == business.Id);
+
+        // 3. Filters.
+        if (!string.IsNullOrWhiteSpace(status))
+            query = query.Where(a => a.Status == status);
+        if (from.HasValue)
+            query = query.Where(a => a.ScheduledAt >= from.Value);
+        if (to.HasValue)
+            query = query.Where(a => a.ScheduledAt <= to.Value);
+        if (staffUserId.HasValue)
+            query = query.Where(a => a.StaffUserId == staffUserId.Value);
+        if (customerId.HasValue)
+            query = query.Where(a => a.CustomerId == customerId.Value);
+        if (serviceId.HasValue)
+            query = query.Where(a => a.Resources.Any(r => r.ServiceCatalogItemId == serviceId.Value));
+
+        // 4. Search across customer, staff, and service text fields (SQL-level).
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            var lowerTerm = term.ToLowerInvariant();
+
+            var matchingCustomerIds = await _context.Users.AsNoTracking()
+                .Where(u => u.FullName.ToLowerInvariant().Contains(lowerTerm) ||
+                            u.Email.ToLowerInvariant().Contains(lowerTerm) ||
+                            u.PhoneNumber.ToLowerInvariant().Contains(lowerTerm))
+                .Select(u => u.Id)
+                .ToListAsync();
+
+            var matchingServiceIds = await _context.ServiceCatalogItems.AsNoTracking()
+                .Where(s => s.Name.ToLowerInvariant().Contains(lowerTerm))
+                .Select(s => s.Id)
+                .ToListAsync();
+
+            var matchingStaffIds = await _context.Users.AsNoTracking()
+                .Where(u => u.FullName.ToLowerInvariant().Contains(lowerTerm) ||
+                            u.Email.ToLowerInvariant().Contains(lowerTerm) ||
+                            u.PhoneNumber.ToLowerInvariant().Contains(lowerTerm))
+                .Select(u => u.Id)
+                .ToListAsync();
+
+            if (matchingCustomerIds.Any())
+                query = query.Where(a => matchingCustomerIds.Contains(a.CustomerId));
+            if (matchingServiceIds.Any())
+                query = query.Where(a => a.Resources.Any(r => matchingServiceIds.Contains(r.ServiceCatalogItemId)));
+            if (matchingStaffIds.Any())
+                query = query.Where(a => a.StaffUserId != null && matchingStaffIds.Contains(a.StaffUserId.Value));
+        }
+
+        // 5. Sorting — scheduledAt (default desc) or status only, both native SQL.
+        var direction = sortDirection.Trim().ToLowerInvariant() == "asc" ? "asc" : "desc";
+        query = sortBy.Trim().ToLowerInvariant() switch
+        {
+            "status" => direction == "asc" ? query.OrderBy(a => a.Status) : query.OrderByDescending(a => a.Status),
+            _ => direction == "asc" ? query.OrderBy(a => a.ScheduledAt) : query.OrderByDescending(a => a.ScheduledAt)
+        };
+
+        // 6. Count + paginated items (with resources and service names already included).
+        var total = await query.CountAsync();
+        var items = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+
+        // 7. Batch resolve customer / staff names (Appointment has no User navigation).
+        var customerIds = items.Select(a => a.CustomerId).Distinct().ToList();
+        var staffIds = items.Select(a => a.StaffUserId).Where(g => g.HasValue).Distinct().ToList();
+
+        var customerLookup = (await _context.Users.AsNoTracking()
+            .Where(u => customerIds.Contains(u.Id))
+            .Select(u => new { u.Id, u.FullName, u.Email, u.PhoneNumber })
+            .ToListAsync())
+            .GroupBy(u => u.Id)
+            .ToDictionary(g => g.Key, g => g.First());
+
+        var staffLookup = (await _context.Users.AsNoTracking()
+            .Where(u => staffIds.Contains(u.Id))
+            .Select(u => new { u.Id, u.FullName, u.Email, u.PhoneNumber })
+            .ToListAsync())
+            .GroupBy(u => u.Id)
+            .ToDictionary(g => g.Key, g => g.First());
+
+        var appointmentIds = items.Select(a => a.Id).ToList();
+        var serviceLookup = (await _context.AppointmentResources.AsNoTracking()
+            .Where(r => appointmentIds.Contains(r.AppointmentId))
+            .Join(_context.ServiceCatalogItems,
+                r => r.ServiceCatalogItemId,
+                s => s.Id,
+                (r, s) => new { r.AppointmentId, s.Name })
+            .ToListAsync())
+            .GroupBy(x => x.AppointmentId)
+            .ToDictionary(g => g.Key, g => string.Join(", ", g.Select(x => x.Name)));
+
+        // 8. Project the paginated appointment items.
+        var appointments = items.Select(a => new AppointmentDashboardItemResponse
+        {
+            Id = a.Id,
+            BusinessId = a.BusinessId,
+            ScheduledAt = a.ScheduledAt,
+            EndAt = a.EndAt,
+            Status = a.Status,
+            ServiceId = a.Resources.FirstOrDefault()?.ServiceCatalogItemId ?? Guid.Empty,
+            ServiceName = a.Resources.FirstOrDefault()?.Name ?? string.Empty,
+            CustomerId = a.CustomerId,
+            CustomerName = customerLookup.TryGetValue(a.CustomerId, out var c) ? c.FullName : string.Empty,
+            CustomerEmail = customerLookup.TryGetValue(a.CustomerId, out c) ? c.Email : null,
+            CustomerPhone = customerLookup.TryGetValue(a.CustomerId, out c) ? c.PhoneNumber : null,
+            StaffUserId = a.StaffUserId,
+            StaffName = a.StaffUserId.HasValue && staffLookup.TryGetValue(a.StaffUserId.Value, out var s) ? s.FullName : null,
+            StaffEmail = a.StaffUserId.HasValue && staffLookup.TryGetValue(a.StaffUserId.Value, out s) ? s.Email : null,
+            CreatedAt = a.CreatedAt,
+            UpdatedAt = a.CreatedAt
+        }).ToList();
+
+        // 9. Reference data (unpaginated, lightweight) for filter dropdowns.
+        var customers = await (
+            from u in _context.Users.AsNoTracking()
+            where u.Role == UserRole.Customer && u.StaffBusinessId == null
+            join e in _context.CustomerBusinessEnrollments.AsNoTracking()
+                on new { CustomerId = u.Id, BusinessId = business.Id } equals new { e.CustomerId, e.BusinessId }
+            join lc in _context.LoyaltyCards.AsNoTracking()
+                on new { CustomerId = u.Id, BusinessId = business.Id } equals new { lc.CustomerId, lc.BusinessId } into cards
+            from card in cards.DefaultIfEmpty()
+            select new CustomerDashboardItemResponse
+            {
+                UserId = u.Id,
+                FullName = u.FullName,
+                Email = u.Email,
+                PhoneNumber = u.PhoneNumber,
+                EnrolledAt = e.EnrolledAt,
+                Status = e.Status == CustomerBusinessEnrollmentStatus.Active ? "active" : "inactive",
+                TotalStamps = card != null ? card.TotalStamps : 0,
+                LastStampAt = card != null ? card.LastStampAt : null
+            })
+            .OrderBy(c => c.FullName)
+            .ToListAsync();
+
+        var staff = await _context.Users.AsNoTracking()
+            .Where(u => u.Role == UserRole.Staff && u.StaffBusinessId == business.Id)
+            .OrderBy(u => u.FullName)
+            .Select(u => new StaffDashboardItemResponse
+            {
+                UserId = u.Id,
+                FullName = u.FullName,
+                Email = u.Email,
+                AvatarUrl = u.AvatarUrl,
+                PhoneNumber = u.PhoneNumber
+            })
+            .ToListAsync();
+
+        var services = await _context.ServiceCatalogItems.AsNoTracking()
+            .Where(s => s.BusinessId == business.Id)
+            .OrderBy(s => s.Name)
+            .Select(s => new ServiceDashboardItemResponse
+            {
+                Id = s.Id,
+                Name = s.Name,
+                Description = s.Description,
+                DurationMinutes = s.DurationMinutes,
+                Price = s.Price ?? 0,
+                IsActive = s.IsActive,
+                Showcase = s.Showcase
+            })
+            .ToListAsync();
+
+        // 10. Assemble the response.
+        var totalPages = total > 0 ? (int)Math.Ceiling(total / (double)pageSize) : 1;
+        return ApiResponse<AppointmentDashboardResponse>.Ok(new AppointmentDashboardResponse
+        {
+            Meta = new PaginationMeta
+            {
+                Page = page,
+                PageSize = pageSize,
+                TotalCount = total,
+                TotalPages = totalPages
+            },
+            Appointments = appointments,
+            Customers = customers,
+            Staff = staff,
+            Services = services
         });
     }
 

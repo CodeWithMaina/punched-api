@@ -22,27 +22,34 @@ public partial class BusinessController
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     /// <summary>
-    /// Owner: list this business's appointments with filters + paging.
+    /// Owner: consolidated appointment dashboard — paginated appointments plus
+    /// lightweight reference buckets (customers, staff, services) for filter
+    /// dropdowns. This single endpoint replaces four separate calls
+    /// (/me/appointments, /me/customers, /me/staff, /services/me).
     /// </summary>
     [RequireModule("appointments")]
     [HttpGet("me/appointments")]
     [Authorize(Roles = "Business")]
-    [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<AppointmentResponse>>), StatusCodes.Status200OK)]
-    public async Task<IActionResult> GetBusinessAppointments(
-        [FromQuery] Guid? staffId,
-        [FromQuery] Guid? customerId,
-        [FromQuery] Guid? serviceId,
+    [ProducesResponseType(typeof(ApiResponse<AppointmentDashboardResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetAppointments(
+        [FromQuery] string? search,
         [FromQuery] string? status,
         [FromQuery] DateTime? from,
         [FromQuery] DateTime? to,
+        [FromQuery] Guid? staffId,
+        [FromQuery] Guid? customerId,
+        [FromQuery] Guid? serviceId,
+        [FromQuery] string sortBy = "scheduledAt",
+        [FromQuery] string sortDirection = "desc",
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20)
     {
         var userId = GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _appointmentService.GetBusinessAppointmentsAsync(
-            userId.Value, status, from, to, staffId, customerId, serviceId, page, pageSize);
+        var result = await _appointmentService.GetAppointmentDashboardAsync(
+            userId.Value, from, to, staffId, customerId, serviceId, status, search, sortBy, sortDirection, page, pageSize);
+
         return result.Success ? Ok(result) : MapFailure(result);
     }
 

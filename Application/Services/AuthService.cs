@@ -28,6 +28,12 @@ public class AuthService : IAuthService
     private readonly IBusinessMembershipResolver _membershipResolver;
     private readonly ITenantHostResolver _tenantResolver;
 
+    /// <summary>
+    /// The business whose address the request came in on (null on the platform
+    /// root). Used to auto-associate a signing-up customer with that business.
+    /// </summary>
+    private readonly ITenantContext? _tenantContext;
+
     // ── Constants ────────────────────────────────────────────
     private const int MaxFailedLoginAttempts = 5;
     private const int AccountLockoutMinutes = 30;
@@ -49,7 +55,10 @@ public class AuthService : IAuthService
         // Optional so existing unit-test construction keeps compiling; Program.cs
         // injects the real pipeline and the OTP path falls back to direct email when
         // it is absent.
-        INotificationService? notifications = null)
+        INotificationService? notifications = null,
+        // Optional for the same reason: the active tenant (page host) is only
+        // available at runtime, never in unit tests.
+        ITenantContext? tenantContext = null)
     {
         _unitOfWork = unitOfWork;
         _jwtService = jwtService;
@@ -61,6 +70,7 @@ public class AuthService : IAuthService
         _slugGenerator = slugGenerator;
         _membershipResolver = membershipResolver;
         _tenantResolver = tenantResolver;
+        _tenantContext = tenantContext;
     }
 
     /// <inheritdoc />
@@ -133,6 +143,31 @@ public class AuthService : IAuthService
             };
 
             await _unitOfWork.Users.AddAsync(user);
+
+            // Database-first membership: a customer who signs up on a business
+            // address belongs to that business from the start. The enrollment
+            // row is written in the SAME transaction as the user, so a customer
+            // can never exist without the membership that grants tenant access
+            // to the business they signed up on.
+            var signupBusinessId = await ResolveSignupBusinessIdAsync(request.BusinessSlug);
+            if (signupBusinessId is Guid businessId)
+            {
+                await _unitOfWork.CustomerBusinessEnrollments.AddAsync(new CustomerBusinessEnrollment
+                {
+                    Id = Guid.NewGuid(),
+                    CustomerId = user.Id,
+                    BusinessId = businessId,
+                    Status = CustomerBusinessEnrollmentStatus.Active,
+                    Source = "business",
+                    EnrolledAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = DateTime.UtcNow
+                });
+
+                _logger.LogInformation(
+                    "Customer {UserId} enrolled in business {BusinessId} at registration.",
+                    user.Id, businessId);
+            }
 
             // Phase 1: the OTP intent joins this SaveChanges — the code email exists if
             // and only if the auth record storing its hash does (intent-level outbox).
@@ -375,6 +410,29 @@ public class AuthService : IAuthService
 
             // Generate tokens. Tenant claims are minted only when the caller's
             // membership of the tenant host is verified server-side.
+            //
+            // Backstop: the enrollment written at registration may predate the
+            // business (rare) or have been created by a different flow. Making
+            // sure the membership row exists BEFORE the tenant context is
+            // resolved guarantees the customer is associated with the business
+            // they signed up on — and therefore receives its tenant claims.
+            var verificationBusinessId = await ResolveSignupBusinessIdAsync(request.BusinessSlug);
+            if (verificationBusinessId is Guid verificationBiz)
+            {
+                try
+                {
+                    await EnsureBusinessEnrollmentAsync(user.Id, verificationBiz, "business");
+                    await _unitOfWork.SaveChangesAsync();
+                }
+                catch (Exception ex)
+                {
+                    // Never fail a verification over the association row.
+                    _logger.LogWarning(ex,
+                        "Could not associate customer {UserId} with business {BusinessId}.",
+                        user.Id, verificationBiz);
+                }
+            }
+
             var tenant = await ResolveTenantContextAsync(user, request.BusinessSlug);
             var accessToken = _jwtService.GenerateAccessToken(userAuth, user, tenant?.BusinessId, tenant?.BizRole);
             var refreshTokenValue = _jwtService.GenerateRefreshToken();
@@ -662,6 +720,13 @@ public class AuthService : IAuthService
             if (businessId is null && !string.IsNullOrWhiteSpace(businessSlug))
                 businessId = await _tenantResolver.ResolveBusinessIdAsync(businessSlug);
 
+            // Fall back to the ACTIVE TENANT of this request (the business
+            // address the page is on). The slug hint is optional in the body —
+            // the host is the authoritative signal — and the membership check
+            // below still applies, so this can never grant access.
+            if (businessId is null && _tenantContext?.IsActive == true)
+                businessId = _tenantContext.BusinessId;
+
             if (businessId is null || businessId == Guid.Empty)
                 return null;
 
@@ -678,6 +743,83 @@ public class AuthService : IAuthService
             _logger.LogWarning(ex, "Tenant context resolution failed for user {UserId}", user.Id);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Resolves the business a signing-up customer should be associated with.
+    ///
+    /// <para>Order of precedence:</para>
+    /// <list type="number">
+    /// <item>The <b>active tenant</b> of the request (the business subdomain the
+    /// sign-up was entered on) — the authoritative answer.</item>
+    /// <item>The <c>businessSlug</c> HINT in the body, resolved server-side.</item>
+    /// </list>
+    ///
+    /// <para>Both are only ever <b>narrowing</b> inputs: the returned id is a
+    /// real, non-deleted business resolved from the server's own data, never a
+    /// client-supplied identifier. Returns null when nothing resolves (platform
+    /// root) — the customer is then simply not enrolled in any business.</para>
+    /// </summary>
+    private async Task<Guid?> ResolveSignupBusinessIdAsync(string? businessSlug)
+    {
+        try
+        {
+            // 1. The address the request was made on wins: it is the surface
+            //    the customer was actually looking at when they signed up.
+            if (_tenantContext?.IsActive == true && _tenantContext.BusinessId is Guid tenantBusinessId)
+            {
+                var tenantBusinessExists = await _unitOfWork.Businesses
+                    .AnyAsync(b => b.Id == tenantBusinessId && !b.IsDeleted);
+                if (tenantBusinessExists)
+                    return tenantBusinessId;
+            }
+
+            // 2. Fall back to the client-supplied slug hint (resolved, never trusted).
+            if (string.IsNullOrWhiteSpace(businessSlug))
+                return null;
+
+            var hinted = await _tenantResolver.ResolveBusinessIdAsync(businessSlug.Trim());
+            if (hinted is null || hinted == Guid.Empty)
+                return null;
+
+            var hintedExists = await _unitOfWork.Businesses
+                .AnyAsync(b => b.Id == hinted.Value && !b.IsDeleted);
+            return hintedExists ? hinted : null;
+        }
+        catch (Exception ex)
+        {
+            // Association is a convenience, never a blocker: a failure here
+            // must not prevent the account from being created.
+            _logger.LogWarning(ex, "Could not resolve the business for this registration.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Ensures the customer has an enrollment row in <paramref name="businessId"/>.
+    /// Idempotent: an EXISTING row is left exactly as it is (a customer who
+    /// deliberately left or was blocked is never silently re-added), and rows
+    /// belonging to ANOTHER business are never touched.
+    /// </summary>
+    private async Task EnsureBusinessEnrollmentAsync(Guid customerId, Guid businessId, string source)
+    {
+        var existing = await _unitOfWork.CustomerBusinessEnrollments
+            .FirstOrDefaultAsync(e => e.CustomerId == customerId && e.BusinessId == businessId);
+
+        if (existing != null)
+            return;
+
+        await _unitOfWork.CustomerBusinessEnrollments.AddAsync(new CustomerBusinessEnrollment
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customerId,
+            BusinessId = businessId,
+            Status = CustomerBusinessEnrollmentStatus.Active,
+            Source = source,
+            EnrolledAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        });
     }
 
     /// <inheritdoc />
