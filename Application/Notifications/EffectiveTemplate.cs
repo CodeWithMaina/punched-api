@@ -12,7 +12,9 @@ public sealed record EffectiveTemplate(
     string Title,
     string Body,
     string BodyHtml,
-    string Source); // "override" | "default"
+    string Source, // "override" | "default"
+    Guid? OverrideId = null,
+    int? OverrideVersion = null);
 
 /// <summary>Source values for <see cref="EffectiveTemplate"/>.</summary>
 public static class EffectiveTemplateSource

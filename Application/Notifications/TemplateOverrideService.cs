@@ -133,27 +133,40 @@ public sealed class TemplateOverrideService
     //  CRUD
     // ══════════════════════════════════════════════════════════════════
 
+    /// <summary>Single override by id, or null when it does not belong to the tenant.</summary>
+    public async Task<NotificationTemplateOverrideDto?> GetOverrideAsync(
+        Guid businessId,
+        Guid overrideId,
+        CancellationToken ct = default)
+    {
+        var row = await _context.NotificationTemplateOverrides
+            .AsNoTracking()
+            .FirstOrDefaultAsync(o => o.Id == overrideId && o.BusinessId == businessId, ct);
+        return row is null ? null : ToDto(row);
+    }
+
     /// <summary>Creates an override (version 1). Rejects unknown tokens.</summary>
     public async Task<NotificationTemplateOverrideDto> CreateOverrideAsync(
         Guid businessId,
         UpsertNotificationTemplateOverrideRequest request,
         CancellationToken ct = default)
     {
-        var definition = NotificationTypes.Get(request.Type);
-        ValidateTokens(request, definition);
+        var definition = ValidateType(request.Type);
+        var channel = NormalizeChannel(request.Channel);
+        ValidateTokens(request, definition.Name, definition);
 
         var existing = await _context.NotificationTemplateOverrides
-            .AnyAsync(o => o.BusinessId == businessId && o.Type == request.Type && o.Channel == request.Channel, ct);
+            .AnyAsync(o => o.BusinessId == businessId && o.Type == definition.Name && o.Channel == channel, ct);
         if (existing)
-            throw new InvalidOperationException($"An override already exists for {request.Type}/{request.Channel} on business {businessId}.");
+            throw new InvalidOperationException($"An override already exists for {definition.Name}/{channel} on business {businessId}.");
 
         var now = DateTime.UtcNow;
         var row = new NotificationTemplateOverride
         {
             Id = Guid.NewGuid(),
             BusinessId = businessId,
-            Type = request.Type,
-            Channel = request.Channel,
+            Type = definition.Name,
+            Channel = channel,
             SubjectTemplate = request.SubjectTemplate,
             BodyTemplateHtml = request.BodyTemplateHtml,
             BodyTemplateText = request.BodyTemplateText,
@@ -181,19 +194,39 @@ public sealed class TemplateOverrideService
         if (row is null)
             throw new KeyNotFoundException($"Override {overrideId} not found for business {businessId}.");
 
-        var definition = NotificationTypes.Get(request.Type);
-        ValidateTokens(request, definition);
+        var definition = ValidateType(request.Type);
+        var channel = NormalizeChannel(request.Channel);
+        ValidateTokens(request, definition.Name, definition);
 
-        // Snapshot the current version before mutating.
-        await WriteVersionAsync(row, row.Version, row.UpdatedBy, ct);
+        // (type, channel) is unique per business. Moving an override onto an
+        // occupied pair would otherwise fail on the unique index with a 500.
+        var collision = await _context.NotificationTemplateOverrides
+            .AnyAsync(o => o.BusinessId == businessId
+                && o.Id != overrideId
+                && o.Type == definition.Name
+                && o.Channel == channel, ct);
+        if (collision)
+            throw new InvalidOperationException(
+                $"An override already exists for {definition.Name}/{channel} on business {businessId}.");
 
-        row.Type = request.Type;
-        row.Channel = request.Channel;
+        // Snapshot the current version before mutating, unless this version is
+        // already in history (it is, once it was written by a previous update).
+        // Without this check the second update re-inserts the same
+        // (override_id, version) pair and violates
+        // ux_notification_template_override_versions_override_version.
+        var alreadySnapshotted = await _context.NotificationTemplateOverrideVersions
+            .AnyAsync(v => v.OverrideId == row.Id && v.Version == row.Version, ct);
+        if (!alreadySnapshotted)
+            await WriteVersionAsync(row, row.Version, row.UpdatedBy, ct);
+
+        row.Type = definition.Name;
+        row.Channel = channel;
         row.SubjectTemplate = request.SubjectTemplate;
         row.BodyTemplateHtml = request.BodyTemplateHtml;
         row.BodyTemplateText = request.BodyTemplateText;
         row.Version = row.Version + 1;
         row.UpdatedBy = request.UpdatedBy;
+        row.UpdatedAt = DateTime.UtcNow;
 
         await WriteVersionAsync(row, row.Version, request.UpdatedBy, ct);
         await _context.SaveChangesAsync(ct);
@@ -294,26 +327,40 @@ public sealed class TemplateOverrideService
         if (historical is null)
             throw new KeyNotFoundException($"Version {version} not found for override {overrideId}.");
 
-        var definition = NotificationTypes.Get(historical.Type);
+        var definition = ValidateType(historical.Type);
+        var channel = NormalizeChannel(historical.Channel);
         var tmpRequest = new UpsertNotificationTemplateOverrideRequest
         {
-            Channel = historical.Channel,
+            Channel = channel,
             SubjectTemplate = historical.SubjectTemplate,
             BodyTemplateHtml = historical.BodyTemplateHtml,
             BodyTemplateText = historical.BodyTemplateText,
             UpdatedBy = updatedBy,
         };
-        ValidateTokens(tmpRequest, definition);
+        ValidateTokens(tmpRequest, definition.Name, definition);
 
-        await WriteVersionAsync(row, row.Version, row.UpdatedBy, ct);
+        var collision = await _context.NotificationTemplateOverrides
+            .AnyAsync(o => o.BusinessId == businessId
+                && o.Id != overrideId
+                && o.Type == definition.Name
+                && o.Channel == channel, ct);
+        if (collision)
+            throw new InvalidOperationException(
+                $"An override already exists for {definition.Name}/{channel} on business {businessId}.");
 
-        row.Type = historical.Type;
-        row.Channel = historical.Channel;
+        var alreadySnapshotted = await _context.NotificationTemplateOverrideVersions
+            .AnyAsync(v => v.OverrideId == row.Id && v.Version == row.Version, ct);
+        if (!alreadySnapshotted)
+            await WriteVersionAsync(row, row.Version, row.UpdatedBy, ct);
+
+        row.Type = definition.Name;
+        row.Channel = channel;
         row.SubjectTemplate = historical.SubjectTemplate;
         row.BodyTemplateHtml = historical.BodyTemplateHtml;
         row.BodyTemplateText = historical.BodyTemplateText;
         row.Version = row.Version + 1;
         row.UpdatedBy = updatedBy;
+        row.UpdatedAt = DateTime.UtcNow;
 
         await WriteVersionAsync(row, row.Version, updatedBy, ct);
         await _context.SaveChangesAsync(ct);
@@ -325,8 +372,35 @@ public sealed class TemplateOverrideService
     //  Private helpers
     // ═══════════════════════════════════════════════════════════════════
 
+    private static NotificationTypeDef ValidateType(string type)
+    {
+        var trimmed = (type ?? string.Empty).Trim();
+        if (!NotificationTypes.TryGet(trimmed, out var definition))
+        {
+            throw new InvalidOperationException(
+                $"Unknown notification type '{type}'. Use one of the registered types " +
+                $"listed by the notification-templates/types endpoint.");
+        }
+
+        return definition;
+    }
+
+    private static string NormalizeChannel(string channel)
+    {
+        var normalized = (channel ?? string.Empty).Trim().ToLowerInvariant();
+        if (!NotificationDefaults.AllChannels.Contains(normalized, StringComparer.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Unsupported channel '{channel}'. Supported channels: " +
+                $"{string.Join(", ", NotificationDefaults.AllChannels)}.");
+        }
+
+        return normalized;
+    }
+
     private static void ValidateTokens(
         UpsertNotificationTemplateOverrideRequest request,
+        string type,
         NotificationTypeDef definition)
     {
         var validTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -344,7 +418,7 @@ public sealed class TemplateOverrideService
         {
             throw new InvalidOperationException(
                 $"Template references unknown token(s): {string.Join(", ", unknown)}. " +
-                $"Allowed tokens for {request.Type}: {string.Join(", ", validTokens.OrderBy(x => x))}.");
+                $"Allowed tokens for {type}: {string.Join(", ", validTokens.OrderBy(x => x))}.");
         }
     }
 
@@ -364,7 +438,7 @@ public sealed class TemplateOverrideService
         return found.OrderBy(x => x).ToList();
     }
 
-    private async Task WriteVersionAsync(
+    private Task WriteVersionAsync(
         NotificationTemplateOverride row,
         int version,
         string updatedBy,
@@ -384,6 +458,7 @@ public sealed class TemplateOverrideService
             UpdatedBy = updatedBy,
             CreatedAt = DateTime.UtcNow,
         });
+        return Task.CompletedTask;
     }
 
     private static NotificationTemplateOverrideDto ToDto(NotificationTemplateOverride o) =>

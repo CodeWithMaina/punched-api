@@ -57,7 +57,13 @@ public sealed class TemplateOverridesController : ControllerBase
     {
         await EnsureTenantAccessAsync(businessId, cancellationToken);
 
-        if (!string.IsNullOrWhiteSpace(channel) && !NotificationDefaults.AllChannels.Contains(channel))
+        // Query values arrive verbatim ("Email", " EMAIL "); stored channels are
+        // canonical lowercase, so normalise before validating or filtering —
+        // otherwise a valid channel is rejected or silently matches nothing.
+        type = type?.Trim();
+        channel = channel?.Trim().ToLowerInvariant();
+
+        if (!string.IsNullOrEmpty(channel) && !NotificationDefaults.AllChannels.Contains(channel))
         {
             return BadRequest(ApiResponse<PaginatedNotificationTemplateOverridesDto>.Fail(
                 "VALIDATION_ERROR", $"Channel '{channel}' is not supported."));
@@ -79,6 +85,9 @@ public sealed class TemplateOverridesController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         await EnsureTenantAccessAsync(businessId, cancellationToken);
+
+        type = type.Trim();
+        channel = channel.Trim().ToLowerInvariant();
 
         if (!NotificationDefaults.AllChannels.Contains(channel))
         {
@@ -108,8 +117,7 @@ public sealed class TemplateOverridesController : ControllerBase
     {
         await EnsureTenantAccessAsync(businessId, cancellationToken);
 
-        var all = await _service.ListOverridesAsync(businessId, null, null, 1, 100, cancellationToken);
-        var dto = all.Items.FirstOrDefault(i => i.Id == overrideId);
+        var dto = await _service.GetOverrideAsync(businessId, overrideId, cancellationToken);
         if (dto is null)
             return NotFound(ApiResponse<NotificationTemplateOverrideDto>.Fail("NOT_FOUND", "Override not found."));
 

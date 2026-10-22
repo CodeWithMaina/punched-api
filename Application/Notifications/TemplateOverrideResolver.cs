@@ -80,6 +80,8 @@ public sealed class TemplateOverrideResolver : ITemplateOverrideResolver
             platformDefault.Title,
             platformDefault.Body,
             platformDefault.Body, // BodyHtml defaults to body; EmailChannel wraps in layout
-            source) with { };
+            source,
+            overrideId,
+            overrideVersion);
     }
 }

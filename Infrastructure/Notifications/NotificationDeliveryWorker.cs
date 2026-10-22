@@ -262,7 +262,7 @@ public sealed class NotificationDeliveryWorker : BackgroundService
     private async Task<ChannelMessage> BuildMessageAsync(
         NotificationLog row,
         ITemplateRenderer renderer,
-        ITemplateOverrideResolver resolver,
+        ITemplateOverrideResolver? resolver,
         CancellationToken ct)
     {
         var data = DeserializePayload(row.PayloadJson);
