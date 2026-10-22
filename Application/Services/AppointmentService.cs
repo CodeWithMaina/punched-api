@@ -6,6 +6,7 @@ using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.DomainEvents;
 using PunchedApi.Application.Notifications;
+using PunchedApi.Application.Scheduling;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -977,8 +978,8 @@ public class AppointmentService : IAppointmentService
 
             var matchingCustomerIds = await _context.Users.AsNoTracking()
                 .Where(u => u.FullName.ToLowerInvariant().Contains(lowerTerm) ||
-                            u.Email.ToLowerInvariant().Contains(lowerTerm) ||
-                            u.PhoneNumber.ToLowerInvariant().Contains(lowerTerm))
+                            (u.Email ?? string.Empty).ToLowerInvariant().Contains(lowerTerm) ||
+                            (u.PhoneNumber ?? string.Empty).ToLowerInvariant().Contains(lowerTerm))
                 .Select(u => u.Id)
                 .ToListAsync();
 
@@ -989,8 +990,8 @@ public class AppointmentService : IAppointmentService
 
             var matchingStaffIds = await _context.Users.AsNoTracking()
                 .Where(u => u.FullName.ToLowerInvariant().Contains(lowerTerm) ||
-                            u.Email.ToLowerInvariant().Contains(lowerTerm) ||
-                            u.PhoneNumber.ToLowerInvariant().Contains(lowerTerm))
+                            (u.Email ?? string.Empty).ToLowerInvariant().Contains(lowerTerm) ||
+                            (u.PhoneNumber ?? string.Empty).ToLowerInvariant().Contains(lowerTerm))
                 .Select(u => u.Id)
                 .ToListAsync();
 
@@ -1369,16 +1370,8 @@ public class AppointmentService : IAppointmentService
 
             // Reactivation: cancel any pending customer.lapsed jobs for this customer
             // at this business so they stop receiving lapse nudges.
-            await _context.ScheduledJobs
-                .Where(j => j.JobType == "customer.lapsed"
-                    && j.BusinessId == appointment.BusinessId
-                    && j.Status == "pending"
-                    && EF.Functions.Like(j.DedupeKey, $"customer.lapsed:{appointment.CustomerId}:%"))
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(j => j.Status, "cancelled")
-                    .SetProperty(j => j.CancelledAt, DateTime.UtcNow)
-                    .SetProperty(j => j.UpdatedAt, DateTime.UtcNow)
-                    .SetProperty(j => j.LockedAt, (DateTime?)null), default);
+            await CancelPendingWinBackJobsAsync(
+                appointment.CustomerId, appointment.BusinessId, _context, default);
 
             await _unitOfWork.SaveChangesAsync();
             await transaction.CommitAsync();
@@ -1408,6 +1401,29 @@ public class AppointmentService : IAppointmentService
     {
         await context.ScheduledJobs
             .Where(j => j.AggregateType == "appointment" && j.AggregateId == appointmentId && j.Status == "pending")
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(j => j.Status, "cancelled")
+                .SetProperty(j => j.CancelledAt, DateTime.UtcNow)
+                .SetProperty(j => j.UpdatedAt, DateTime.UtcNow)
+                .SetProperty(j => j.LockedAt, (DateTime?)null), ct);
+    }
+
+    /// <summary>
+    /// Cancels pending win-back jobs for a (customer, business) pair across every
+    /// cycle. The dedupe key prefix identifies the pair; the suffix carries the
+    /// activity anchor + cycle index, so a returning customer cancels only what is
+    /// still outstanding (new cycles get new keys).
+    /// Runs inside the caller's unit of work.
+    /// </summary>
+    private static async Task CancelPendingWinBackJobsAsync(
+        Guid customerId, Guid businessId, ApplicationDbContext context, CancellationToken ct)
+    {
+        var prefix = WinBackCyclePolicy.DedupeKeyPrefix(customerId, businessId);
+        await context.ScheduledJobs
+            .Where(j => j.JobType == WinBackCyclePolicy.JobType
+                && j.BusinessId == businessId
+                && j.Status == "pending"
+                && j.DedupeKey.StartsWith(prefix))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(j => j.Status, "cancelled")
                 .SetProperty(j => j.CancelledAt, DateTime.UtcNow)
@@ -1617,6 +1633,12 @@ public class AppointmentService : IAppointmentService
         {
             await PublishAppointmentCompletedAsync(appointment, default);
             await CancelPendingJobsAsync(appointment.Id, _context, default);
+            // Attending is the strongest reactivation signal: stop any pending
+            // win-back nudge for this (customer, business) pair. The new
+            // appointment also moved the cycle anchor, so future nudges get a
+            // fresh dedupe key.
+            await CancelPendingWinBackJobsAsync(
+                appointment.CustomerId, appointment.BusinessId, _context, default);
             await ScheduleFollowUpAsync(appointment, _context, default);
         }
 

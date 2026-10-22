@@ -28,6 +28,8 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
     private readonly int _pollSeconds;
     private readonly int _maxAttempts;
     private readonly int _lapseInactivityDays;
+    private readonly int _winBackCooldownDays;
+    private readonly bool _winBackFallbackNudgeEnabled;
     private DateTime _lastLapseScan = DateTime.MinValue;
 
     public ScheduledJobSchedulerWorker(
@@ -43,6 +45,8 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
         _pollSeconds = Math.Max(1, o.PollIntervalSeconds);
         _maxAttempts = Math.Max(1, o.MaxJobAttempts);
         _lapseInactivityDays = Math.Max(1, o.LapseInactivityDays);
+        _winBackCooldownDays = Math.Max(1, o.WinBackCooldownDays);
+        _winBackFallbackNudgeEnabled = o.WinBackFallbackNudgeEnabled;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -77,12 +81,14 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
         var context = provider.GetRequiredService<ApplicationDbContext>();
 
         await ReclaimStaleAsync(context, ct);
-        await ScanForLapsedCustomersAsync(context, ct);
+        await ScanForLapsedCustomersAsync(provider, context, ct);
         var claimed = await ClaimAsync(context, _claimSize, ct);
         foreach (var row in claimed)
         {
             ct.ThrowIfCancellationRequested();
-            await new Dispatcher(row, provider, _logger).RunAsync(ct);
+            await new Dispatcher(
+                row, provider, _logger, _winBackCooldownDays, _winBackFallbackNudgeEnabled)
+                .RunAsync(ct);
         }
     }
 
@@ -103,81 +109,34 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
     //  repeat on every claim cycle.
     // ===============================================================
 
-    private async Task ScanForLapsedCustomersAsync(ApplicationDbContext context, CancellationToken ct)
+    private async Task ScanForLapsedCustomersAsync(
+        IServiceProvider provider, ApplicationDbContext context, CancellationToken ct)
     {
-        // Only scan once per hour to avoid repeated full-table scans.
+        // Only scan once per hour to avoid repeated full-table scans. Cycle
+        // idempotency does not depend on this throttle (the cycle dedupe key
+        // does), so a restart merely scans once more.
         if (DateTime.UtcNow - _lastLapseScan < TimeSpan.FromHours(1)) return;
+
+        var scanner = provider.GetRequiredService<LapsedCustomerScanner>();
+        var result = await scanner.ScanAsync(
+            DateTime.UtcNow, _lapseInactivityDays, _winBackCooldownDays, ct);
+
+        // Only throttle after a successful pass: a transient failure should be
+        // retried on the next claim cycle instead of silently skipping an hour.
         _lastLapseScan = DateTime.UtcNow;
 
-        var cutoff = DateTime.UtcNow.AddDays(-_lapseInactivityDays);
+        // The inserted lapse jobs stay tracked after each per-row SaveChanges.
+        // ClaimAsync returns AsNoTracking copies of those same rows, so
+        // Dispatcher.Complete (which re-attaches its row to write the terminal
+        // state) would hit "another instance with the same key value is
+        // already being tracked". The inserts are committed, so evicting them
+        // here is safe and keeps the rest of the batch claimable in this scope.
+        context.ChangeTracker.Clear();
 
-        // Find enrolled customers with no appointment at this business in the lapse window.
-        var lapsed = await context.CustomerBusinessEnrollments
-            .AsNoTracking()
-            .Where(e => e.Status == CustomerBusinessEnrollmentStatus.Active
-                && e.LeftAt == null)
-            .Select(e => new { e.CustomerId, e.BusinessId })
-            .Distinct()
-            .ToListAsync(ct);
-
-        foreach (var entry in lapsed)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            var hasRecentAppointment = await context.Appointments
-                .AsNoTracking()
-                .AnyAsync(a =>
-                    a.CustomerId == entry.CustomerId
-                    && a.BusinessId == entry.BusinessId
-                    && a.ScheduledAt >= cutoff, ct);
-            if (hasRecentAppointment) continue;
-
-            // Check for an existing pending deduped job — skip if already queued.
-            var dedupeKey = $"customer.lapsed:{entry.CustomerId}:{entry.BusinessId}";
-            var existing = await context.ScheduledJobs
-                .AsNoTracking()
-                .AnyAsync(j => j.DedupeKey == dedupeKey && j.Status == "pending", ct);
-            if (existing) continue;
-
-            var businessName = await context.Businesses
-                .AsNoTracking()
-                .Where(b => b.Id == entry.BusinessId)
-                .Select(b => b.Name)
-                .FirstOrDefaultAsync(ct) ?? "Your business";
-
-            var customerName = await context.Users
-                .AsNoTracking()
-                .Where(u => u.Id == entry.CustomerId)
-                .Select(u => u.FullName ?? u.Email ?? "Customer")
-                .FirstOrDefaultAsync(ct) ?? "Customer";
-
-            var job = new ScheduledJob
-            {
-                JobType = "customer.lapsed",
-                DedupeKey = dedupeKey,
-                AggregateType = null,
-                AggregateId = null,
-                BusinessId = entry.BusinessId,
-                PayloadJson = JsonSerializer.Serialize(new Dictionary<string, object?>
-                {
-                    ["customerId"] = entry.CustomerId,
-                    ["businessId"] = entry.BusinessId,
-                    ["daysInactive"] = _lapseInactivityDays,
-                    ["businessName"] = businessName,
-                    ["customerName"] = customerName,
-                }),
-                ScheduledForUtc = DateTime.UtcNow,
-                Status = "pending",
-                Attempts = 0,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
-            };
-            await context.ScheduledJobs.AddAsync(job, ct);
-        }
-
-        await context.SaveChangesAsync(ct);
         _logger.LogInformation(
-            "Lapsed-customer scan complete: evaluated {Count} enrolled customers for lapse jobs.", lapsed.Count);
+            "Lapsed-customer scan complete: evaluated {Evaluated} enrolments, {Created} jobs created, " +
+            "{Cooldown} in cooldown, {Duplicate} already scheduled.",
+            result.Evaluated, result.Created, result.SkippedCooldown, result.SkippedDuplicate);
     }
 
     private static async Task<IReadOnlyList<ScheduledJob>> ClaimAsync(
@@ -244,15 +203,26 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
         private readonly ApplicationDbContext _context;
         private readonly ILogger _logger;
         private readonly INotificationService _notifications;
+        private readonly WinBackCooldownService _cooldown;
         private readonly IServiceProvider _provider;
+        private readonly int _winBackCooldownDays;
+        private readonly bool _winBackFallbackNudgeEnabled;
 
-        public Dispatcher(ScheduledJob row, IServiceProvider provider, ILogger logger)
+        public Dispatcher(
+            ScheduledJob row,
+            IServiceProvider provider,
+            ILogger logger,
+            int winBackCooldownDays,
+            bool winBackFallbackNudgeEnabled)
         {
             _row = row;
             _context = provider.GetRequiredService<ApplicationDbContext>();
             _logger = logger;
             _notifications = provider.GetRequiredService<INotificationService>();
+            _cooldown = provider.GetRequiredService<WinBackCooldownService>();
             _provider = provider;
+            _winBackCooldownDays = Math.Max(1, winBackCooldownDays);
+            _winBackFallbackNudgeEnabled = winBackFallbackNudgeEnabled;
         }
 
         public async Task RunAsync(CancellationToken ct = default)
@@ -298,12 +268,20 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Scheduled job {JobId} ({JobType}) failed.", _row.Id, _row.JobType);
+
+                // A failed dispatch may have been rolled back mid-transaction,
+                // leaving Added outbox rows tracked. Saving them now would push
+                // a half-written notification outside the transaction, so drop
+                // every tracked change first (the job row is re-attached below).
+                _context.ChangeTracker.Clear();
+
                 _row.Attempts++;
                 var message = ex.Message ?? "scheduled job failed";
                 _row.Error = message.Length > 500 ? message[..500] : message;
                 _row.UpdatedAt = DateTime.UtcNow;
                 _row.LockedAt = null;
                 _row.Status = "pending";
+                _context.ScheduledJobs.Update(_row);
                 await _context.SaveChangesAsync(ct);
             }
         }
@@ -528,18 +506,52 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
                 int.TryParse(daysRaw.ToString(), out daysInactive);
             }
 
-            // Authoritative-state recheck: if the customer has had any appointment
-            // since the lapse window opened, they are no longer lapsed — cancel the job.
-            var cutoff = DateTime.UtcNow.AddDays(-daysInactive);
+            // Serialise "cooldown check + write intent" per (business, customer).
+            // PostgreSQL advisory locks are transaction-scoped, so two API
+            // instances cannot both pass the cooldown check and double-send.
+            await using var transaction = _context.Database.IsRelational()
+                ? await _context.Database.BeginTransactionAsync(ct)
+                : null;
+
+            if (_context.Database.IsNpgsql())
+            {
+                var lockKey = WinBackCyclePolicy.LockKey(customerId, _row.BusinessId.Value);
+                await _context.Database.ExecuteSqlInterpolatedAsync(
+                    $"SELECT pg_advisory_xact_lock(hashtextextended({lockKey}, 0))", ct);
+            }
+
+            // Send-time cooldown: authoritative. The scan-time check is only an
+            // optimisation to avoid noisy pending rows.
+            var cooldownEndsAt = await _cooldown.GetCooldownEndsAtAsync(
+                customerId, _row.BusinessId.Value, _winBackCooldownDays, ct);
+            if (cooldownEndsAt.HasValue && cooldownEndsAt.Value > DateTime.UtcNow)
+            {
+                Defer(cooldownEndsAt.Value, "winback_cooldown");
+                await _context.SaveChangesAsync(ct);
+                if (transaction is not null) await transaction.CommitAsync(ct);
+                _logger.LogInformation(
+                    "Win-back for customer {Customer} business {Business} deferred until {RetryAt:o}: cooldown still active.",
+                    customerId, _row.BusinessId.Value, cooldownEndsAt.Value);
+                return;
+            }
+
+            // Authoritative-state recheck: if the customer has had any qualifying
+            // appointment since the lapse window opened, they are no longer
+            // lapsed — cancel the job (reactivation).
+            var cutoff = DateTime.UtcNow.AddDays(-Math.Max(1, daysInactive));
             var recentAppointment = await _context.Appointments
                 .AsNoTracking()
                 .AnyAsync(a =>
                     a.CustomerId == customerId
                     && a.BusinessId == _row.BusinessId.Value
+                    && a.Status != "cancelled"
+                    && a.Status != "no_show"
                     && a.ScheduledAt >= cutoff, ct);
             if (recentAppointment)
             {
                 Complete("customer_reactivated", "skipped");
+                await _context.SaveChangesAsync(ct);
+                if (transaction is not null) await transaction.CommitAsync(ct);
                 return;
             }
 
@@ -574,11 +586,29 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
                 DateTime.UtcNow,
                 ct);
 
+            // No rule configured for the trigger (the common case): fall back to
+            // the registered default nudge so win-back actually sends something.
+            // Preferences and quiet hours still apply — never forced.
+            if (fired == 0 && _winBackFallbackNudgeEnabled)
+            {
+                await _notifications.QueueAsync(new NotificationRequest(
+                    WinBackCyclePolicy.JobType,
+                    customerId,
+                    _row.BusinessId.Value,
+                    lapsePayload,
+                    _row.DedupeKey), ct);
+                _logger.LogInformation(
+                    "Customer-lapsed fallback nudge queued for customer {Customer} business {Business}.",
+                    customerId, _row.BusinessId.Value);
+            }
+
             _logger.LogInformation(
                 "Customer-lapsed rule evaluation for customer {Customer} business {Business}: {Fired} rule(s) fired.",
                 customerId, _row.BusinessId.Value, fired);
 
             Complete("dispatched", "sent");
+            await _context.SaveChangesAsync(ct);
+            if (transaction is not null) await transaction.CommitAsync(ct);
         }
 
         private void Complete(string reason, string outcome)
@@ -588,6 +618,21 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
             _row.UpdatedAt = DateTime.UtcNow;
             _row.LockedAt = null;
             _row.Error = outcome == "skipped" ? (string?)null : reason;
+            _context.ScheduledJobs.Update(_row);
+        }
+
+        /// <summary>
+        /// Returns the job to the queue for a later attempt without counting it
+        /// as a failure. Used when a win-back must wait out the send cooldown.
+        /// </summary>
+        private void Defer(DateTime scheduledForUtc, string reason)
+        {
+            _row.Status = "pending";
+            _row.ScheduledForUtc = scheduledForUtc;
+            _row.CompletedAt = null;
+            _row.LockedAt = null;
+            _row.UpdatedAt = DateTime.UtcNow;
+            _row.Error = reason;
             _context.ScheduledJobs.Update(_row);
         }
 

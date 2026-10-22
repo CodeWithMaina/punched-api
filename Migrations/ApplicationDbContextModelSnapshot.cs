@@ -2933,6 +2933,10 @@ namespace PunchedApi.Migrations
                         .HasDatabaseName("ix_notifications_failed_updated_id")
                         .HasFilter("status = 'failed'");
 
+                    b.HasIndex("BusinessId", "UserId", "TemplateType", "Status", "SentAt")
+                        .HasDatabaseName("ix_notifications_winback_cooldown")
+                        .HasFilter("status = 'sent'");
+
                     b.ToTable("notifications", (string)null);
                 });
 

@@ -63,17 +63,30 @@ public class StampingMaintenanceService : IStampingMaintenanceService
             if (alreadySent)
                 continue;
 
-            var result = await _notificationService.SendAsync(new NotificationRequest(
-                "loyalty.win_back_nudge",
-                card.CustomerId,
-                card.BusinessId,
-                new Dictionary<string, object?>
-                {
-                    ["stamps"] = Math.Max(1, card.StampsRequired - card.TotalStamps),
-                    ["businessName"] = string.Empty
-                },
-                $"winback:{card.Id}"), cancellationToken);
-            if (result.Accepted) sent++;
+            try
+            {
+                var result = await _notificationService.SendAsync(new NotificationRequest(
+                    "loyalty.win_back_nudge",
+                    card.CustomerId,
+                    card.BusinessId,
+                    new Dictionary<string, object?>
+                    {
+                        ["stamps"] = Math.Max(1, card.StampsRequired - card.TotalStamps),
+                        ["businessName"] = string.Empty
+                    },
+                    $"winback:{card.Id}"), cancellationToken);
+                if (result.Accepted) sent++;
+            }
+            catch (ArgumentException ex)
+            {
+                // NotificationService refuses tenant-scoped sends to recipients
+                // with no business association. A single stale card must not
+                // abort the run for every other customer.
+                _logger.LogWarning(
+                    ex,
+                    "Skipping win-back nudge for card {CardId}: customer {CustomerId} is not enrolled with business {BusinessId}.",
+                    card.Id, card.CustomerId, card.BusinessId);
+            }
         }
 
         _logger.LogInformation(
@@ -124,16 +137,28 @@ public class StampingMaintenanceService : IStampingMaintenanceService
             if (alreadySent)
                 continue;
 
-            await _notificationService.SendAsync(new NotificationRequest(
-                "loyalty.stamp_expired",
-                card.CustomerId,
-                card.BusinessId,
-                new Dictionary<string, object?>
-                {
-                    ["stamps"] = card.TotalStamps,
-                    ["businessName"] = string.Empty
-                },
-                $"stamp-expired:{card.Id}"), cancellationToken);
+            try
+            {
+                await _notificationService.SendAsync(new NotificationRequest(
+                    "loyalty.stamp_expired",
+                    card.CustomerId,
+                    card.BusinessId,
+                    new Dictionary<string, object?>
+                    {
+                        ["stamps"] = card.TotalStamps,
+                        ["businessName"] = string.Empty
+                    },
+                    $"stamp-expired:{card.Id}"), cancellationToken);
+            }
+            catch (ArgumentException ex)
+            {
+                // Same tenant guard as the win-back run: skip unassociated
+                // recipients instead of failing the whole expiry sweep.
+                _logger.LogWarning(
+                    ex,
+                    "Skipping expiry notification for card {CardId}: customer {CustomerId} is not enrolled with business {BusinessId}.",
+                    card.Id, card.CustomerId, card.BusinessId);
+            }
         }
 
         if (expiredCount > 0)

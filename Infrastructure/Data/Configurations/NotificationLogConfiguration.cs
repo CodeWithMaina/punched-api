@@ -89,5 +89,11 @@ public class NotificationLogConfiguration : IEntityTypeConfiguration<Notificatio
             .HasFilter("status = 'failed'");
         builder.HasIndex(x => new { x.DeliverAfterUtc, x.Status, x.CreatedAt })
             .HasDatabaseName("ix_notifications_deliver_after_status");
+        // Win-back cooldown lookup: newest sent win-back per (business, customer).
+        // status is in the key *and* the filter because the cooldown only ever
+        // looks at successfully sent rows.
+        builder.HasIndex(x => new { x.BusinessId, x.UserId, x.TemplateType, x.Status, x.SentAt })
+            .HasDatabaseName("ix_notifications_winback_cooldown")
+            .HasFilter("status = 'sent'");
     }
 }

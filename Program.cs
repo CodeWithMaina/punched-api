@@ -239,9 +239,12 @@ try
     builder.Services.Configure<VapidSettings>(builder.Configuration.GetSection(VapidSettings.SectionName));
     builder.Services.AddScoped<NotificationOutboxStore>();
     builder.Services.AddScoped<ITemplateRenderer, TemplateRenderer>();
-builder.Services.AddScoped<EmailLayoutRenderer>();
-builder.Services.AddScoped<IUnsubscribeTokenService, UnsubscribeTokenService>();
-builder.Services.AddScoped<EmailLayoutRenderer>();
+    // Win-back cycles: cycle math is pure; the scanner/cooldown are scoped over
+    // the request/work-unit DbContext like the rest of the notification stack.
+    builder.Services.AddScoped<LapsedCustomerScanner>();
+    builder.Services.AddScoped<WinBackCooldownService>();
+    builder.Services.AddScoped<EmailLayoutRenderer>();
+    builder.Services.AddScoped<IUnsubscribeTokenService, UnsubscribeTokenService>();
     builder.Services.AddScoped<INotificationSmtpDelivery, MailKitNotificationSmtpDelivery>();
     builder.Services.AddScoped<INotificationOutboxService, NotificationOutboxService>();
 

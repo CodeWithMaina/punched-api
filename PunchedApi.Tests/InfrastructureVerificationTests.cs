@@ -81,4 +81,25 @@ public class InfrastructureVerificationTests
         Assert.NotNull(serviceProviderProp);
         Assert.Equal(typeof(IServiceProvider), serviceProviderProp!.PropertyType);
     }
+
+    [Fact]
+    public void EveryMigration_IsDiscoverableByEfCore()
+    {
+        // A hand-written migration without [Migration] compiles and passes
+        // every other test, but `dotnet ef database update` silently skips it.
+        var migrations = typeof(PunchedApi.Migrations.AddWinBackCooldownIndex).Assembly.GetTypes()
+            .Where(t => t.IsClass && !t.IsAbstract
+                && typeof(Microsoft.EntityFrameworkCore.Migrations.Migration).IsAssignableFrom(t))
+            .ToList();
+
+        Assert.NotEmpty(migrations);
+        var undiscoverable = migrations
+            .Where(t => t.GetCustomAttribute<Microsoft.EntityFrameworkCore.Migrations.MigrationAttribute>() is null)
+            .Select(t => t.Name)
+            .ToList();
+
+        Assert.True(
+            undiscoverable.Count == 0,
+            "Migrations missing [Migration]: " + string.Join(", ", undiscoverable));
+    }
 }

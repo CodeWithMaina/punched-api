@@ -31,4 +31,19 @@ public sealed class NotificationWorkerOptions
     // ── Phase 3 customer.lapsed ─────────────────────────────────
     // Days of inactivity before a customer is considered lapsed.
     public int LapseInactivityDays { get; set; } = 30;
+
+    /// <summary>
+    /// Minimum days between two win-back nudges for the same
+    /// (customer, business) pair. Also the width of one win-back cycle, so it
+    /// must be ≥ 1. A deferred job is rescheduled to
+    /// <c>lastSuccessfulSend + WinBackCooldownDays</c>.
+    /// </summary>
+    public int WinBackCooldownDays { get; set; } = 30;
+
+    /// <summary>
+    /// When no <c>customer.lapsed</c> automation rule fired, queue the
+    /// registered default <c>customer.lapsed</c> notification directly. Set to
+    /// false for tenants that want rule-only win-backs.
+    /// </summary>
+    public bool WinBackFallbackNudgeEnabled { get; set; } = true;
 }

@@ -17,6 +17,7 @@ public sealed class LoyaltyActivitySeedStep : ISeedStep
         var stampsCreated = 0;
         var qrCreated = 0;
         var redemptionsCreated = 0;
+        var enrollmentsCreated = 0;
 
         foreach (var businessDef in context.Scenario.Businesses)
         {
@@ -49,6 +50,11 @@ public sealed class LoyaltyActivitySeedStep : ISeedStep
                 .AsNoTracking()
                 .Where(r => r.BusinessId == businessId)
                 .Select(r => r.Id)
+                .ToListAsync(cancellationToken)).ToHashSet();
+            var existingEnrollmentIds = (await context.Db.CustomerBusinessEnrollments
+                .AsNoTracking()
+                .Where(e => e.BusinessId == businessId)
+                .Select(e => e.Id)
                 .ToListAsync(cancellationToken)).ToHashSet();
 
             var pending = 0;
@@ -103,6 +109,35 @@ public sealed class LoyaltyActivitySeedStep : ISeedStep
                 card.RewardExpiresAt = rewardHold == 1
                     ? lastStampAt.AddHours(program.RewardExpirationHours)
                     : null;
+
+                // Loyalty enrollment implies business enrollment — the same
+                // invariant LoyaltyService.EnrollAsync enforces. Without this
+                // row the card holder is a stranger to the business: win-back
+                // notifications are rejected and customer-facing association
+                // queries cannot see them. Deterministic id keeps the step
+                // idempotent and repairs cards seeded before this existed.
+                var enrollmentId = DeterministicSeed.GuidFor("enrollment", $"{businessDef.Key}:{customer.Id}");
+                if (!existingEnrollmentIds.Contains(enrollmentId))
+                {
+                    context.Db.CustomerBusinessEnrollments.Add(new Domain.Entities.CustomerBusinessEnrollment
+                    {
+                        Id = enrollmentId,
+                        CustomerId = customer.Id,
+                        BusinessId = business.Id,
+                        Status = CustomerBusinessEnrollmentStatus.Active,
+                        Source = "loyalty",
+                        EnrolledAt = enrolledAt,
+                        UpdatedAt = enrolledAt,
+                        CreatedAt = enrolledAt,
+                    });
+                    existingEnrollmentIds.Add(enrollmentId);
+                    enrollmentsCreated++;
+                    if (++pending >= BatchSize)
+                    {
+                        await context.Db.SaveChangesAsync(cancellationToken);
+                        pending = 0;
+                    }
+                }
 
                 for (var stampNo = 1; stampNo <= lifetimeStamps; stampNo++)
                 {
@@ -234,6 +269,7 @@ public sealed class LoyaltyActivitySeedStep : ISeedStep
         }
 
         context.Report.Counts["LoyaltyCardsCreated"] = cardsCreated;
+        context.Report.Counts["CustomerBusinessEnrollmentsCreated"] = enrollmentsCreated;
         context.Report.Counts["QrTokensCreated"] = qrCreated;
         context.Report.Counts["StampsCreated"] = stampsCreated;
         context.Report.Counts["RedemptionsCreated"] = redemptionsCreated;
