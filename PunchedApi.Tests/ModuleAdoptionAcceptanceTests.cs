@@ -16,26 +16,49 @@ namespace PunchedApi.Tests;
 /// </summary>
 public class ModuleAdoptionAcceptanceTests
 {
+    // The workspace folders were renamed (PunchedApi → punched-api,
+    // punched-pwd → punched-ui), so the root is resolved from the project file
+    // instead of matching hardcoded folder names.
+    private const string ApiProjectFile = "PunchedApi.csproj";
+    private const string TestsProjectFile = "PunchedApi.Tests.csproj";
+
+    /// <summary>Directory of the nearest ancestor holding <paramref name="projectFile"/>.</summary>
+    private static string ProjectDir(string projectFile)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, projectFile)))
+            dir = dir.Parent;
+        return dir?.FullName
+            ?? throw new InvalidOperationException(
+                $"{projectFile} not found above {AppContext.BaseDirectory}.");
+    }
+
+    private static string ApiProjectDir => ProjectDir(ApiProjectFile);
+
+    private static string TestsProjectDir => ProjectDir(TestsProjectFile);
+
+    /// <summary>Workspace root: holds the API project, the test project and the frontend tree.</summary>
     private static string RepoRoot
     {
         get
         {
-            var dir = new DirectoryInfo(AppContext.BaseDirectory);
-            while (dir != null &&
-                   !Directory.Exists(Path.Combine(dir.FullName, "PunchedApi")) &&
-                   !Directory.Exists(Path.Combine(dir.FullName, "punched-pwd")))
-            {
-                dir = dir.Parent;
-            }
-            return dir?.FullName ?? throw new InvalidOperationException("Repo root not found");
+            var apiDir = ApiProjectDir;
+            return Directory.GetParent(apiDir)?.FullName
+                ?? throw new InvalidOperationException($"Parent of {apiDir} not found.");
         }
     }
+
+    /// <summary>The frontend tree, or null when it is not checked out beside the API.</summary>
+    private static string? FrontendRoot =>
+        new[] { "punched-ui", "punched-pwd" }
+            .Select(name => Path.Combine(RepoRoot, name))
+            .FirstOrDefault(Directory.Exists);
 
     private static string[] ControllerFiles
     {
         get
         {
-            var controllersDir = Path.Combine(RepoRoot, "PunchedApi", "API", "Controllers");
+            var controllersDir = Path.Combine(ApiProjectDir, "API", "Controllers");
             return Directory.Exists(controllersDir)
                 ? Directory.GetFiles(controllersDir, "*.cs", SearchOption.AllDirectories)
                 : Array.Empty<string>();
@@ -130,8 +153,8 @@ public class ModuleAdoptionAcceptanceTests
                     offenders.Add(file);
             }
         }
-        Scan(Path.Combine(RepoRoot, "PunchedApi"));
-        Scan(Path.Combine(RepoRoot, "PunchedApi.Tests"));
+        Scan(ApiProjectDir);
+        Scan(TestsProjectDir);
 
         Assert.True(offenders.Count == 0,
             "The enforcement toggle was removed — 'EnforcementEnabled' must not appear anywhere. Offenders: " +
@@ -141,7 +164,7 @@ public class ModuleAdoptionAcceptanceTests
     [Fact]
     public void BackCompatProGrant_IsFullyRemoved()
     {
-        var seederPath = Path.Combine(RepoRoot, "PunchedApi", "Infrastructure", "Data", "Seeding", "ModuleCatalogSeeder.cs");
+        var seederPath = Path.Combine(ApiProjectDir, "Infrastructure", "Data", "Seeding", "ModuleCatalogSeeder.cs");
         var content = File.ReadAllText(seederPath);
         Assert.False(content.Contains("BackCompatGrantEnabled", StringComparison.Ordinal),
             "The back-compat pro grant was removed — ModuleCatalogSeeder must not reference BackCompatGrantEnabled.");
@@ -152,8 +175,10 @@ public class ModuleAdoptionAcceptanceTests
     [Fact]
     public void FrontendModulesPage_UsesPlanDrivenPricing_NoHardcodes()
     {
-        var page = Path.Combine(RepoRoot, "punched-pwd", "app", "dashboard", "business", "profile", "modules", "page.tsx");
-        if (!File.Exists(page)) return; // frontend tree absent — skip
+        var frontend = FrontendRoot;
+        if (frontend == null) return; // frontend tree absent — skip
+        var page = Path.Combine(frontend, "app", "dashboard", "business", "profile", "modules", "page.tsx");
+        if (!File.Exists(page)) return;
 
         var content = File.ReadAllText(page);
         Assert.False(Regex.IsMatch(content, @"\$\d+/mo"),

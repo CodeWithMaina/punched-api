@@ -43,6 +43,10 @@ public class AuthorizationPostureTests
         "Business|GET|",
         "Business|GET|public/{businessId:guid}",
         "Business|GET|by-slug/{slug}",
+        // Public storefront bootstrap (slug → identity + public profile +
+        // landing page). Output-cached per slug; the single call that renders a
+        // tenant storefront, so it must stay anonymous like the reads above.
+        "Business|GET|by-slug/{slug}/bootstrap",
         "Business|GET|{businessId:guid}/availability",
         "Business|GET|{businessId:guid}/availability/calendar",
         "LoyaltyCard|GET|program/{businessId:guid}",

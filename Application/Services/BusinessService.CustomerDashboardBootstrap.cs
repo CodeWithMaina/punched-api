@@ -55,8 +55,15 @@ public partial class BusinessService
             businessId = association.BusinessId;
         }
 
+        // Both resolution branches above assign an id; asserting it here keeps
+        // the rest of the method on a non-nullable value (and fails fast if a
+        // future branch forgets to resolve one).
+        if (businessId is not { } resolvedBusinessId)
+            return ApiResponse<CustomerDashboardBootstrapResponse>.Fail(
+                "NO_BUSINESS", "Customer is not associated with any business.");
+
         // ── 2. Verify customer membership (authorization boundary) ─────────
-        var membership = await _businessMembershipResolver.ResolveAsync(customerId, businessId.Value);
+        var membership = await _businessMembershipResolver.ResolveAsync(customerId, resolvedBusinessId);
         if (!membership.IsActive)
             return ApiResponse<CustomerDashboardBootstrapResponse>.Fail(
                 "FORBIDDEN", "Customer is not a member of this business.");
@@ -64,7 +71,7 @@ public partial class BusinessService
         // ── 3. Load business identity (projection only, no entity graph) ───
         var business = await _context.Businesses
             .AsNoTracking()
-            .Where(b => b.Id == businessId.Value && !b.IsDeleted)
+            .Where(b => b.Id == resolvedBusinessId && !b.IsDeleted)
             .Select(b => new
             {
                 b.Id,
@@ -88,7 +95,7 @@ public partial class BusinessService
         // Reuse the same entitlement resolution [RequireModule] uses, then map
         // modules → customer capabilities via CustomerCapabilityCatalog. One
         // cached call (60 s TTL inside ModuleEntitlementService).
-        var effectiveModuleKeys = await _moduleEntitlementService.GetEffectiveModuleKeysAsync(businessId.Value);
+        var effectiveModuleKeys = await _moduleEntitlementService.GetEffectiveModuleKeysAsync(resolvedBusinessId);
         var capabilities = CustomerCapabilityCatalog.Resolve(
             effectiveModuleKeys,
             hasActiveLoyaltyProgram: business.HasLoyaltyProgram,
@@ -107,18 +114,18 @@ public partial class BusinessService
         // ── 6. Lightweight homepage summary (counts only, bounded payload) ─
         var upcomingCount = await _context.Appointments
             .AsNoTracking()
-            .Where(a => a.BusinessId == businessId.Value && a.CustomerId == customerId
+            .Where(a => a.BusinessId == resolvedBusinessId && a.CustomerId == customerId
                 && (a.Status == "booked" || a.Status == "confirmed"))
             .CountAsync();
 
         var loyaltyCardCount = await _context.LoyaltyCards
             .AsNoTracking()
-            .Where(l => l.CustomerId == customerId && l.BusinessId == businessId.Value)
+            .Where(l => l.CustomerId == customerId && l.BusinessId == resolvedBusinessId)
             .CountAsync();
 
         var serviceCount = await _context.ServiceCatalogItems
             .AsNoTracking()
-            .Where(s => s.BusinessId == businessId.Value && s.IsActive)
+            .Where(s => s.BusinessId == resolvedBusinessId && s.IsActive)
             .CountAsync();
 
         // ── 7. Enrich customer relationship (enrollment source/date) ───────
@@ -135,7 +142,7 @@ public partial class BusinessService
         {
             var enrollment = await _context.CustomerBusinessEnrollments
                 .AsNoTracking()
-                .Where(e => e.CustomerId == customerId && e.BusinessId == businessId.Value)
+                .Where(e => e.CustomerId == customerId && e.BusinessId == resolvedBusinessId)
                 .Select(e => new { e.Source, e.EnrolledAt })
                 .FirstOrDefaultAsync();
             if (enrollment != null)
