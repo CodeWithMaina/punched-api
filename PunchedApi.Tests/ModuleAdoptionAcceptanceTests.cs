@@ -139,15 +139,25 @@ public class ModuleAdoptionAcceptanceTests
     [Fact]
     public void EnforcementToggle_ConfigKey_IsFullyRemoved()
     {
+        // Anything that is not source: build output, VCS metadata (a commit
+        // message may legitimately name the removed key — reading .git also
+        // makes the result depend on the local commit history), package caches
+        // and test artifacts.
+        string[] excludedDirectories =
+            ["obj", "bin", ".git", ".vs", ".next", "node_modules", "TestResults"];
+
         var offenders = new List<string>();
         void Scan(string root)
         {
             if (!Directory.Exists(root)) return;
             foreach (var file in Directory.GetFiles(root, "*", SearchOption.AllDirectories))
             {
-                if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") ||
-                    file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") ||
-                    IsAcceptanceTestFile(file)) // this file mentions the key in its assertions
+                var segments = Path.GetRelativePath(root, file)
+                    .Split(Path.DirectorySeparatorChar);
+                if (segments.Any(segment =>
+                        excludedDirectories.Contains(segment, StringComparer.OrdinalIgnoreCase)))
+                    continue;
+                if (IsAcceptanceTestFile(file)) // this file mentions the key in its assertions
                     continue;
                 if (File.ReadAllText(file).Contains("EnforcementEnabled"))
                     offenders.Add(file);
