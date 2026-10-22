@@ -69,5 +69,18 @@
     "Password": "",
     "FromAddress": "",
     "FromName": "Punched"
+  },
+  "RateLimiting": {
+    "otp": { "PermitLimit": 3 },
+    "login": { "PermitLimit": 5 },
+    "refresh": { "PermitLimit": 300 },
+    "general": { "PermitLimit": 1000 },
+    "media-upload": { "PermitLimit": 30 },
+    "manual-lookup": { "PermitLimit": 5 },
+    "stamp-award": { "PermitLimit": 20 },
+    "stamp-enroll": { "PermitLimit": 20 },
+    "attendance-clock": { "PermitLimit": 60 },
+    "asset-upload": { "PermitLimit": 30 },
+    "template-overrides": { "PermitLimit": 60 }
   }
 }
