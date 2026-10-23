@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Interfaces;
@@ -19,7 +20,7 @@ namespace PunchedApi.API.Controllers;
 /// </summary>
 [ApiController]
 [Produces("application/json")]
-[Authorize(Roles = "Admin")]
+[Authorize(Policy = MembershipPolicies.PlatformAdmin)]
 [EnableRateLimiting("general")]
 public class AdminCardDesignController : ControllerBase
 {

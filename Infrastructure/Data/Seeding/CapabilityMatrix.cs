@@ -6,7 +6,7 @@ public static class CapabilityMatrix
     [
         new SeedModuleCapability { Module = "Businesses", Status = "Implemented", Notes = "businesses table supports core business seed data." },
         new SeedModuleCapability { Module = "Users and Authentication", Status = "Implemented", Notes = "users, user_auth, refresh_tokens fully seedable." },
-        new SeedModuleCapability { Module = "Staff Linking", Status = "Implemented", Notes = "users.StaffBusinessId supports tenant staff mapping." },
+        new SeedModuleCapability { Module = "Staff Linking", Status = "Implemented", Notes = "business_memberships (role=Staff, status=Active) is the only tenant staff mapping." },
         new SeedModuleCapability { Module = "Loyalty", Status = "Implemented", Notes = "loyalty_programs, loyalty_cards, stamps, redemptions supported." },
         new SeedModuleCapability { Module = "Referrals", Status = "Implemented", Notes = "referral_programs, referral_links, referrals supported." },
         new SeedModuleCapability { Module = "Roles and Permissions", Status = "Partially Implemented", Notes = "Role enum exists, but no role/permission tables exist for granular RBAC seeds." },

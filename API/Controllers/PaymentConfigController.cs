@@ -16,7 +16,7 @@ namespace PunchedApi.API.Controllers;
 [ApiController]
 [Route("v1/payment-config")]
 [Produces("application/json")]
-[Authorize(Roles = "Business")]
+[Authorize(Policy = MembershipPolicies.Owner)]
 [RequireModule("payments")]
 [EnableRateLimiting("general")]
 public class PaymentConfigController : ControllerBase

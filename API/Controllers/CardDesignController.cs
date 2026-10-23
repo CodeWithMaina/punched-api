@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
@@ -23,7 +24,7 @@ namespace PunchedApi.API.Controllers;
 [ApiController]
 [Produces("application/json")]
 [Route("v1/card-designs")]
-[Authorize(Roles = "Business")]
+[Authorize(Policy = MembershipPolicies.Owner)]
 [RequireModule("loyalty")]
 [EnableRateLimiting("general")]
 public class CardDesignController : ControllerBase

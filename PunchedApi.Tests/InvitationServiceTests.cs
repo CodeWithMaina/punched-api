@@ -66,6 +66,19 @@ public class InvitationServiceTests
         CreatedAt = DateTime.UtcNow.AddDays(-7)
     };
 
+    /// <summary>Canonical membership row for seeding tenant relationships.</summary>
+    private static BusinessMembership OwnerMembership(User owner, Business business) => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = owner.Id,
+        BusinessId = business.Id,
+        Role = BusinessMembershipRole.Owner,
+        Status = BusinessMembershipStatus.Active,
+        JoinedAt = DateTime.UtcNow,
+        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = DateTime.UtcNow
+    };
+
     private static StaffInvitation CreateInvitation(
         Guid businessId, Guid inviterId, string email,
         string token = TestToken, InvitationStatus status = default, DateTime? expiresAt = null) => new()
@@ -111,6 +124,7 @@ public class InvitationServiceTests
         var business = CreateBusiness(owner.Id);
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.SaveChangesAsync();
         var emailMock = new Mock<IEmailService>();
         emailMock.Setup(e => e.SendStaffInvitationAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTime>()))
@@ -143,6 +157,7 @@ public class InvitationServiceTests
         var business = CreateBusiness(owner.Id);
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.SaveChangesAsync();
         var service = CreateService(context);
 
@@ -181,6 +196,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com");
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateService(context);
@@ -204,6 +220,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com", status: InvitationStatus.Revoked);
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateService(context);
@@ -225,6 +242,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com", expiresAt: DateTime.UtcNow.AddDays(-1));
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateService(context);
@@ -244,6 +262,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com");
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateService(context);
@@ -264,7 +283,11 @@ public class InvitationServiceTests
         var user = await context.Users.FirstOrDefaultAsync(u => u.Email == "staff@example.com");
         Assert.NotNull(user);
         Assert.Equal(UserRole.Staff, user.Role);
-        Assert.Equal(business.Id, user.StaffBusinessId);
+        var membership = await context.BusinessMemberships.SingleAsync(m =>
+            m.UserId == user.Id && m.BusinessId == business.Id);
+        Assert.Equal(BusinessMembershipRole.Staff, membership.Role);
+        Assert.Equal(BusinessMembershipStatus.Active, membership.Status);
+        Assert.Equal(owner.Id, membership.InvitedByUserId);
 
         var updated = await context.StaffInvitations.FirstAsync(i => i.Id == invitation.Id);
         Assert.Equal(InvitationStatus.Accepted, updated.Status);
@@ -281,6 +304,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com");
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateService(context);
@@ -307,6 +331,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com", status: InvitationStatus.Revoked);
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateService(context);
@@ -327,6 +352,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com", expiresAt: DateTime.UtcNow.AddDays(-1));
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateService(context);
@@ -347,6 +373,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com", status: InvitationStatus.Accepted);
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateService(context);
@@ -366,6 +393,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com");
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.UserAuths.AddAsync(new UserAuth
         {
@@ -392,6 +420,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com", expiresAt: DateTime.UtcNow.AddDays(1));
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var oldHash = invitation.TokenHash;
@@ -417,6 +446,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com");
         await context.Users.AddRangeAsync(owner, otherOwner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateService(context);
@@ -436,6 +466,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com");
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateService(context);
@@ -457,6 +488,7 @@ public class InvitationServiceTests
         var invitation = CreateInvitation(business.Id, owner.Id, "staff@example.com", status: InvitationStatus.Accepted, expiresAt: DateTime.UtcNow.AddDays(-1));
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateService(context);

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.OutputCaching;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Modules;
@@ -29,7 +30,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("appointments")]
     [HttpGet("me/appointments")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentDashboardResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetAppointments(
         [FromQuery] string? search,
@@ -56,7 +57,7 @@ public partial class BusinessController
     /// <summary>Owner: get a single appointment in this business.</summary>
     [RequireModule("appointments")]
     [HttpGet("me/appointments/{id:guid}")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetBusinessAppointment(Guid id)
@@ -71,7 +72,7 @@ public partial class BusinessController
     /// <summary>Owner: book an appointment on behalf of a customer.</summary>
     [RequireModule("appointments")]
     [HttpPost("me/appointments")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> CreateBusinessAppointment([FromBody] CreateAppointmentOnBehalfRequest request)
@@ -86,7 +87,7 @@ public partial class BusinessController
     /// <summary>Owner: reschedule an appointment in this business.</summary>
     [RequireModule("appointments")]
     [HttpPost("me/appointments/{id:guid}/reschedule")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> RescheduleBusinessAppointment(Guid id, [FromBody] RescheduleAppointmentRequest request)
@@ -101,7 +102,7 @@ public partial class BusinessController
     /// <summary>Owner: confirm a customer's pending reschedule request (applies the proposed changes).</summary>
     [RequireModule("appointments")]
     [HttpPost("me/appointments/{id:guid}/reschedule-request/approve")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> ApproveRescheduleRequest(Guid id)
     {
@@ -115,7 +116,7 @@ public partial class BusinessController
     /// <summary>Owner: reject a customer's pending reschedule request (appointment unchanged).</summary>
     [RequireModule("appointments")]
     [HttpPost("me/appointments/{id:guid}/reschedule-request/reject")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> RejectRescheduleRequest(Guid id)
     {
@@ -129,7 +130,7 @@ public partial class BusinessController
     /// <summary>Owner: cancel an appointment in this business.</summary>
     [RequireModule("appointments")]
     [HttpPost("me/appointments/{id:guid}/cancel")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> CancelBusinessAppointment(Guid id, [FromBody] CancelAppointmentRequest request)
@@ -144,7 +145,7 @@ public partial class BusinessController
     /// <summary>Owner: confirm a booked appointment.</summary>
     [RequireModule("appointments")]
     [HttpPost("me/appointments/{id:guid}/confirm")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> ConfirmBusinessAppointment(Guid id)
@@ -159,7 +160,7 @@ public partial class BusinessController
     /// <summary>Owner: complete a confirmed appointment.</summary>
     [RequireModule("appointments")]
     [HttpPost("me/appointments/{id:guid}/complete")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> CompleteBusinessAppointment(Guid id)
@@ -174,7 +175,7 @@ public partial class BusinessController
     /// <summary>Owner: mark a confirmed appointment as a no-show.</summary>
     [RequireModule("appointments")]
     [HttpPost("me/appointments/{id:guid}/no-show")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> MarkBusinessNoShow(Guid id)
@@ -197,7 +198,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("appointments")]
     [HttpGet("staff/appointments")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<AppointmentResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetStaffAppointments(
         [FromQuery] string? status,
@@ -225,7 +226,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("appointments")]
     [HttpPost("staff/appointments/self")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> CreateStaffSelfAppointment(
@@ -241,7 +242,7 @@ public partial class BusinessController
     /// <summary>Staff: get a single appointment assigned to the authenticated staff member.</summary>
     [RequireModule("appointments")]
     [HttpGet("staff/appointments/{id:guid}")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetStaffAppointment(Guid id)
@@ -256,7 +257,7 @@ public partial class BusinessController
     /// <summary>Staff: reschedule an appointment assigned to the authenticated staff member.</summary>
     [RequireModule("appointments")]
     [HttpPost("staff/appointments/{id:guid}/reschedule")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> RescheduleStaffAppointment(Guid id, [FromBody] RescheduleAppointmentRequest request)
@@ -271,7 +272,7 @@ public partial class BusinessController
     /// <summary>Staff: cancel an appointment assigned to the authenticated staff member.</summary>
     [RequireModule("appointments")]
     [HttpPost("staff/appointments/{id:guid}/cancel")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> CancelStaffAppointment(Guid id, [FromBody] CancelAppointmentRequest? request)
@@ -286,7 +287,7 @@ public partial class BusinessController
     /// <summary>Staff: confirm a booked appointment assigned to this staff member.</summary>
     [RequireModule("appointments")]
     [HttpPost("staff/appointments/{id:guid}/confirm")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> ConfirmStaffAppointment(Guid id)
@@ -301,7 +302,7 @@ public partial class BusinessController
     /// <summary>Staff: complete a confirmed appointment assigned to this staff member.</summary>
     [RequireModule("appointments")]
     [HttpPost("staff/appointments/{id:guid}/complete")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> CompleteStaffAppointment(Guid id)
@@ -316,7 +317,7 @@ public partial class BusinessController
     /// <summary>Staff: mark a confirmed appointment assigned to this staff member as a no-show.</summary>
     [RequireModule("appointments")]
     [HttpPost("staff/appointments/{id:guid}/no-show")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> MarkStaffNoShow(Guid id)
@@ -331,7 +332,7 @@ public partial class BusinessController
     /// <summary>Staff: list a specific customer's appointments at the staff member's linked business.</summary>
     [RequireModule("appointments")]
     [HttpGet("staff/customers/{customerId:guid}/appointments")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<AppointmentResponse>>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetStaffCustomerAppointments(

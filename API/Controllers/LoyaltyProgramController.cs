@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
@@ -15,7 +16,7 @@ namespace PunchedApi.API.Controllers;
 [ApiController]
 [Route("v1/programs")]
 [Produces("application/json")]
-[Authorize(Roles = "Business")]
+[Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("loyalty")]
 [EnableRateLimiting("general")]
 public class LoyaltyProgramController : ControllerBase

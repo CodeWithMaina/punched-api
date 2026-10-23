@@ -22,6 +22,13 @@ public partial class BusinessService : IBusinessService
     private readonly IBusinessSlugGenerator _slugGenerator;
     private readonly ICardDesignResolver? _cardDesignResolver;
     private readonly IBusinessMembershipResolver _businessMembershipResolver;
+
+    /// <summary>
+    /// Canonical membership writer. Optional in the constructor so existing
+    /// unit-test construction keeps working; it then falls back to an instance
+    /// over the same DbContext (identical semantics — the service is stateless).
+    /// </summary>
+    private readonly IBusinessMembershipService _memberships;
     private readonly ILogger<BusinessService> _logger;
 
     /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
@@ -38,7 +45,8 @@ public partial class BusinessService : IBusinessService
         IBusinessMembershipResolver businessMembershipResolver,
         ILogger<BusinessService> logger,
         ITenantContext? tenant = null,
-        ICardDesignResolver? cardDesignResolver = null)
+        ICardDesignResolver? cardDesignResolver = null,
+        IBusinessMembershipService? memberships = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
@@ -48,6 +56,7 @@ public partial class BusinessService : IBusinessService
         _moduleEntitlementService = moduleEntitlementService;
         _slugGenerator = slugGenerator;
         _businessMembershipResolver = businessMembershipResolver;
+        _memberships = memberships ?? new BusinessMembershipService(unitOfWork);
         _logger = logger;
         _tenant = tenant;
         _cardDesignResolver = cardDesignResolver;
@@ -55,6 +64,18 @@ public partial class BusinessService : IBusinessService
 
     /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
     private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
+
+    /// <summary>True when the identity is ACTIVE staff of the business (membership-sourced).</summary>
+    private Task<bool> IsStaffOfBusinessAsync(Guid userId, Guid businessId) =>
+        _memberships.IsStaffOfAsync(userId, businessId);
+
+    /// <summary>The identity's ACTIVE staff business, or null.</summary>
+    private Task<Guid?> GetActiveStaffBusinessIdAsync(Guid userId) =>
+        _memberships.GetActiveBusinessIdAsync(userId, BusinessMembershipRole.Staff);
+
+    /// <summary>Active staff user ids of a business.</summary>
+    private Task<List<Guid>> GetStaffUserIdsAsync(Guid businessId) =>
+        _memberships.ListActiveUserIdsAsync(businessId, BusinessMembershipRole.Staff);
 
     /// <summary>
     /// Public, customer-safe business profile used by the business share link
@@ -167,13 +188,51 @@ public partial class BusinessService : IBusinessService
         }
     }
 
+    /// <summary>
+    /// Canonical business provisioning (POST /v1/businesses) — the ONLY way a
+    /// business and its owner relationship come into existence.
+    ///
+    /// <para><b>One unit of work:</b> the business row, the Owner
+    /// <see cref="BusinessMembership"/> and the denormalized
+    /// <c>Business.OwnerId</c> pointer are written in a single
+    /// <c>SaveChanges</c>, so an identity can never end up as an owner without a
+    /// business (or vice versa). The database backs this with unique partial
+    /// indexes for Owner/Active on both <c>business_id</c> and <c>user_id</c>.</para>
+    ///
+    /// <para><b>Refusals come from memberships, not personas:</b> an identity
+    /// that already holds an active Owner membership is answered with
+    /// <c>BUSINESS_EXISTS</c>; platform administrators are refused outright.
+    /// A Customer membership (shopping at a business) never blocks
+    /// provisioning — it is upgraded in place by
+    /// <see cref="IBusinessMembershipService"/>.</para>
+    /// </summary>
     public async Task<ApiResponse<BusinessResponse>> CreateBusinessAsync(Guid ownerId, CreateBusinessRequest request)
     {
         try
         {
-            var existing = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
-            if (existing != null)
-                return ApiResponse<BusinessResponse>.Fail("BUSINESS_EXISTS", "You already have a registered business.");
+            var owner = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == ownerId);
+            if (owner == null)
+                return ApiResponse<BusinessResponse>.Fail("NOT_FOUND", "Account not found.");
+
+            if (owner.IsDeleted)
+                return ApiResponse<BusinessResponse>.Fail(
+                    "ACCOUNT_DISABLED", "This account has been disabled.");
+
+            // Platform administration is a separate axis from tenancy: an
+            // operator account is never a tenant owner.
+            if (owner.Role == UserRole.Admin)
+                return ApiResponse<BusinessResponse>.Fail(
+                    "ROLE_NOT_ELIGIBLE", "Administrator accounts cannot own a business.");
+
+            // Ownership is a membership, not a persona and not a pointer.
+            var alreadyOwns = await _context.BusinessMemberships
+                .AsNoTracking()
+                .AnyAsync(m => m.UserId == ownerId &&
+                               m.Role == BusinessMembershipRole.Owner &&
+                               m.Status == BusinessMembershipStatus.Active);
+            if (alreadyOwns)
+                return ApiResponse<BusinessResponse>.Fail(
+                    "BUSINESS_EXISTS", "You already have a registered business.");
 
             var business = new Business
             {
@@ -189,23 +248,40 @@ public partial class BusinessService : IBusinessService
                 // Subdomain address (java-house.punched.app) — generated,
                 // collision-checked slug; see IBusinessSlugGenerator.
                 Slug = await _slugGenerator.GenerateAsync(request.Name),
-                OwnerId = ownerId,
                 CreatedAt = DateTime.UtcNow
             };
 
             await _unitOfWork.Businesses.AddAsync(business);
+
+            // Owner membership + OwnerId pointer (EnsureOwnerAsync writes both
+            // and never calls SaveChanges — it rides this commit).
+            await _memberships.EnsureOwnerAsync(ownerId, business);
+
+            // Persona is a UI routing hint derived from the membership; it is
+            // never consulted for authorization.
+            if (owner.Role != UserRole.Business)
+            {
+                owner.Role = UserRole.Business;
+                _unitOfWork.Users.Update(owner);
+            }
+
             try
             {
                 await _unitOfWork.SaveChangesAsync();
             }
-            catch (DbUpdateException) when (business.Slug != null)
+            catch (DbUpdateException ex) when (IsUniqueViolation(ex, "slug"))
             {
                 // Lost a unique-index race (two same-named creations at once) —
                 // retry once with a disambiguated slug before giving up.
                 business.Slug = BusinessSlugPolicy.Fallback(BusinessSlugPolicy.Slugify(request.Name));
                 await _unitOfWork.SaveChangesAsync();
             }
+
             _businessScopeResolver.InvalidateOwner(ownerId);
+
+            _logger.LogInformation(
+                "Identity {UserId} provisioned business {BusinessId} as Owner",
+                ownerId, business.Id);
 
             // Ensure the newly created business is not locked out of modules:
             // provision the default (Starter) subscription. Best-effort.
@@ -220,6 +296,17 @@ public partial class BusinessService : IBusinessService
         }
     }
 
+    /// <summary>
+    /// True when an update failed on the unique index named by
+    /// <paramref name="marker"/> (Npgsql surfaces the constraint name in the
+    /// provider message; SQLite does the same for unique indexes).
+    /// </summary>
+    private static bool IsUniqueViolation(DbUpdateException ex, string marker)
+    {
+        var message = ex.InnerException?.Message ?? ex.Message;
+        return message.Contains(marker, StringComparison.OrdinalIgnoreCase);
+    }
+
     public async Task<ApiResponse<BusinessResponse>> GetMyBusinessAsync(Guid ownerId)
     {
         // Hot dashboard path (the shell calls this on every page). Only the
@@ -232,7 +319,7 @@ public partial class BusinessService : IBusinessService
             .Include(b => b.LoyaltyPrograms.Where(p => p.IsActive))
             .Include(b => b.ReferralProgram)
             .Include(b => b.ReminderPolicy)
-            .FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            .FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
 
         if (business == null)
             return ApiResponse<BusinessResponse>.Fail("NOT_FOUND", "No business found for this account.");
@@ -242,7 +329,7 @@ public partial class BusinessService : IBusinessService
 
     public async Task<ApiResponse<BusinessResponse>> UpdateMyBusinessAsync(Guid ownerId, UpdateBusinessRequest request)
     {
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<BusinessResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -270,7 +357,7 @@ public partial class BusinessService : IBusinessService
     {
         var business = await _context.Businesses
             .Include(b => b.ReminderPolicy)
-            .FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            .FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<BusinessResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -310,7 +397,7 @@ public partial class BusinessService : IBusinessService
     /// </summary>
     public async Task<ApiResponse<BusinessResponse>> UpdateMyBusinessSlugAsync(Guid ownerId, UpdateBusinessSlugRequest request)
     {
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<BusinessResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -1131,7 +1218,7 @@ public partial class BusinessService : IBusinessService
             var business = await _context.Businesses
                 .Include(b => b.LoyaltyPrograms)
                 .AsNoTracking()
-                .FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+                .FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
 
             if (business == null)
                 return ApiResponse<BusinessDashboardResponse>.Fail("NOT_FOUND", "No business found for this account.");
@@ -1164,8 +1251,9 @@ public partial class BusinessService : IBusinessService
             var totalRedemptions = await _context.Redemptions.CountAsync(r => r.BusinessId == businessId);
 
             // ── Staff mini cards ("Your team") — today's scan stamps, effective goal, on-shift ──
+            var staffIds = await GetStaffUserIdsAsync(businessId);
             var staffUsers = await _context.Users
-                .Where(u => u.StaffBusinessId == businessId)
+                .Where(u => staffIds.Contains(u.Id))
                 .AsNoTracking()
                 .ToListAsync();
 
@@ -1220,13 +1308,17 @@ public partial class BusinessService : IBusinessService
         try
         {
             var user = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId);
-            if (user == null || user.StaffBusinessId == null)
-                return ApiResponse<StaffBusinessResponse>.Fail("NOT_LINKED", "You are not linked to any business. Ask a business owner to add you.");
-            // Tenant narrowing: staff linked to another tenant appear unlinked on this host.
-            if (TenantBusinessId is Guid tenantId && user.StaffBusinessId != tenantId)
+            if (user == null)
                 return ApiResponse<StaffBusinessResponse>.Fail("NOT_LINKED", "You are not linked to any business. Ask a business owner to add you.");
 
-            var business = await _unitOfWork.Businesses.GetByIdAsync(user.StaffBusinessId.Value);
+            var staffBusinessId = await GetActiveStaffBusinessIdAsync(user.Id);
+            if (staffBusinessId == null)
+                return ApiResponse<StaffBusinessResponse>.Fail("NOT_LINKED", "You are not linked to any business. Ask a business owner to add you.");
+            // Tenant narrowing: staff linked to another tenant appear unlinked on this host.
+            if (TenantBusinessId is Guid tenantId && staffBusinessId != tenantId)
+                return ApiResponse<StaffBusinessResponse>.Fail("NOT_LINKED", "You are not linked to any business. Ask a business owner to add you.");
+
+            var business = await _unitOfWork.Businesses.GetByIdAsync(staffBusinessId.Value);
             if (business == null)
                 return ApiResponse<StaffBusinessResponse>.Fail("NOT_FOUND", "Linked business not found.");
 
@@ -1248,16 +1340,20 @@ public partial class BusinessService : IBusinessService
         try
         {
             var user = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId);
-            if (user == null || user.StaffBusinessId == null)
+            if (user == null)
+                return ApiResponse<StaffAnalyticsResponse>.Fail("NOT_LINKED", "You are not linked to any business.");
+
+            var staffBusinessId = await GetActiveStaffBusinessIdAsync(user.Id);
+            if (staffBusinessId == null)
                 return ApiResponse<StaffAnalyticsResponse>.Fail("NOT_LINKED", "You are not linked to any business.");
             // Tenant narrowing: staff linked to another tenant appear unlinked on this host.
-            if (TenantBusinessId is Guid tenantId && user.StaffBusinessId != tenantId)
+            if (TenantBusinessId is Guid tenantId && staffBusinessId != tenantId)
                 return ApiResponse<StaffAnalyticsResponse>.Fail("NOT_LINKED", "You are not linked to any business.");
 
             var business = await _context.Businesses
                 .AsNoTracking()
                 .Include(b => b.LoyaltyPrograms)
-                .FirstOrDefaultAsync(b => b.Id == user.StaffBusinessId.Value);
+                .FirstOrDefaultAsync(b => b.Id == staffBusinessId.Value);
 
             if (business == null)
                 return ApiResponse<StaffAnalyticsResponse>.Fail("NOT_FOUND", "Linked business not found.");
@@ -1384,11 +1480,11 @@ public partial class BusinessService : IBusinessService
     {
         try
         {
-            var staff = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId);
-            if (staff == null || staff.StaffBusinessId == null)
+            var staffBusinessId = await GetActiveStaffBusinessIdAsync(staffUserId);
+            if (staffBusinessId == null)
                 return ApiResponse<PaginatedResponse<BusinessCustomerResponse>>.Fail("NOT_LINKED", "You are not linked to any business.");
 
-            var businessId = staff.StaffBusinessId.Value;
+            var businessId = staffBusinessId.Value;
             var stampsRequired = await _context.LoyaltyPrograms
                 .Where(p => p.BusinessId == businessId && p.IsActive)
                 .Select(p => (int?)p.StampsRequired)
@@ -1464,11 +1560,11 @@ public partial class BusinessService : IBusinessService
     {
         try
         {
-            var staff = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId);
-            if (staff == null || staff.StaffBusinessId == null)
+            var staffBusinessId = await GetActiveStaffBusinessIdAsync(staffUserId);
+            if (staffBusinessId == null)
                 return ApiResponse<BusinessCustomerResponse>.Fail("NOT_LINKED", "You are not linked to any business.");
 
-            var businessId = staff.StaffBusinessId.Value;
+            var businessId = staffBusinessId.Value;
             var stampsRequired = await _context.LoyaltyPrograms
                 .Where(p => p.BusinessId == businessId && p.IsActive)
                 .Select(p => (int?)p.StampsRequired)
@@ -1525,15 +1621,16 @@ public partial class BusinessService : IBusinessService
         int page = 1,
         int pageSize = 20)
     {
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<StaffListResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
 
+        var staffIdsForList = await GetStaffUserIdsAsync(business.Id);
         var query = _context.Users
-            .Where(u => u.StaffBusinessId == business.Id && !u.IsDeleted)
+            .Where(u => staffIdsForList.Contains(u.Id) && !u.IsDeleted)
             .AsNoTracking();
 
         // DB-level search across name and email.
@@ -1645,7 +1742,7 @@ public partial class BusinessService : IBusinessService
 
     public async Task<ApiResponse<StaffOverviewResponse>> GetStaffOverviewAsync(Guid ownerId)
     {
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<StaffOverviewResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -1654,8 +1751,9 @@ public partial class BusinessService : IBusinessService
         var todayUtc = DateTime.UtcNow.Date;
         var weekStartUtc = todayUtc.AddDays(-6);
 
+        var overviewStaffIds = await GetStaffUserIdsAsync(business.Id);
         var staff = await _context.Users
-            .Where(u => u.StaffBusinessId == business.Id && !u.IsDeleted)
+            .Where(u => overviewStaffIds.Contains(u.Id) && !u.IsDeleted)
             .AsNoTracking()
             .Select(u => new StaffMemberResponse
             {
@@ -1727,7 +1825,7 @@ public partial class BusinessService : IBusinessService
 
     public async Task<ApiResponse<BusinessResponse>> SetBusinessDailyGoalAsync(Guid ownerId, int? dailyGoal, string? dailyGoalType = null, int? appointmentDailyGoal = null)
     {
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<BusinessResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -1754,7 +1852,7 @@ public partial class BusinessService : IBusinessService
     /// </summary>
     public async Task<ApiResponse<BusinessResponse>> ClearBusinessAppointmentDailyGoalAsync(Guid ownerId)
     {
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<BusinessResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -1766,12 +1864,14 @@ public partial class BusinessService : IBusinessService
 
     public async Task<ApiResponse<StaffMemberResponse>> SetStaffDailyGoalAsync(Guid ownerId, Guid staffUserId, int? dailyGoal, int? appointmentDailyGoal = null)
     {
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<StaffMemberResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
-        var staffUser = await _unitOfWork.Users.FirstOrDefaultAsync(
-            u => u.Id == staffUserId && u.StaffBusinessId == business.Id);
+        if (!await IsStaffOfBusinessAsync(staffUserId, business.Id))
+            return ApiResponse<StaffMemberResponse>.Fail("NOT_FOUND", "Staff member not found in your business.");
+
+        var staffUser = await _unitOfWork.Users.GetByIdAsync(staffUserId);
         if (staffUser == null)
             return ApiResponse<StaffMemberResponse>.Fail("NOT_FOUND", "Staff member not found in your business.");
 
@@ -1807,7 +1907,7 @@ public partial class BusinessService : IBusinessService
     {
         try
         {
-            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
             if (business == null)
                 return ApiResponse<MessageResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -1815,12 +1915,21 @@ public partial class BusinessService : IBusinessService
             if (staffUser == null)
                 return ApiResponse<MessageResponse>.Fail("STAFF_NOT_FOUND", "Staff user not found.");
 
-            if (staffUser.Role != Domain.Entities.UserRole.Staff)
-                return ApiResponse<MessageResponse>.Fail("NOT_STAFF", "User is not a staff member.");
+            if (staffUser.Role == Domain.Entities.UserRole.Admin)
+                return ApiResponse<MessageResponse>.Fail("NOT_STAFF", "Administrator accounts cannot be linked as staff.");
 
-            staffUser.StaffBusinessId = business.Id;
-            _unitOfWork.Users.Update(staffUser);
+            // Linking is a membership grant (upgrade-only), committed once.
+            await _memberships.EnsureAsync(
+                staffUser.Id, business.Id, BusinessMembershipRole.Staff, ownerId);
+
+            if (staffUser.Role != Domain.Entities.UserRole.Business)
+            {
+                staffUser.Role = Domain.Entities.UserRole.Staff;
+                _unitOfWork.Users.Update(staffUser);
+            }
+
             await _unitOfWork.SaveChangesAsync();
+            _businessScopeResolver.InvalidateOwner(staffUser.Id);
 
             _logger.LogInformation("Staff {StaffId} linked to business {BusinessId}", staffUserId, business.Id);
 
@@ -1841,12 +1950,14 @@ public partial class BusinessService : IBusinessService
     {
         try
         {
-            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
             if (business == null)
                 return ApiResponse<StaffMemberAnalyticsResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
-            var staffUser = await _unitOfWork.Users.FirstOrDefaultAsync(
-                u => u.Id == staffUserId && u.StaffBusinessId == business.Id);
+            if (!await IsStaffOfBusinessAsync(staffUserId, business.Id))
+                return ApiResponse<StaffMemberAnalyticsResponse>.Fail("NOT_FOUND", "Staff member not found in your business.");
+
+            var staffUser = await _unitOfWork.Users.GetByIdAsync(staffUserId);
             if (staffUser == null)
                 return ApiResponse<StaffMemberAnalyticsResponse>.Fail("NOT_FOUND", "Staff member not found in your business.");
 
@@ -1936,8 +2047,10 @@ public partial class BusinessService : IBusinessService
             if (businessId == null)
                 return ApiResponse<StaffActivityFeedResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
-            var staffUser = await _unitOfWork.Users.FirstOrDefaultAsync(
-                u => u.Id == staffUserId && u.StaffBusinessId == businessId);
+            if (!await IsStaffOfBusinessAsync(staffUserId, businessId.Value))
+                return ApiResponse<StaffActivityFeedResponse>.Fail("NOT_FOUND", "Staff member not found in your business.");
+
+            var staffUser = await _unitOfWork.Users.GetByIdAsync(staffUserId);
             if (staffUser == null)
                 return ApiResponse<StaffActivityFeedResponse>.Fail("NOT_FOUND", "Staff member not found in your business.");
 
@@ -1956,13 +2069,15 @@ public partial class BusinessService : IBusinessService
     {
         try
         {
-            var staffUser = await _unitOfWork.Users.FirstOrDefaultAsync(
-                u => u.Id == staffUserId && u.Role == UserRole.Staff);
-
-            if (staffUser == null || staffUser.StaffBusinessId == null)
+            var staffUser = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId);
+            if (staffUser == null)
                 return ApiResponse<StaffActivityFeedResponse>.Fail("NOT_LINKED", "You are not linked to any business.");
 
-            return await BuildStaffActivityFeedAsync(staffUser.StaffBusinessId.Value, staffUser, request);
+            var staffBusinessId = await GetActiveStaffBusinessIdAsync(staffUser.Id);
+            if (staffBusinessId == null)
+                return ApiResponse<StaffActivityFeedResponse>.Fail("NOT_LINKED", "You are not linked to any business.");
+
+            return await BuildStaffActivityFeedAsync(staffBusinessId.Value, staffUser, request);
         }
         catch (Exception ex)
         {
@@ -2166,7 +2281,7 @@ public partial class BusinessService : IBusinessService
             var business = await _context.Businesses
                 .Include(b => b.LoyaltyPrograms)
                 .AsNoTracking()
-                .FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+                .FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
 
             if (business == null)
                 return ApiResponse<BusinessAnalyticsResponse>.Fail("NOT_FOUND", "No business found for this account.");
@@ -2255,8 +2370,9 @@ public partial class BusinessService : IBusinessService
                 })
                 .ToListAsync();
 
+            var analyticsStaffIds = await GetStaffUserIdsAsync(businessId);
             var staffUsers = await _context.Users
-                .Where(u => u.StaffBusinessId == businessId || u.Id == ownerId)
+                .Where(u => analyticsStaffIds.Contains(u.Id) || u.Id == ownerId)
                 .Select(u => new { u.Id, u.FullName })
                 .AsNoTracking()
                 .ToDictionaryAsync(u => u.Id, u => u.FullName);
@@ -2441,7 +2557,7 @@ public partial class BusinessService : IBusinessService
 
     public async Task<ApiResponse<List<InsightResponse>>> GetBusinessInsightsAsync(Guid ownerId, bool includeDismissed = false)
     {
-        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<List<InsightResponse>>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -2468,7 +2584,7 @@ public partial class BusinessService : IBusinessService
 
     public async Task<ApiResponse<MessageResponse>> DismissBusinessInsightAsync(Guid ownerId, Guid actorUserId, Guid insightId)
     {
-        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<MessageResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -2481,7 +2597,7 @@ public partial class BusinessService : IBusinessService
 
     public async Task<ApiResponse<List<CustomerSegmentResponse>>> GetBusinessCustomerSegmentsAsync(Guid ownerId, string? segment = null)
     {
-        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<List<CustomerSegmentResponse>>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -2508,7 +2624,7 @@ public partial class BusinessService : IBusinessService
 
     public async Task<ApiResponse<NotificationAnalyticsResponse>> GetNotificationAnalyticsAsync(Guid ownerId, int days = 30)
     {
-        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<NotificationAnalyticsResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -2536,7 +2652,7 @@ public partial class BusinessService : IBusinessService
 
     public async Task<ApiResponse<List<StaffUtilizationResponse>>> GetStaffUtilizationAsync(Guid ownerId, DateOnly? from = null, DateOnly? to = null)
     {
-        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<List<StaffUtilizationResponse>>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -2589,12 +2705,11 @@ public partial class BusinessService : IBusinessService
 
     public async Task<ApiResponse<List<StaffShiftResponse>>> GetStaffShiftsAsync(Guid ownerId, Guid staffUserId, DateOnly? from = null, DateOnly? to = null)
     {
-        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<List<StaffShiftResponse>>.Fail("NOT_FOUND", "No business found for this account.");
 
-        var staff = await _context.Users.FirstOrDefaultAsync(u => u.Id == staffUserId && u.StaffBusinessId == business.Id);
-        if (staff == null)
+        if (!await IsStaffOfBusinessAsync(staffUserId, business.Id))
             return ApiResponse<List<StaffShiftResponse>>.Fail("NOT_FOUND", "Staff member not found in your business.");
 
         var fromDate = from ?? DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(-30));
@@ -2618,12 +2733,11 @@ public partial class BusinessService : IBusinessService
 
     public async Task<ApiResponse<MessageResponse>> UpsertStaffShiftAsync(Guid ownerId, Guid staffUserId, UpsertStaffShiftRequest request)
     {
-        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<MessageResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
-        var staff = await _context.Users.FirstOrDefaultAsync(u => u.Id == staffUserId && u.StaffBusinessId == business.Id);
-        if (staff == null)
+        if (!await IsStaffOfBusinessAsync(staffUserId, business.Id))
             return ApiResponse<MessageResponse>.Fail("NOT_FOUND", "Staff member not found in your business.");
 
         if (request.StartHour < 0 || request.StartHour > 23 || request.EndHour < 0 || request.EndHour > 23)
@@ -2662,22 +2776,9 @@ public partial class BusinessService : IBusinessService
 
     public async Task<bool> CanAccessBusinessAsync(Guid userId, Guid businessId)
     {
-        var user = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
-        if (user == null) return false;
-
-        // Business owner → own business
-        if (user.Role == UserRole.Business)
-        {
-            return await _context.Businesses.AnyAsync(b => b.Id == businessId && b.OwnerId == userId);
-        }
-
-        // Staff → linked to the business
-        if (user.Role == UserRole.Staff)
-        {
-            return user.StaffBusinessId == businessId;
-        }
-
-        return false;
+        // One membership lookup: Owner/Staff/Customer membership of THIS business
+        // is the only thing that grants access to it.
+        return await _memberships.IsActiveMemberAsync(userId, businessId);
     }
 /// <summary>
     /// Period-over-period comparison scoped strictly to the authenticated owner's business.
@@ -2691,7 +2792,7 @@ public partial class BusinessService : IBusinessService
         {
             var business = await _context.Businesses
                 .AsNoTracking()
-                .FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+                .FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
             if (business == null)
                 return ApiResponse<BusinessAnalyticsComparisonResponse>.Fail("NOT_FOUND", "No business found for this account.");
 

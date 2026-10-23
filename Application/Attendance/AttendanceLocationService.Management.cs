@@ -201,8 +201,14 @@ public partial class AttendanceLocationService
         var dayStartUtc = TimeZoneInfo.ConvertTimeToUtc(day.ToDateTime(TimeOnly.MinValue), tz);
         var dayEndUtc = dayStartUtc.AddDays(1);
 
+        var staffMembershipIds = await _context.BusinessMemberships.AsNoTracking()
+            .Where(m => m.BusinessId == businessId.Value &&
+                        m.Role == BusinessMembershipRole.Staff &&
+                        m.Status == BusinessMembershipStatus.Active)
+            .Select(m => m.UserId).ToListAsync();
+
         var staff = await _context.Users.AsNoTracking()
-            .Where(u => u.StaffBusinessId == businessId.Value && !u.IsDeleted)
+            .Where(u => staffMembershipIds.Contains(u.Id) && !u.IsDeleted)
             .Select(u => new { u.Id, u.FullName, u.AvatarUrl }).ToListAsync();
 
         var staffIds = staff.Select(s => s.Id).ToList();
@@ -289,7 +295,7 @@ public partial class AttendanceLocationService
 
     /// <summary>
     /// Per-staff drill-down history (plan §13.3). Staff id is business-scoped
-    /// (WHERE StaffBusinessId == scoped business) so a foreign id answers
+    /// (an ACTIVE Staff membership of the scoped business) so a foreign id answers
     /// STAFF_NOT_FOUND — never an enumeration leak.
     /// </summary>
     public async Task<ApiResponse<PaginatedResponse<AttendanceHistoryItem>>> GetStaffHistoryAsync(
@@ -300,7 +306,12 @@ public partial class AttendanceLocationService
             return ApiResponse<PaginatedResponse<AttendanceHistoryItem>>.Fail("NOT_FOUND", "Business not found.");
 
         var linked = await _context.Users.AsNoTracking()
-            .AnyAsync(u => u.Id == staffUserId && u.StaffBusinessId == businessId.Value && !u.IsDeleted);
+            .AnyAsync(u => u.Id == staffUserId && !u.IsDeleted) &&
+            await _context.BusinessMemberships.AsNoTracking()
+            .AnyAsync(m => m.UserId == staffUserId &&
+                           m.BusinessId == businessId.Value &&
+                           m.Role == BusinessMembershipRole.Staff &&
+                           m.Status == BusinessMembershipStatus.Active);
         if (!linked)
             return ApiResponse<PaginatedResponse<AttendanceHistoryItem>>.Fail(
                 "STAFF_NOT_FOUND", "Staff member not found.");
@@ -407,8 +418,12 @@ public partial class AttendanceLocationService
         if (query.StaffUserId.HasValue)
         {
             var linked = await _context.Users.AsNoTracking()
-                .AnyAsync(u => u.Id == query.StaffUserId.Value
-                               && u.StaffBusinessId == businessId.Value && !u.IsDeleted);
+                .AnyAsync(u => u.Id == query.StaffUserId.Value && !u.IsDeleted) &&
+                await _context.BusinessMemberships.AsNoTracking()
+                .AnyAsync(m => m.UserId == query.StaffUserId.Value &&
+                               m.BusinessId == businessId.Value &&
+                               m.Role == BusinessMembershipRole.Staff &&
+                               m.Status == BusinessMembershipStatus.Active);
             if (!linked)
                 return ApiResponse<PaginatedResponse<BusinessAttendanceRecord>>.Fail(
                     "STAFF_NOT_FOUND", "Staff member not found.");

@@ -1156,6 +1156,80 @@ namespace PunchedApi.Migrations
                         });
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessMembership", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime?>("EndedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ended_at");
+
+                    b.Property<Guid?>("InvitedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("invited_by_user_id");
+
+                    b.Property<DateTime>("JoinedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("joined_at");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("role");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_business_memberships_single_owner")
+                        .HasFilter("role = 'Owner' AND status = 'Active'");
+
+                    b.HasIndex("InvitedByUserId");
+
+                    b.HasIndex("UserId", "BusinessId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_business_memberships_user_business");
+
+                    b.HasIndex("BusinessId", "Role", "Status")
+                        .HasDatabaseName("ix_business_memberships_business_role_status");
+
+                    b.HasIndex("UserId", "Status", "Role")
+                        .HasDatabaseName("ix_business_memberships_user_status_role");
+
+                    b.ToTable("business_memberships", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_business_memberships_role", "role IN ('Owner', 'Staff', 'Customer')");
+
+                            t.HasCheckConstraint("ck_business_memberships_status", "status IN ('Active', 'Invited', 'Suspended', 'Left')");
+                        });
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessMessagingProfile", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4530,6 +4604,7 @@ namespace PunchedApi.Migrations
                         .HasColumnName("revoked_at");
 
                     b.Property<int>("Status")
+                        .IsConcurrencyToken()
                         .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
                         .HasDefaultValue(0)
@@ -5253,9 +5328,6 @@ namespace PunchedApi.Migrations
                         .HasColumnType("character varying(30)")
                         .HasColumnName("source_provider");
 
-                    b.Property<Guid?>("StaffBusinessId")
-                        .HasColumnType("uuid");
-
                     b.HasKey("Id");
 
                     b.HasIndex("AvatarMediaId");
@@ -5264,8 +5336,6 @@ namespace PunchedApi.Migrations
                         .IsUnique();
 
                     b.HasIndex("IsDeleted");
-
-                    b.HasIndex("StaffBusinessId");
 
                     b.HasIndex("FullName", "Email");
 
@@ -5601,6 +5671,30 @@ namespace PunchedApi.Migrations
                     b.Navigation("Business");
 
                     b.Navigation("Media");
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessMembership", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
+                        .WithMany("Memberships")
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("InvitedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("PunchedApi.Domain.Entities.User", "User")
+                        .WithMany("BusinessMemberships")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Business");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessMessagingProfile", b =>
@@ -6536,6 +6630,8 @@ namespace PunchedApi.Migrations
 
                     b.Navigation("LoyaltyPrograms");
 
+                    b.Navigation("Memberships");
+
                     b.Navigation("Redemptions");
 
                     b.Navigation("ReferralProgram");
@@ -6612,6 +6708,8 @@ namespace PunchedApi.Migrations
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.User", b =>
                 {
+                    b.Navigation("BusinessMemberships");
+
                     b.Navigation("LoyaltyCards");
 
                     b.Navigation("Redemptions");

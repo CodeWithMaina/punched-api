@@ -38,7 +38,7 @@ public class StampCardService : IStampCardService
     // ── Helpers ─────────────────────────────────────────────
 
     private async Task<Business?> ResolveBusinessAsync(Guid ownerId) =>
-        await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
 
     private static StampCardResponse MapCard(StampCard card, int enrolledCustomers = 0) => new()
     {

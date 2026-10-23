@@ -45,9 +45,14 @@ public partial class AttendanceLocationService
 
         // Staff must belong to THIS business → a foreign id is NOT_FOUND-shaped.
         var staff = await _context.Users.AsNoTracking()
-            .FirstOrDefaultAsync(u => u.Id == staffUserId
-                                      && u.StaffBusinessId == businessId
-                                      && !u.IsDeleted);
+            .FirstOrDefaultAsync(u => u.Id == staffUserId && !u.IsDeleted);
+        if (staff != null &&
+            !await _context.BusinessMemberships.AsNoTracking().AnyAsync(m =>
+                m.UserId == staffUserId &&
+                m.BusinessId == businessId &&
+                m.Role == BusinessMembershipRole.Staff &&
+                m.Status == BusinessMembershipStatus.Active))
+            staff = null;
         if (staff == null)
             return ApiResponse<OwnerAttendanceClockResponse>.Fail(
                 "STAFF_NOT_FOUND", "Staff member not found.");

@@ -130,30 +130,70 @@ internal static class BookingTestBase
         Auth = CreateAuth(email)
     };
 
-    public static User CreateStaff(Guid businessId, string email = "staff@test.com") => new()
+    /// <summary>A staff persona with no tenant relationship (canonical "unlinked staff").</summary>
+    public static User CreateStaffWithoutMembership(string email = "unlinked@test.com") => new()
     {
         Id = Guid.NewGuid(),
         Email = email,
         FullName = "Test Staff",
         Role = UserRole.Staff,
-        StaffBusinessId = businessId,
         CreatedAt = DateTime.UtcNow,
         Auth = CreateAuth(email)
     };
 
-    public static Business CreateBusiness(Guid ownerId, string name = "Test Business") => new()
+    /// <summary>Builds a canonical membership row (the only source of tenant authorization).</summary>
+    public static BusinessMembership CreateMembership(
+        Guid userId,
+        Guid businessId,
+        BusinessMembershipRole role,
+        BusinessMembershipStatus status = BusinessMembershipStatus.Active,
+        Guid? invitedByUserId = null) => new()
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            BusinessId = businessId,
+            Role = role,
+            Status = status,
+            InvitedByUserId = invitedByUserId,
+            JoinedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow,
+        };
+
+    /// <summary>
+    /// A staff user linked to <paramref name="businessId"/> through the canonical
+    /// membership. Seeding the returned user also seeds that membership (EF
+    /// cascades the child collection), so tests never have to wire it by hand.
+    /// </summary>
+    public static User CreateStaff(Guid businessId, string email = "staff@test.com")
     {
-        Id = Guid.NewGuid(),
-        Name = name,
-        Category = "salon",
-        Location = "Nairobi",
-        MpesaNumber = "123456",
-        OwnerId = ownerId,
-        // Tests are authored in UTC slot semantics (see the availability tests);
-        // UTC is a valid IANA zone so the engine treats shift hours as UTC.
-        TimeZoneId = "UTC",
-        CreatedAt = DateTime.UtcNow
-    };
+        var user = CreateStaffWithoutMembership(email);
+        user.BusinessMemberships.Add(
+            CreateMembership(user.Id, businessId, BusinessMembershipRole.Staff));
+        return user;
+    }
+
+    public static Business CreateBusiness(Guid ownerId, string name = "Test Business")
+    {
+        var business = new Business
+        {
+            Id = Guid.NewGuid(),
+            Name = name,
+            Category = "salon",
+            Location = "Nairobi",
+            MpesaNumber = "123456",
+            OwnerId = ownerId,
+            // Tests are authored in UTC slot semantics (see the availability tests);
+            // UTC is a valid IANA zone so the engine treats shift hours as UTC.
+            TimeZoneId = "UTC",
+            CreatedAt = DateTime.UtcNow
+        };
+
+        // OwnerId is denormalized only; the Owner membership is what authorizes.
+        business.Memberships.Add(
+            CreateMembership(ownerId, business.Id, BusinessMembershipRole.Owner));
+        return business;
+    }
 
     public static ServiceCatalogItem CreateService(Guid businessId, string name, int durationMinutes, decimal price) => new()
     {

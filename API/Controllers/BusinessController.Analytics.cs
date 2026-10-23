@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.OutputCaching;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Modules;
@@ -22,7 +23,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("analytics")]
     [HttpGet("me/dashboard")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [OutputCache(PolicyName = "dashboard")]
     [ProducesResponseType(typeof(ApiResponse<BusinessDashboardResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetDashboard()
@@ -40,7 +41,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("analytics")]
     [HttpGet("me/analytics")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [OutputCache(PolicyName = "analytics")]
     [ProducesResponseType(typeof(ApiResponse<BusinessAnalyticsResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetAnalytics([FromQuery] string period = "30d")
@@ -60,7 +61,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("analytics")]
     [HttpGet("me/analytics/compare")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [OutputCache(PolicyName = "analytics")]
     [ProducesResponseType(typeof(ApiResponse<BusinessAnalyticsComparisonResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -81,7 +82,7 @@ public partial class BusinessController
     [RequireModule("analytics")]
 
     [HttpGet("me/insights")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<List<InsightResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetBusinessInsights([FromQuery] bool includeDismissed = false)
     {
@@ -95,7 +96,7 @@ public partial class BusinessController
     [RequireModule("analytics")]
 
     [HttpPost("me/insights/{insightId:guid}/dismiss")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> DismissBusinessInsight(Guid insightId)
     {
@@ -109,7 +110,7 @@ public partial class BusinessController
     [RequireModule("analytics")]
 
     [HttpGet("me/segments")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<List<CustomerSegmentResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetCustomerSegments([FromQuery] string? segment = null)
     {
@@ -123,7 +124,7 @@ public partial class BusinessController
     [RequireModule("analytics")]
 
     [HttpGet("me/notifications/analytics")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<NotificationAnalyticsResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetNotificationAnalytics([FromQuery] int days = 30)
     {

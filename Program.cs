@@ -133,6 +133,8 @@ try
     builder.Services.AddAuthorization(options =>
     {
         DenyByDefaultAuthorization.Configure(options);
+        // Tenant policies (BusinessOwner / BusinessStaff / …): membership-based.
+        MembershipPolicies.Configure(options);
     });
 
     // ── Repositories & Unit of Work ─────────────────────────
@@ -338,6 +340,14 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     builder.Services.AddSingleton<ITenantUrlBuilder, TenantUrlBuilder>();
     builder.Services.AddSingleton<ISessionCookieService, SessionCookieService>();
     builder.Services.AddScoped<IBusinessMembershipResolver, BusinessMembershipResolver>();
+    // The single writer of business_memberships. Shares the request's
+    // DbContext so membership rows commit inside the caller's transaction
+    // (business provisioning, invitation acceptance, customer enrollment).
+    builder.Services.AddScoped<IBusinessMembershipService, BusinessMembershipService>();
+    // Tenant authorization: every [Authorize(Policy = MembershipPolicies.*)]
+    // resolves an ACTIVE membership from business_memberships, never a persona.
+    builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHandler,
+        BusinessMembershipAuthorizationHandler>();
     // Active tenant for the request: written once by TenantConsistencyMiddleware
     // (slug → business id from the page host), read by tenant-scoped services.
     // Scoped so the context can never leak across requests or users.

@@ -23,12 +23,22 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
     /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
     private readonly ITenantContext? _tenant;
 
+    /// <summary>Canonical membership writer — enrolling is also a Customer membership grant.</summary>
+    private readonly IBusinessMembershipService _memberships;
+
     public CustomerEnrollmentService(
         IUnitOfWork u,
         ApplicationDbContext c,
         ILogger<CustomerEnrollmentService> l,
-        ITenantContext? tenant = null)
-    { _unitOfWork = u; _context = c; _logger = l; _tenant = tenant; }
+        ITenantContext? tenant = null,
+        IBusinessMembershipService? memberships = null)
+    {
+        _unitOfWork = u;
+        _context = c;
+        _logger = l;
+        _tenant = tenant;
+        _memberships = memberships ?? new BusinessMembershipService(u);
+    }
 
     /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
     private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
@@ -74,8 +84,15 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
                     existing.UpdatedAt = DateTime.UtcNow;
                     existing.Source = src;
                     _unitOfWork.CustomerBusinessEnrollments.Update(existing);
-                    await _unitOfWork.SaveChangesAsync();
                 }
+
+                // Heal a legacy enrollment that predates the membership table:
+                // the Customer membership is the authoritative grant, the
+                // enrollment row is loyalty detail.
+                await _memberships.EnsureAsync(
+                    customerId, businessId, BusinessMembershipRole.Customer);
+
+                await _unitOfWork.SaveChangesAsync();
                 return ApiResponse<CustomerBusinessDto>.Ok(MapEnrollment(existing, business));
             }
             var enrollment = new CustomerBusinessEnrollment
@@ -85,6 +102,11 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
                 EnrolledAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
             };
             await _unitOfWork.CustomerBusinessEnrollments.AddAsync(enrollment);
+
+            // One commit: enrollment + membership + stamp-card rows never diverge.
+            await _memberships.EnsureAsync(
+                customerId, businessId, BusinessMembershipRole.Customer);
+
             await _unitOfWork.SaveChangesAsync();
             return ApiResponse<CustomerBusinessDto>.Ok(MapEnrollment(enrollment, business));
         }
@@ -106,12 +128,25 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
     {
         var existing = await _unitOfWork.CustomerBusinessEnrollments
             .FirstOrDefaultAsync(e => e.CustomerId == customerId && e.BusinessId == businessId);
-        if (existing == null || existing.Status == CustomerBusinessEnrollmentStatus.Left)
-            return ApiResponse<bool>.Ok(true);
-        existing.Status = CustomerBusinessEnrollmentStatus.Left;
-        existing.LeftAt = DateTime.UtcNow;
-        existing.UpdatedAt = DateTime.UtcNow;
-        _unitOfWork.CustomerBusinessEnrollments.Update(existing);
+        if (existing != null && existing.Status != CustomerBusinessEnrollmentStatus.Left)
+        {
+            existing.Status = CustomerBusinessEnrollmentStatus.Left;
+            existing.LeftAt = DateTime.UtcNow;
+            existing.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.CustomerBusinessEnrollments.Update(existing);
+        }
+
+        // Leaving the loyalty program ends the Customer membership (the tenant
+        // grant) in the SAME commit — the two can never disagree. An Owner or
+        // Staff membership is never downgraded by a loyalty opt-out.
+        var membership = await _memberships.FindAsync(customerId, businessId);
+        if (membership is { Role: BusinessMembershipRole.Customer,
+                            Status: BusinessMembershipStatus.Active })
+        {
+            await _memberships.EndAsync(
+                customerId, businessId, BusinessMembershipStatus.Left);
+        }
+
         await _unitOfWork.SaveChangesAsync();
         return ApiResponse<bool>.Ok(true);
     }

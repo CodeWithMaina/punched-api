@@ -85,7 +85,7 @@ public class SubscriptionController : ControllerBase
     /// subscription and cancels the previous one. Requires Admin.
     /// </summary>
     [HttpPut("v1/admin/businesses/{businessId:guid}/subscription")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Policy = MembershipPolicies.PlatformAdmin)]
     [ProducesResponseType(typeof(ApiResponse<UpgradePlanResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -132,7 +132,7 @@ public class SubscriptionController : ControllerBase
 
     /// <summary>Cancels the business's active subscription. Requires Admin.</summary>
     [HttpDelete("v1/admin/businesses/{businessId:guid}/subscription")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Policy = MembershipPolicies.PlatformAdmin)]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> AdminCancelSubscription(Guid businessId)

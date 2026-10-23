@@ -56,15 +56,22 @@ public class AuthenticatedUserVerifier : IAttendanceVerifier
             return AttendanceVerificationOutcome.Fail(
                 "FORBIDDEN", "You do not have permission to record attendance.", summary);
 
-        // For staff, the linked business must exist AND match the server-resolved
-        // scope. Null StaffBusinessId ⇒ NOT_LINKED (§9.6 / V9).
+        // For staff, the server-resolved scope must be a business they are an
+        // ACTIVE member of. No active membership ⇒ NOT_LINKED (§9.6 / V9).
         if (actor.Role == UserRole.Staff)
         {
-            if (actor.StaffBusinessId == null)
+            var staffBusinessId = await _context.BusinessMemberships.AsNoTracking()
+                .Where(m => m.UserId == actor.Id &&
+                            m.Role == BusinessMembershipRole.Staff &&
+                            m.Status == BusinessMembershipStatus.Active)
+                .Select(m => (Guid?)m.BusinessId)
+                .FirstOrDefaultAsync();
+
+            if (staffBusinessId == null)
                 return AttendanceVerificationOutcome.Fail(
                     "NOT_LINKED", "Staff user is not linked to a business.", summary);
 
-            if (actor.StaffBusinessId != context.BusinessId)
+            if (staffBusinessId != context.BusinessId)
                 return AttendanceVerificationOutcome.Fail(
                     "FORBIDDEN_SCOPE", "You are not authorized for this business.", summary);
         }

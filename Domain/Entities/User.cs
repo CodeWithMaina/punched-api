@@ -68,12 +68,6 @@ public class User : BaseEntity
     public string? SourceCampaign { get; set; }
 
     /// <summary>
-    /// For Staff users: the Business they are linked to.
-    /// Null for Customer and Business roles.
-    /// </summary>
-    public Guid? StaffBusinessId { get; set; }
-
-    /// <summary>
     /// Optional personal daily stamp goal that overrides the business default.
     /// Only meaningful for Staff users; null means fall back to business default.
     /// </summary>
@@ -113,4 +107,11 @@ public class User : BaseEntity
     /// Reward actions performed by this user.
     /// </summary>
     public virtual ICollection<Redemption> Redemptions { get; set; } = new List<Redemption>();
+
+    /// <summary>
+    /// Businesses this identity belongs to (Owner/Staff/Customer). This is the
+    /// single source of tenant authorization — the role lives on the membership,
+    /// not on the identity.
+    /// </summary>
+    public virtual ICollection<BusinessMembership> BusinessMemberships { get; set; } = new List<BusinessMembership>();
 }

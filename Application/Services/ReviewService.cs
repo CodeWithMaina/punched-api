@@ -112,9 +112,11 @@ public sealed class ReviewService : IReviewService
         // Resolve the staff member's own business server-side — never trusted
         // from the client. A staff member with no linked business gets an empty
         // page so the dashboard renders its empty state rather than an error.
-        var businessId = await _context.Users.AsNoTracking()
-            .Where(u => u.Id == staffUserId && !u.IsDeleted)
-            .Select(u => u.StaffBusinessId)
+        var businessId = await _context.BusinessMemberships.AsNoTracking()
+            .Where(m => m.UserId == staffUserId &&
+                        m.Role == BusinessMembershipRole.Staff &&
+                        m.Status == BusinessMembershipStatus.Active)
+            .Select(m => (Guid?)m.BusinessId)
             .FirstOrDefaultAsync();
 
         if (businessId == null)

@@ -277,22 +277,14 @@ public sealed class TenantConsistencyMiddleware
     }
 
     /// <summary>
-    /// Global role → required membership kind. Unknown/absent role: any
-    /// active membership (never a grant — the user must still belong here).
+    /// Tenant boundary: the caller must hold an <b>active membership</b> of any
+    /// kind in the host business. The kind is deliberately not checked here —
+    /// what a member may *do* is decided by the endpoint's authorization
+    /// policy (<c>BusinessOwner</c> / <c>BusinessStaff</c>), so a Customer token
+    /// can no longer reach an owner endpoint just by being a member.
     /// </summary>
-    private static bool SatisfiesRoleMembership(string? role, BusinessMembership membership)
-    {
-        if (!membership.IsActive)
-            return false;
-
-        return role switch
-        {
-            "Business" => membership.Kind == BusinessMembershipKind.Owner,
-            "Staff" => membership.Kind == BusinessMembershipKind.Staff,
-            "Customer" => membership.Kind == BusinessMembershipKind.Customer,
-            _ => true
-        };
-    }
+    private static bool SatisfiesRoleMembership(string? role, TenantMembership membership)
+        => membership.IsActive;
 
     private static string? GetRole(ClaimsPrincipal user) =>
         user.FindFirst(ClaimTypes.Role)?.Value ?? user.FindFirst("role")?.Value;

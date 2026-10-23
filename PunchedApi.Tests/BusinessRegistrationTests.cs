@@ -1,9 +1,6 @@
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 using Moq;
 using PunchedApi.Application.DTOs;
-using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Services;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
@@ -13,160 +10,216 @@ using PunchedApi.Infrastructure.Repositories;
 namespace PunchedApi.Tests;
 
 /// <summary>
-/// Tests for atomic business-owner onboarding (AuthService.RegisterBusinessAsync).
-/// Verifies that registering a business creates the UserAuth + Business-role User + Business
-/// together, never lets a public signup mint a Business/Staff role, and blocks duplicates.
+/// Canonical business provisioning (POST /v1/businesses).
+///
+/// The invariants pinned here are the whole point of the membership refactor:
+///   • the business row, its Owner membership and the OwnerId pointer commit
+///     together (one unit of work);
+///   • ownership is decided by an ACTIVE Owner membership — never by a global
+///     persona, never by a client flag;
+///   • a repeat call is refused and writes nothing (idempotent replay);
+///   • an existing Customer membership is UPGRADED in place, not duplicated;
+///   • platform administrators never become tenants.
 /// </summary>
 public class BusinessRegistrationTests
 {
-    private static ApplicationDbContext CreateContext(string name)
-    {
-        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+    private static ApplicationDbContext CreateContext(string name) =>
+        new(new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(name)
-            .Options;
-        return new ApplicationDbContext(options);
-    }
+            .Options);
 
-    private static JwtTokenService CreateJwtService()
-        => new(Options.Create(new JwtSettings
-        {
-            Secret = "this-is-a-test-secret-that-is-at-least-32-characters-long",
-            Issuer = "PunchedApi-Test",
-            Audience = "PunchedApi-Tests",
-            AccessTokenExpiryMinutes = 60,
-            RefreshTokenExpiryDays = 30
-        }));
-
-    private static IMapper CreateMapper()
-        => new MapperConfiguration(cfg => cfg.AddProfile<MappingProfile>()).CreateMapper();
-
-    private static AuthService CreateAuthService(
-        ApplicationDbContext context,
-        Mock<IEmailService>? emailMock = null)
-    {
-        emailMock ??= new Mock<IEmailService>();
-        emailMock.Setup(e => e.SendVerificationCodeAsync(It.IsAny<string>(), It.IsAny<string>()))
-            .ReturnsAsync(true);
-
-        return new AuthService(
+    private static BusinessService CreateBusinessService(ApplicationDbContext context) =>
+        new(
             new UnitOfWork(context),
-            CreateJwtService(),
-            emailMock.Object,
-            CreateMapper(),
-            TestHelpers.CreateLogger<AuthService>(),
-            new SubscriptionProvisioningService(context, TestHelpers.CreateLogger<SubscriptionProvisioningService>()),
+            context,
+            new Mock<IInsightService>().Object,
+            new Mock<IBusinessScopeResolver>().Object,
+            new Mock<ISubscriptionProvisioningService>().Object,
+            new Mock<IModuleEntitlementService>().Object,
             new BusinessSlugGenerator(context),
-            // Tenant-aware auth: real membership view over Owner/Staff/Enrollment;
-            // host resolution is never exercised without a businessSlug here.
             new BusinessMembershipResolver(context),
-            new Mock<ITenantHostResolver>().Object);
+            TestHelpers.CreateLogger<BusinessService>());
+
+    private static User AddUser(
+        ApplicationDbContext context,
+        string email,
+        UserRole role = UserRole.Customer)
+    {
+        var user = new User
+        {
+            Id = Guid.NewGuid(),
+            Email = email,
+            FullName = "Jane Chege",
+            Role = role,
+            CreatedAt = DateTime.UtcNow
+        };
+        context.Users.Add(user);
+        context.SaveChanges();
+        return user;
     }
 
-    private static RegisterBusinessRequest ValidRequest() => new()
+    private static CreateBusinessRequest ValidRequest() => new()
     {
-        FullName = "Jane Chege",
-        Email = "owner@example.com",
-        Password = "P@ssw0rd!12",
-        PhoneNumber = "+254700000000",
-        BusinessName = "Chege's Java Hut",
-        BusinessCategory = "Cafe",
-        BusinessLocation = "Nairobi",
-        BusinessPhone = "+254700000001",
-        BusinessEmail = "cafe@example.com",
-        BusinessMpesaNumber = "123456",
-        BusinessDescription = "Specialty coffee and pastries."
+        Name = "Chege's Java Hut",
+        Category = "Cafe",
+        Location = "Nairobi",
+        PhoneNumber = "+254700000001",
+        Email = "cafe@example.com",
+        MpesaNumber = "123456",
+        Description = "Specialty coffee and pastries."
     };
-    [Fact]
-    public async Task RegisterBusiness_CreatesOwnerAuthUserAndBusiness_Atomically()
-    {
-        using var context = CreateContext("BizReg_Create_01");
-        var service = CreateAuthService(context);
 
-        var result = await service.RegisterBusinessAsync(ValidRequest());
+    [Fact]
+    public async Task CreateBusiness_WritesBusinessOwnerMembershipAndPointer_Atomically()
+    {
+        using var context = CreateContext("BizProv_Create_01");
+        var owner = AddUser(context, "owner@example.com");
+        var service = CreateBusinessService(context);
+
+        var result = await service.CreateBusinessAsync(owner.Id, ValidRequest());
 
         Assert.True(result.Success, result.Error?.Message);
-        Assert.NotNull(result.Data);
-        Assert.NotNull(result.Data.Business);
-        Assert.Equal("Chege's Java Hut", result.Data.Business.Name);
 
-        var userAuth = await context.UserAuths.FirstOrDefaultAsync(a => a.Email == "owner@example.com");
-        Assert.NotNull(userAuth);
-        Assert.False(userAuth.IsVerified); // verification code was issued, not auto-verified
-
-        var user = await context.Users.FirstOrDefaultAsync(u => u.Email == "owner@example.com");
-        Assert.NotNull(user);
-        Assert.Equal(UserRole.Business, user.Role);
-
-        var business = await context.Businesses.FirstOrDefaultAsync(b => b.Name == "Chege's Java Hut");
-        Assert.NotNull(business);
-        Assert.Equal(user!.Id, business.OwnerId);
+        var business = await context.Businesses.SingleAsync(b => b.Name == "Chege's Java Hut");
+        Assert.Equal(owner.Id, business.OwnerId);
         Assert.Equal("cafe@example.com", business.Email);
         Assert.Equal("123456", business.MpesaNumber);
+        Assert.False(string.IsNullOrWhiteSpace(business.Slug));
+
+        var membership = await context.BusinessMemberships.SingleAsync(m => m.BusinessId == business.Id);
+        Assert.Equal(owner.Id, membership.UserId);
+        Assert.Equal(BusinessMembershipRole.Owner, membership.Role);
+        Assert.Equal(BusinessMembershipStatus.Active, membership.Status);
+
+        // The persona is a routing hint only, but it is kept in step for the UI.
+        Assert.Equal(UserRole.Business, (await context.Users.SingleAsync(u => u.Id == owner.Id)).Role);
     }
 
     [Fact]
-    public async Task RegisterBusiness_DuplicateEmail_ReturnsEmailAlreadyRegistered_AndCreatesNothing()
+    public async Task CreateBusiness_Replay_IsRefused_AndCreatesNothing()
     {
-        using var context = CreateContext("BizReg_DupEmail_01");
-        await context.UserAuths.AddAsync(new UserAuth
-        {
-            Id = Guid.NewGuid(), Email = "owner@example.com", PasswordHash = "hash", IsVerified = true, CreatedAt = DateTime.UtcNow
-        });
-        await context.SaveChangesAsync();
-        var service = CreateAuthService(context);
+        using var context = CreateContext("BizProv_Replay_01");
+        var owner = AddUser(context, "owner@example.com");
+        var service = CreateBusinessService(context);
 
-        var result = await service.RegisterBusinessAsync(ValidRequest());
+        Assert.True((await service.CreateBusinessAsync(owner.Id, ValidRequest())).Success);
+        var replay = await service.CreateBusinessAsync(owner.Id, ValidRequest());
+
+        Assert.False(replay.Success);
+        Assert.Equal("BUSINESS_EXISTS", replay.Error?.Code);
+        Assert.Equal(1, await context.Businesses.CountAsync());
+        Assert.Equal(1, await context.BusinessMemberships.CountAsync());
+    }
+
+    [Fact]
+    public async Task CreateBusiness_Admin_IsRefused_AndWritesNothing()
+    {
+        using var context = CreateContext("BizProv_Admin_01");
+        var admin = AddUser(context, "admin@example.com", UserRole.Admin);
+        var service = CreateBusinessService(context);
+
+        var result = await service.CreateBusinessAsync(admin.Id, ValidRequest());
 
         Assert.False(result.Success);
-        Assert.Equal("EMAIL_ALREADY_REGISTERED", result.Error?.Code);
+        Assert.Equal("ROLE_NOT_ELIGIBLE", result.Error?.Code);
         Assert.Empty(context.Businesses);
-        Assert.Single(context.UserAuths); // no second account created
+        Assert.Empty(context.BusinessMemberships);
     }
 
     [Fact]
-    public async Task RegisterBusiness_DuplicateBusinessName_ReturnsNameTaken()
+    public async Task CreateBusiness_UpgradesAnExistingCustomerMembership_InPlace()
     {
-        using var context = CreateContext("BizReg_DupName_01");
-        await context.Businesses.AddAsync(new Business
+        using var context = CreateContext("BizProv_Upgrade_01");
+        var user = AddUser(context, "shopper@example.com");
+        var business = new Business
         {
-            Id = Guid.NewGuid(), Name = "Chege's Java Hut", Category = "Cafe", Location = "Nairobi",
-            MpesaNumber = "999999", OwnerId = Guid.NewGuid(), CreatedAt = DateTime.UtcNow
+            Id = Guid.NewGuid(),
+            Name = "Corner Shop",
+            Category = "Retail",
+            Location = "Nairobi",
+            MpesaNumber = "999",
+            CreatedAt = DateTime.UtcNow
+        };
+        context.Businesses.Add(business);
+        context.BusinessMemberships.Add(new BusinessMembership
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            BusinessId = business.Id,
+            Role = BusinessMembershipRole.Customer,
+            Status = BusinessMembershipStatus.Active,
+            JoinedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
         });
         await context.SaveChangesAsync();
-        var service = CreateAuthService(context);
 
-        var result = await service.RegisterBusinessAsync(ValidRequest());
+        var service = CreateBusinessService(context);
+        var result = await service.CreateBusinessAsync(user.Id, ValidRequest());
+
+        Assert.True(result.Success, result.Error?.Message);
+
+        var newBusiness = await context.Businesses.SingleAsync(b => b.Name == "Chege's Java Hut");
+        var newMembership = await context.BusinessMemberships
+            .SingleAsync(m => m.BusinessId == newBusiness.Id && m.UserId == user.Id);
+        Assert.Equal(BusinessMembershipRole.Owner, newMembership.Role);
+        Assert.Equal(BusinessMembershipStatus.Active, newMembership.Status);
+
+        // Shopping at the other business is untouched.
+        Assert.Equal(
+            BusinessMembershipRole.Customer,
+            (await context.BusinessMemberships.SingleAsync(m => m.BusinessId == business.Id)).Role);
+    }
+
+    [Fact]
+    public async Task CreateBusiness_StaffOfAnotherBusiness_MayAlsoOwn()
+    {
+        using var context = CreateContext("BizProv_MultiTenant_01");
+        var user = AddUser(context, "multi@example.com", UserRole.Staff);
+        var employer = new Business
+        {
+            Id = Guid.NewGuid(),
+            Name = "Employer Ltd",
+            Category = "Retail",
+            Location = "Nairobi",
+            MpesaNumber = "111",
+            CreatedAt = DateTime.UtcNow
+        };
+        context.Businesses.Add(employer);
+        context.BusinessMemberships.Add(new BusinessMembership
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            BusinessId = employer.Id,
+            Role = BusinessMembershipRole.Staff,
+            Status = BusinessMembershipStatus.Active,
+            JoinedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        });
+        await context.SaveChangesAsync();
+
+        var service = CreateBusinessService(context);
+        var result = await service.CreateBusinessAsync(user.Id, ValidRequest());
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(2, await context.BusinessMemberships.CountAsync(m => m.UserId == user.Id));
+    }
+
+    [Fact]
+    public async Task CreateBusiness_DeletedAccount_IsRefused()
+    {
+        using var context = CreateContext("BizProv_Deleted_01");
+        var user = AddUser(context, "gone@example.com");
+        user.IsDeleted = true;
+        await context.SaveChangesAsync();
+
+        var service = CreateBusinessService(context);
+        var result = await service.CreateBusinessAsync(user.Id, ValidRequest());
 
         Assert.False(result.Success);
-        Assert.Equal("BUSINESS_NAME_TAKEN", result.Error?.Code);
-        Assert.Empty(context.UserAuths); // registration aborted before creating the owner account
-    }
-
-    [Fact]
-    public async Task RegisterBusiness_ForcesBusinessRole_RegardlessOfRequest()
-    {
-        using var context = CreateContext("BizReg_RoleForce_01");
-        var service = CreateAuthService(context);
-
-        var result = await service.RegisterBusinessAsync(ValidRequest());
-
-        Assert.True(result.Success, result.Error?.Message);
-        var user = await context.Users.FirstAsync(u => u.Email == "owner@example.com");
-        Assert.Equal(UserRole.Business, user.Role);
-    }
-
-    [Fact]
-    public async Task RegisterBusiness_SendsVerificationCodeToOwner()
-    {
-        using var context = CreateContext("BizReg_Email_01");
-        var emailMock = new Mock<IEmailService>();
-        emailMock.Setup(e => e.SendVerificationCodeAsync(It.IsAny<string>(), It.IsAny<string>()))
-            .ReturnsAsync(true);
-        var service = CreateAuthService(context, emailMock);
-
-        var result = await service.RegisterBusinessAsync(ValidRequest());
-
-        Assert.True(result.Success, result.Error?.Message);
-        emailMock.Verify(e => e.SendVerificationCodeAsync("owner@example.com", It.IsAny<string>()), Times.Once());
+        // The global query filter hides soft-deleted identities entirely.
+        Assert.Equal("NOT_FOUND", result.Error?.Code);
+        Assert.Empty(context.Businesses);
     }
 }

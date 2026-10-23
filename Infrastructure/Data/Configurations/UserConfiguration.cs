@@ -63,7 +63,6 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         // Indexes
         builder.HasIndex(e => e.Email).IsUnique();
         builder.HasIndex(e => new { e.FullName, e.Email });
-        builder.HasIndex(e => e.StaffBusinessId);
         builder.HasIndex(e => e.IsDeleted);
         builder.HasIndex(e => e.AvatarMediaId);
 

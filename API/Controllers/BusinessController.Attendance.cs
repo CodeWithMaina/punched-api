@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Interfaces;
@@ -12,7 +13,7 @@ public partial class BusinessController
 {
     /// <summary>GET v1/businesses/me/attendance/settings — effective policy + readiness.</summary>
     [HttpGet("me/attendance/settings")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<AttendanceSettingsResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
@@ -26,7 +27,7 @@ public partial class BusinessController
 
     /// <summary>PUT v1/businesses/me/attendance/settings — pause/configure mode + verifications.</summary>
     [HttpPut("me/attendance/settings")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<AttendanceSettingsResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -41,7 +42,7 @@ public partial class BusinessController
 
     /// <summary>GET v1/businesses/me/attendance/locations — list with live-QR state.</summary>
     [HttpGet("me/attendance/locations")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<List<AttendanceLocationSummaryResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetAttendanceLocations([FromQuery] bool includeInactive = false)
@@ -54,7 +55,7 @@ public partial class BusinessController
 
     /// <summary>POST v1/businesses/me/attendance/locations — create (D8: unique name).</summary>
     [HttpPost("me/attendance/locations")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<AttendanceLocationDetailResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
@@ -68,7 +69,7 @@ public partial class BusinessController
 
     /// <summary>GET v1/businesses/me/attendance/locations/{id} — detail (never the token).</summary>
     [HttpGet("me/attendance/locations/{locationId:guid}")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<AttendanceLocationDetailResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -82,7 +83,7 @@ public partial class BusinessController
 
     /// <summary>PUT v1/businesses/me/attendance/locations/{id} — rename / deactivate.</summary>
     [HttpPut("me/attendance/locations/{locationId:guid}")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<AttendanceLocationDetailResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -97,7 +98,7 @@ public partial class BusinessController
 
     /// <summary>DELETE v1/businesses/me/attendance/locations/{id} — refused with LOCATION_HAS_HISTORY.</summary>
     [HttpDelete("me/attendance/locations/{locationId:guid}")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
         public async Task<IActionResult> DeleteAttendanceLocation(Guid locationId)
@@ -112,7 +113,7 @@ public partial class BusinessController
 
     /// <summary>POST …/locations/{id}/qr — mint a printed credential. Token returned ONCE.</summary>
     [HttpPost("me/attendance/locations/{locationId:guid}/qr")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<AttendanceQrCredentialResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -126,7 +127,7 @@ public partial class BusinessController
 
     /// <summary>POST …/locations/{id}/qr/regenerate — distinct copy + audit QR_REGENERATED.</summary>
     [HttpPost("me/attendance/locations/{locationId:guid}/qr/regenerate")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<AttendanceQrCredentialResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> RegenerateAttendanceQr(Guid locationId)
@@ -139,7 +140,7 @@ public partial class BusinessController
 
     /// <summary>DELETE …/locations/{id}/qr — revoke the live credential.</summary>
     [HttpDelete("me/attendance/locations/{locationId:guid}/qr")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
     public async Task<IActionResult> RevokeAttendanceQr(Guid locationId)
@@ -154,7 +155,7 @@ public partial class BusinessController
 
     /// <summary>GET v1/businesses/me/attendance/overview — who is clocked in now.</summary>
     [HttpGet("me/attendance/overview")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<AttendanceOverviewResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetAttendanceOverview([FromQuery] DateOnly? date = null)
@@ -167,7 +168,7 @@ public partial class BusinessController
 
     /// <summary>GET v1/businesses/me/attendance/staff/{id}/history — owner drill-down (business-scoped).</summary>
     [HttpGet("me/attendance/staff/{staffUserId:guid}/history")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<AttendanceHistoryItem>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetAttendanceStaffHistory(Guid staffUserId, [FromQuery] AttendanceHistoryQuery query)
@@ -185,7 +186,7 @@ public partial class BusinessController
     /// business only; a foreign staff id answers STAFF_NOT_FOUND.
     /// </summary>
     [HttpGet("me/attendance/records")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<BusinessAttendanceRecord>>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -206,7 +207,7 @@ public partial class BusinessController
     /// id is validated against the owner's business (STAFF_NOT_FOUND otherwise).
     /// </summary>
     [HttpPost("me/attendance/staff/{staffUserId:guid}/clock-in")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<OwnerAttendanceClockResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -228,7 +229,7 @@ public partial class BusinessController
     /// session ⇒ 409 NOT_CLOCKED_IN.
     /// </summary>
     [HttpPost("me/attendance/staff/{staffUserId:guid}/clock-out")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<OwnerAttendanceClockResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]

@@ -72,37 +72,6 @@ public class AuthController : ControllerBase
     }
 
     /// <summary>
-    /// Register a business owner account together with their business.
-    /// Atomically creates the UserAuth + Business-role User + Business, then emails a
-    /// verification code. The owner completes registration via /auth/verify-email.
-    /// </summary>
-    /// <response code="201">Registration successful, verification code sent.</response>
-    /// <response code="409">Email already registered or business name taken.</response>
-    /// <response code="400">Validation error.</response>
-    [HttpPost("register-business")]
-    [AllowAnonymous]
-    [EnableRateLimiting("login")]
-    [ProducesResponseType(typeof(ApiResponse<RegisterBusinessResponse>), StatusCodes.Status201Created)]
-    [ProducesResponseType(typeof(ApiResponse<RegisterBusinessResponse>), StatusCodes.Status409Conflict)]
-    [ProducesResponseType(typeof(ApiResponse<RegisterBusinessResponse>), StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> RegisterBusiness([FromBody] RegisterBusinessRequest request)
-    {
-        var result = await _authService.RegisterBusinessAsync(request);
-
-        if (!result.Success)
-        {
-            return result.Error?.Code switch
-            {
-                "EMAIL_ALREADY_REGISTERED" => Conflict(result),
-                "BUSINESS_NAME_TAKEN" => Conflict(result),
-                _ => BadRequest(result)
-            };
-        }
-
-        return StatusCode(StatusCodes.Status201Created, result);
-    }
-
-    /// <summary>
     /// Verify email with 6-digit code sent during registration.
     /// Returns JWT tokens and user profile on success.
     /// </summary>
@@ -240,6 +209,10 @@ public class AuthController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// Marks a compatibility-shim response as deprecated (RFC 8594 style) so
+    /// integrations can detect the sunset without parsing the body.
+    /// </summary>
     /// <summary>
     /// Writes the shared cross-subdomain session cookie for a successful
     /// sign-in. Only the refresh token is stored; access tokens stay

@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OutputCaching;
 using PunchedApi.Application.DTOs;
@@ -98,10 +99,21 @@ public partial class BusinessController : ControllerBase
     }
 
     /// <summary>
-    /// Create a new business for the authenticated Business-role user.
+    /// Canonical owner provisioning: create a business for the authenticated
+    /// identity. Any signed-in identity that does not already hold a tenant
+    /// persona may call this (Customer → Business promotion happens atomically
+    /// with the insert); Staff and Admin identities are refused, as is a second
+    /// business for an existing owner.
+    ///
+    /// The access token still carries the previous persona, so the client must
+    /// refresh its session (POST /v1/auth/refresh-token) after a 201 to receive a
+    /// Business-role token.
     /// </summary>
+    /// <response code="201">Business created; caller promoted to owner.</response>
+    /// <response code="400">Validation failure or ineligible persona.</response>
+    /// <response code="409">The caller already owns a business.</response>
     [HttpPost]
-    [Authorize(Roles = "Business")]
+    [Authorize]
     [ProducesResponseType(typeof(ApiResponse<BusinessResponse>), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
@@ -121,7 +133,7 @@ public partial class BusinessController : ControllerBase
     /// Get the authenticated business owner's own business.
     /// </summary>
     [HttpGet("me")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<BusinessResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetMyBusiness()
@@ -138,7 +150,7 @@ public partial class BusinessController : ControllerBase
     /// Update the authenticated business owner's business details.
     /// </summary>
     [HttpPatch("me")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<BusinessResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> UpdateMyBusiness([FromBody] UpdateBusinessRequest request)
     {
@@ -155,7 +167,7 @@ public partial class BusinessController : ControllerBase
     /// delivery channels). Creates a policy row if none exists.
     /// </summary>
     [HttpPut("me/reminder-policy")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<BusinessResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -175,7 +187,7 @@ public partial class BusinessController : ControllerBase
     /// previous slugs are archived and keep redirecting to the new address.
     /// </summary>
     [HttpPut("me/slug")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<BusinessResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -241,7 +253,7 @@ public partial class BusinessController : ControllerBase
     /// </summary>
     [RequireModule("stamps")]
     [HttpGet("{businessId:guid}/activity/recent")]
-    [Authorize(Roles = "Business,Staff")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
     [ProducesResponseType(typeof(ApiResponse<List<StampDto>>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> GetRecentActivity(
@@ -267,7 +279,7 @@ public partial class BusinessController : ControllerBase
     /// </summary>
     [RequireModule("notifications")]
     [HttpGet("me/notifications")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<List<NotificationDto>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetMyNotifications([FromQuery] bool unreadOnly = false)
     {
@@ -284,7 +296,7 @@ public partial class BusinessController : ControllerBase
     /// </summary>
     [RequireModule("notifications")]
     [HttpPost("me/notifications/read")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> MarkNotificationsRead([FromBody] MarkNotificationReadRequest? request)
     {

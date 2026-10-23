@@ -185,7 +185,7 @@ public class AdminService : IAdminService
                     TotalCustomers = b.LoyaltyCards.Select(c => c.CustomerId).Distinct().Count(),
                     TotalStamps = b.LoyaltyCards.Sum(c => c.LifetimeStamps),
                     TotalRedemptions = b.LoyaltyCards.Sum(c => c.TotalRedemptions),
-                    TotalStaff = _context.Users.Count(u => u.Role == UserRole.Staff && u.StaffBusinessId == b.Id),
+                    TotalStaff = _context.BusinessMemberships.Count(m => m.BusinessId == b.Id && m.Role == BusinessMembershipRole.Staff && m.Status == BusinessMembershipStatus.Active),
                     ProgramCount = b.LoyaltyPrograms.Count(),
                     CreatedAt = b.CreatedAt,
                     Slug = b.Slug,
@@ -212,7 +212,7 @@ public class AdminService : IAdminService
                     TotalCustomers = b.LoyaltyCards.Select(c => c.CustomerId).Distinct().Count(),
                     TotalStamps = b.LoyaltyCards.Sum(c => c.LifetimeStamps),
                     TotalRedemptions = b.LoyaltyCards.Sum(c => c.TotalRedemptions),
-                    TotalStaff = _context.Users.Count(u => u.Role == UserRole.Staff && u.StaffBusinessId == b.Id),
+                    TotalStaff = _context.BusinessMemberships.Count(m => m.BusinessId == b.Id && m.Role == BusinessMembershipRole.Staff && m.Status == BusinessMembershipStatus.Active),
                     ProgramCount = b.LoyaltyPrograms.Count(),
                     CreatedAt = b.CreatedAt,
                     Slug = b.Slug,
@@ -347,19 +347,27 @@ public class AdminService : IAdminService
     {
         try
         {
-            var totalStaff = await _context.Users.CountAsync(u => u.Role == UserRole.Staff);
-            var linkedStaff = await _context.Users.CountAsync(u => u.Role == UserRole.Staff && u.StaffBusinessId != null);
+            var totalStaff = await _context.BusinessMemberships
+                .Where(m => m.Role == BusinessMembershipRole.Staff && m.Status == BusinessMembershipStatus.Active)
+                .Select(m => m.UserId).Distinct().CountAsync();
+            var linkedStaff = totalStaff;
 
             var topStaff = await _context.Users
-                .Where(u => u.Role == UserRole.Staff)
+                .Where(u => _context.BusinessMemberships.Any(m =>
+                    m.UserId == u.Id &&
+                    m.Role == BusinessMembershipRole.Staff &&
+                    m.Status == BusinessMembershipStatus.Active))
                 .Select(u => new AdminStaffSummary
                 {
                     Id = u.Id,
                     FullName = u.FullName,
                     Email = u.Email,
-                    BusinessName = u.StaffBusinessId != null
-                        ? _context.Businesses.Where(b => b.Id == u.StaffBusinessId).Select(b => b.Name).FirstOrDefault()
-                        : null,
+                    BusinessName = _context.BusinessMemberships
+                        .Where(m => m.UserId == u.Id &&
+                                    m.Role == BusinessMembershipRole.Staff &&
+                                    m.Status == BusinessMembershipStatus.Active)
+                        .Select(m => m.Business!.Name)
+                        .FirstOrDefault(),
                     TotalStampsIssued = _context.Stamps.Count(s => s.AwardedByUserId == u.Id),
                     CustomersServed = _context.Stamps.Where(s => s.AwardedByUserId == u.Id).Select(s => s.Card.CustomerId).Distinct().Count(),
                     CreatedAt = u.CreatedAt,
@@ -746,7 +754,7 @@ public class AdminService : IAdminService
                     TotalCustomers = b.LoyaltyCards.Select(c => c.CustomerId).Distinct().Count(),
                     TotalStamps = b.LoyaltyCards.Sum(c => c.LifetimeStamps),
                     TotalRedemptions = b.LoyaltyCards.Sum(c => c.TotalRedemptions),
-                    TotalStaff = _context.Users.Count(u => u.Role == UserRole.Staff && u.StaffBusinessId == b.Id),
+                    TotalStaff = _context.BusinessMemberships.Count(m => m.BusinessId == b.Id && m.Role == BusinessMembershipRole.Staff && m.Status == BusinessMembershipStatus.Active),
                     ProgramCount = b.LoyaltyPrograms.Count(),
                     CreatedAt = b.CreatedAt,
                     Slug = b.Slug,
@@ -803,7 +811,7 @@ public class AdminService : IAdminService
                 TotalCustomers = await _context.LoyaltyCards.Where(c => c.BusinessId == b.Id).Select(c => c.CustomerId).Distinct().CountAsync(),
                 TotalStamps = await _context.LoyaltyCards.Where(c => c.BusinessId == b.Id).SumAsync(c => c.LifetimeStamps),
                 TotalRedemptions = await _context.Redemptions.CountAsync(r => r.BusinessId == b.Id),
-                TotalStaff = await _context.Users.CountAsync(u => u.Role == UserRole.Staff && u.StaffBusinessId == b.Id),
+                TotalStaff = await _context.BusinessMemberships.CountAsync(m => m.BusinessId == b.Id && m.Role == BusinessMembershipRole.Staff && m.Status == BusinessMembershipStatus.Active),
                 ProgramCount = await _context.LoyaltyPrograms.CountAsync(p => p.BusinessId == b.Id),
                 CreatedAt = b.CreatedAt,
             };

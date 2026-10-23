@@ -118,7 +118,7 @@ public class ModulesController : ControllerBase
     /// (enabled, source, dependencies) for the module-management view.
     /// </summary>
     [HttpGet("v1/businesses/me/modules")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<BusinessModulesResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -164,7 +164,7 @@ public class ModulesController : ControllerBase
     /// Admin-only; used to validate plan/override/subscription resolution.
     /// </summary>
     [HttpGet("v1/modules/entitlements/{businessId:guid}")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Policy = MembershipPolicies.PlatformAdmin)]
     [ProducesResponseType(typeof(ApiResponse<ModuleEntitlementResult>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
@@ -181,7 +181,7 @@ public class ModulesController : ControllerBase
     /// self-enabled (admin/plan-gated). Invalidates the entitlement cache.
     /// </summary>
     [HttpPut("v1/businesses/me/modules/{moduleKey}")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -265,7 +265,7 @@ public class ModulesController : ControllerBase
     /// to plan-driven entitlement. Invalidates the entitlement cache.
     /// </summary>
     [HttpDelete("v1/businesses/me/modules/{moduleKey}")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]

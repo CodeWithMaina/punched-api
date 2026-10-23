@@ -1,11 +1,18 @@
 using FluentValidation;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Domain.Entities;
 
 namespace PunchedApi.Application.Validators;
 
 /// <summary>
 /// Validates RegisterRequest: email format, password strength, fullName length.
 /// Password: min 8 chars, 1 uppercase, 1 number, 1 special character.
+///
+/// Persona: <c>role</c> is accepted on the wire for backwards compatibility but
+/// only <see cref="UserRole.Customer"/> is a self-service identity. Owners gain
+/// the Business persona by creating a business and staff by accepting an
+/// invitation, so any privileged value fails validation with the same reason
+/// the service returns (defence in depth: the service enforces it again).
 /// </summary>
 public class RegisterRequestValidator : AbstractValidator<RegisterRequest>
 {
@@ -27,6 +34,11 @@ public class RegisterRequestValidator : AbstractValidator<RegisterRequest>
             .NotEmpty().WithMessage("Full name is required.")
             .MinimumLength(1).WithMessage("Full name must be at least 1 character.")
             .MaximumLength(100).WithMessage("Full name must not exceed 100 characters.");
+
+        // Persona boundary — never self-assignable. See AuthService.RegisterAsync.
+        RuleFor(x => x.Role)
+            .Equal(UserRole.Customer)
+            .WithMessage("Public registration creates customer accounts only. Business owners add a business after signing in; staff join through an invitation.");
 
         RuleFor(x => x.SourceProvider)
             .Must(v => string.IsNullOrWhiteSpace(v) || new[] { "google", "apple", "referral", "organic", "other" }

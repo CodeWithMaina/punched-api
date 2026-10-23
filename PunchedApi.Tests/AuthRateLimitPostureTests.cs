@@ -26,7 +26,7 @@ public class AuthRateLimitPostureTests
     /// <summary>Actions that must keep the brute-force "login" bucket.</summary>
     private static readonly string[] CredentialActions =
     {
-        "Register", "RegisterBusiness", "Login", "ForgotPassword", "ResetPassword", "ChangePassword",
+        "Register", "Login", "ForgotPassword", "ResetPassword", "ChangePassword",
     };
 
     /// <summary>Actions that must keep the tight "otp" bucket.</summary>
@@ -48,7 +48,6 @@ public class AuthRateLimitPostureTests
 
     [Theory]
     [InlineData("Register")]
-    [InlineData("RegisterBusiness")]
     [InlineData("Login")]
     [InlineData("ForgotPassword")]
     [InlineData("ResetPassword")]

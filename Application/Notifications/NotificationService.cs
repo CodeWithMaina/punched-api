@@ -295,22 +295,20 @@ public sealed class NotificationService : INotificationService
     private async Task EnsureRecipientBelongsToBusinessAsync(
         Guid recipientUserId, Guid businessId, CancellationToken ct)
     {
-        var business = await _context.Businesses
+        var businessExists = await _context.Businesses
             .AsNoTracking()
-            .Where(b => b.Id == businessId)
-            .Select(b => new { b.OwnerId })
-            .FirstOrDefaultAsync(ct);
+            .AnyAsync(b => b.Id == businessId, ct);
 
-        if (business == null)
+        if (!businessExists)
             throw new ArgumentException($"Business {businessId} was not found.", nameof(businessId));
 
-        if (business.OwnerId == recipientUserId) return;
-
-        var isStaff = await _context.Users
+        var isMember = await _context.BusinessMemberships
             .AsNoTracking()
-            .AnyAsync(u => u.Id == recipientUserId && u.StaffBusinessId == businessId, ct);
+            .AnyAsync(m => m.UserId == recipientUserId &&
+                           m.BusinessId == businessId &&
+                           m.Status == BusinessMembershipStatus.Active, ct);
 
-        if (isStaff) return;
+        if (isMember) return;
 
         var isEnrolled = await _context.CustomerBusinessEnrollments
             .AsNoTracking()

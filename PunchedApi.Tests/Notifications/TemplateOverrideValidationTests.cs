@@ -271,6 +271,7 @@ public class TemplateOverrideValidationTests
     private sealed class AdminScopeResolverStub : IBusinessScopeResolver
     {
         public Task<Guid?> GetOwnedBusinessIdAsync(Guid ownerId) => Task.FromResult<Guid?>(null);
+        public Task<Guid?> GetMemberBusinessIdAsync(Guid userId) => Task.FromResult<Guid?>(null);
         public void InvalidateOwner(Guid ownerId) { }
     }
 

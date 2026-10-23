@@ -45,7 +45,7 @@ public class TenantConsistencyMiddlewareTests
         public Guid? TokenBusinessId { get; init; }
         public Guid? RouteBusinessId { get; init; }
         public bool AnonymousEndpoint { get; init; }
-        public BusinessMembership? Membership { get; init; }
+        public TenantMembership? Membership { get; init; }
         public bool IdentityClaimPresent { get; init; } = true;
     }
 
@@ -60,12 +60,12 @@ public class TenantConsistencyMiddlewareTests
         return mock;
     }
 
-    private static Mock<IBusinessMembershipResolver> CreateMemberships(BusinessMembership? membership)
+    private static Mock<IBusinessMembershipResolver> CreateMemberships(TenantMembership? membership)
     {
         var mock = new Mock<IBusinessMembershipResolver>();
         mock.Setup(m => m.ResolveAsync(It.IsAny<Guid>(), Guid.Parse(TestBusiness)))
             .ReturnsAsync(membership ??
-                new BusinessMembership(BusinessMembershipKind.None, "None", null,
+                new TenantMembership(BusinessMembershipKind.None, "None", null,
                     Guid.Parse(TestBusiness)));
         return mock;
     }
@@ -139,7 +139,7 @@ public class TenantConsistencyMiddlewareTests
         return doc.RootElement.GetProperty("error").GetProperty("code").GetString();
     }
 
-    private static BusinessMembership Membership(BusinessMembershipKind kind, string status = "Active") =>
+    private static TenantMembership Membership(BusinessMembershipKind kind, string status = "Active") =>
         new(kind, status, kind.ToString(), Guid.Parse(TestBusiness));
 
     // ── Compatibility: root host, anonymous, auth lifecycle, admin ──────
@@ -306,69 +306,45 @@ public class TenantConsistencyMiddlewareTests
         Assert.Equal("TENANT_MISMATCH", ErrorCode(outcome.Body));
     }
 
-    // ── Role → required membership kind ─────────────────────────────────
+    // ── The boundary is membership, not the token's persona ─────────────
+    // The middleware answers exactly one question: "does this identity have an
+    // ACTIVE membership in the host business?" What a member may DO is decided
+    // by the endpoint's role policy (BusinessOwner / BusinessStaff), so the
+    // global `role` claim can never widen or narrow tenant access.
 
-    [Fact]
-    public async Task BusinessRole_RequiresOwnerMembership()
+    [Theory]
+    [InlineData("Business")]
+    [InlineData("Staff")]
+    [InlineData("Customer")]
+    public async Task AnyActiveMembership_PassesBoundary_RegardlessOfTokenRole(string role)
     {
-        var denied = await RunAsync(new RunOptions
+        var outcome = await RunAsync(new RunOptions
         {
             TenantHeader = "java-house.punched.app",
-            Role = "Business",
+            Role = role,
             Membership = Membership(BusinessMembershipKind.Customer)
         });
-        Assert.False(denied.NextCalled);
-        Assert.Equal(StatusCodes.Status403Forbidden, denied.StatusCode);
 
-        var allowed = await RunAsync(new RunOptions
-        {
-            TenantHeader = "java-house.punched.app",
-            Role = "Business",
-            Membership = Membership(BusinessMembershipKind.Owner)
-        });
-        Assert.True(allowed.NextCalled);
+        Assert.True(outcome.NextCalled);
+        Assert.Equal(Guid.Parse(TestBusiness), outcome.Tenant.BusinessId);
     }
 
-    [Fact]
-    public async Task StaffRole_RequiresStaffMembership()
+    [Theory]
+    [InlineData("Business")]
+    [InlineData("Staff")]
+    [InlineData("Customer")]
+    public async Task InactiveMembership_IsDenied_RegardlessOfTokenRole(string role)
     {
-        var denied = await RunAsync(new RunOptions
+        var outcome = await RunAsync(new RunOptions
         {
             TenantHeader = "java-house.punched.app",
-            Role = "Staff",
-            Membership = Membership(BusinessMembershipKind.Customer)
+            Role = role,
+            Membership = Membership(BusinessMembershipKind.Staff, "Suspended")
         });
-        Assert.False(denied.NextCalled);
-        Assert.Equal(StatusCodes.Status403Forbidden, denied.StatusCode);
 
-        var allowed = await RunAsync(new RunOptions
-        {
-            TenantHeader = "java-house.punched.app",
-            Role = "Staff",
-            Membership = Membership(BusinessMembershipKind.Staff)
-        });
-        Assert.True(allowed.NextCalled);
-    }
-
-    [Fact]
-    public async Task CustomerRole_RequiresCustomerMembership()
-    {
-        var denied = await RunAsync(new RunOptions
-        {
-            TenantHeader = "java-house.punched.app",
-            Role = "Customer",
-            Membership = Membership(BusinessMembershipKind.Owner)
-        });
-        Assert.False(denied.NextCalled);
-        Assert.Equal(StatusCodes.Status403Forbidden, denied.StatusCode);
-
-        var allowed = await RunAsync(new RunOptions
-        {
-            TenantHeader = "java-house.punched.app",
-            Role = "Customer",
-            Membership = Membership(BusinessMembershipKind.Customer)
-        });
-        Assert.True(allowed.NextCalled);
+        Assert.False(outcome.NextCalled);
+        Assert.Equal(StatusCodes.Status403Forbidden, outcome.StatusCode);
+        Assert.Equal("TENANT_ACCESS_DENIED", ErrorCode(outcome.Body));
     }
 
     [Fact]

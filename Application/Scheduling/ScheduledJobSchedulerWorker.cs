@@ -438,7 +438,14 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
                 return;
             }
 
-            if (business.OwnerId == null)
+            // The owner recipient comes from the canonical Owner membership.
+            var ownerId = await _context.BusinessMemberships.AsNoTracking()
+                .Where(m => m.BusinessId == business.Id &&
+                            m.Role == BusinessMembershipRole.Owner &&
+                            m.Status == BusinessMembershipStatus.Active)
+                .Select(m => (Guid?)m.UserId)
+                .FirstOrDefaultAsync(ct);
+            if (ownerId == null || ownerId == Guid.Empty)
             {
                 Complete("owner_not_found", "job cancelled");
                 return;
@@ -462,7 +469,7 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
             };
             var request = new NotificationRequest(
                 "subscription.expiring",
-                business.OwnerId.Value,
+                ownerId.Value,
                 business.Id,
                 payload,
                 _row.DedupeKey) { Force = true };

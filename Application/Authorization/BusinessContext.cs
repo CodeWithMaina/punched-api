@@ -19,8 +19,8 @@ public interface IBusinessContext
     string? GetRole();
 
     /// <summary>
-    /// Server-resolved business id for the caller: owner via
-    /// IBusinessScopeResolver, staff via User.StaffBusinessId. Null for
+    /// Server-resolved business id for the caller, taken from the canonical
+    /// <c>business_memberships</c> row through IBusinessScopeResolver. Null for
     /// Customer/Admin. Memoized per request.
     /// </summary>
     Task<Guid?> GetBusinessIdAsync();
@@ -90,25 +90,23 @@ public sealed class BusinessContext : IBusinessContext
         if (_businessIdResolved) return _businessId;
         _businessIdResolved = true;
 
+        // The active tenant is the server-side answer when the request arrived on
+        // a business address; TenantConsistencyMiddleware has already verified an
+        // ACTIVE membership there, so it can only narrow, never grant.
+        if (_tenant?.IsActive == true)
+            return _businessId = _tenant.BusinessId;
+
         var role = GetRole();
         var userId = GetUserId();
         if (userId == null) return _businessId = null;
 
-        _businessId = role switch
-        {
-            // Owner: via the existing cached resolver (never from client input).
-            "Business" => await _scopeResolver.GetOwnedBusinessIdAsync(userId.Value),
+        // Platform administration is not a tenant persona.
+        if (role == "Admin") return _businessId = null;
 
-            // Staff: resolve the linked business server-side.
-            "Staff" => await _context.Users
-                .AsNoTracking()
-                .Where(u => u.Id == userId.Value)
-                .Select(u => u.StaffBusinessId)
-                .FirstOrDefaultAsync(),
-
-            // Customers and Admins are not business-scoped.
-            _ => null
-        };
+        // Otherwise the caller's own ACTIVE membership decides — one indexed
+        // lookup on business_memberships (owner first, then staff). No persona
+        // claim and no legacy pointer is an authorization input.
+        _businessId = await _scopeResolver.GetMemberBusinessIdAsync(userId.Value);
 
         return _businessId;
     }

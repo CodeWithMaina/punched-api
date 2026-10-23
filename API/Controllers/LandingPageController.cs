@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
@@ -28,7 +29,7 @@ public class LandingPageController : ControllerBase
     }
 
     [HttpGet("me/landing-page")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<LandingPageConfigResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetMyLandingPage()
     {
@@ -40,7 +41,7 @@ public class LandingPageController : ControllerBase
     }
 
     [HttpPut("me/landing-page")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<LandingPageConfigResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> UpdateMyLandingPage([FromBody] UpdateLandingPageRequest request)
     {

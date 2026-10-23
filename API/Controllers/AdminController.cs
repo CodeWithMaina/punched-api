@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Interfaces;
 using Microsoft.AspNetCore.RateLimiting;
@@ -13,7 +14,7 @@ namespace PunchedApi.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("v1/admin")]
-[Authorize(Roles = "Admin")]
+[Authorize(Policy = MembershipPolicies.PlatformAdmin)]
 [Produces("application/json")]
 [EnableRateLimiting("general")]
 public class AdminController : ControllerBase

@@ -13,8 +13,7 @@ public sealed record SeedUserDefinition(
     DateOnly? DateOfBirth,
     string? Gender,
     DateTime CreatedAt,
-    bool IsVerified,
-    Guid? StaffBusinessId = null);
+    bool IsVerified);
 
 public sealed record SeedBusinessDefinition(
     string Key,

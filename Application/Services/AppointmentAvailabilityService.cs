@@ -136,10 +136,7 @@ public class AppointmentAvailabilityService
             var focus = eligible.FirstOrDefault(u => u.Id == staffUserId.Value);
             if (focus == null)
             {
-                var existsInBusiness = await _context.Users.AsNoTracking()
-                    .AnyAsync(u => u.Id == staffUserId.Value && u.StaffBusinessId == businessId)
-                    || await _context.Businesses.AsNoTracking()
-                        .AnyAsync(b => b.Id == businessId && b.OwnerId == staffUserId.Value);
+                var existsInBusiness = await IsMemberOfBusinessAsync(staffUserId.Value, businessId);
                 return existsInBusiness
                     ? Fail("STAFF_NOT_AVAILABLE", "This staff member does not perform all of the selected services.")
                     : Fail("STAFF_NOT_FOUND", "Staff member not found in this business.");
@@ -506,13 +503,31 @@ public class AppointmentAvailabilityService
     //  HELPERS
     // ===========================================================
 
+    /// <summary>True when the business has at least one ACTIVE staff membership.</summary>
+    private Task<bool> HasActiveStaffAsync(Guid businessId) =>
+        _context.BusinessMemberships.AsNoTracking().AnyAsync(m =>
+            m.BusinessId == businessId &&
+            m.Role == BusinessMembershipRole.Staff &&
+            m.Status == BusinessMembershipStatus.Active);
+
+    /// <summary>True when the identity holds any ACTIVE membership of the business.</summary>
+    private Task<bool> IsMemberOfBusinessAsync(Guid userId, Guid businessId) =>
+        _context.BusinessMemberships.AsNoTracking().AnyAsync(m =>
+            m.UserId == userId &&
+            m.BusinessId == businessId &&
+            m.Status == BusinessMembershipStatus.Active);
+
     /// <summary>
     /// True when the user owns a business that has no linked staff — the owner
     /// is then the sole provider and their diary is the one bookings block.
     /// </summary>
     public async Task<bool> IsSoloOwnerAsync(Guid businessId, Guid userId) =>
-        await _context.Businesses.AsNoTracking().AnyAsync(b => b.Id == businessId && b.OwnerId == userId)
-        && !await _context.Users.AsNoTracking().AnyAsync(u => u.StaffBusinessId == businessId);
+        await _context.BusinessMemberships.AsNoTracking().AnyAsync(m =>
+            m.BusinessId == businessId &&
+            m.UserId == userId &&
+            m.Role == BusinessMembershipRole.Owner &&
+            m.Status == BusinessMembershipStatus.Active)
+        && !await HasActiveStaffAsync(businessId);
 
     /// <summary>
     /// Staff of the business assigned to every requested service. A business with
@@ -520,12 +535,14 @@ public class AppointmentAvailabilityService
     /// </summary>
     private async Task<List<User>> GetEligibleStaffAsync(Guid businessId, Guid[] serviceIds)
     {
-        var hasStaff = await _context.Users.AsNoTracking().AnyAsync(u => u.StaffBusinessId == businessId);
+        var hasStaff = await HasActiveStaffAsync(businessId);
         if (!hasStaff)
         {
-            var ownerId = await _context.Businesses.AsNoTracking()
-                .Where(b => b.Id == businessId)
-                .Select(b => b.OwnerId)
+            var ownerId = await _context.BusinessMemberships.AsNoTracking()
+                .Where(m => m.BusinessId == businessId &&
+                            m.Role == BusinessMembershipRole.Owner &&
+                            m.Status == BusinessMembershipStatus.Active)
+                .Select(m => (Guid?)m.UserId)
                 .FirstOrDefaultAsync();
             if (ownerId == null || ownerId == Guid.Empty)
                 return new List<User>();
@@ -550,7 +567,11 @@ public class AppointmentAvailabilityService
             return new List<User>();
 
         return await _context.Users.AsNoTracking()
-            .Where(u => staffIds.Contains(u.Id) && u.StaffBusinessId == businessId)
+            .Where(u => staffIds.Contains(u.Id) && _context.BusinessMemberships.Any(m =>
+                m.UserId == u.Id &&
+                m.BusinessId == businessId &&
+                m.Role == BusinessMembershipRole.Staff &&
+                m.Status == BusinessMembershipStatus.Active))
             .OrderBy(u => u.FullName)
             .ToListAsync();
     }

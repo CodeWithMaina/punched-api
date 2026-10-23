@@ -63,7 +63,6 @@ public class NotificationServiceTests
                 Email = "staff-a@test.com",
                 FullName = "Staff A",
                 Role = UserRole.Staff,
-                StaffBusinessId = firstBusinessId
             });
         fixture.Context.Businesses.AddRange(
             new Business
@@ -84,6 +83,12 @@ public class NotificationServiceTests
                 Location = "Nairobi",
                 MpesaNumber = "254700000002"
             });
+        await fixture.Context.SaveChangesAsync();
+
+        // The staff persona works at Business A only — the canonical membership
+        // is what authorizes notification delivery in that tenant.
+        fixture.Context.BusinessMemberships.Add(
+            BookingTestBase.CreateMembership(staffId, firstBusinessId, BusinessMembershipRole.Staff));
         await fixture.Context.SaveChangesAsync();
 
         await Assert.ThrowsAsync<ArgumentException>(() => fixture.Service.SendAsync(new NotificationRequest(

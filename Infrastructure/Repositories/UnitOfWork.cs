@@ -40,6 +40,7 @@ public class UnitOfWork : IUnitOfWork
     private IRepository<StaffServiceAssignment>? _staffServiceAssignments;
     private IRepository<StampCard>? _stampCards;
     private IRepository<CustomerBusinessEnrollment>? _enrollments;
+    private IRepository<BusinessMembership>? _memberships;
     private IRepository<CustomerStampCard>? _customerStampCards;
     private IRepository<CardDesign>? _cardDesigns;
     private IRepository<CardDesignVersion>? _cardDesignVersions;
@@ -159,6 +160,10 @@ public class UnitOfWork : IUnitOfWork
     /// <inheritdoc />
     public IRepository<CustomerBusinessEnrollment> CustomerBusinessEnrollments =>
         _enrollments ??= new Repository<CustomerBusinessEnrollment>(_context);
+
+    /// <inheritdoc />
+    public IRepository<BusinessMembership> BusinessMemberships =>
+        _memberships ??= new Repository<BusinessMembership>(_context);
 
     /// <inheritdoc />
     public IRepository<CustomerStampCard> CustomerStampCards =>

@@ -35,9 +35,8 @@ public class AttendanceVerificationTests
         var business = BookingTestBase.CreateBusiness(owner.Id, "Attendance Biz");
         var staff = BookingTestBase.CreateStaff(business.Id, "staff@attendance.test");
 
-        // Staff with no linked business (V9) — role must still be Staff.
-        var unlinked = BookingTestBase.CreateStaff(business.Id, "unlinked@attendance.test");
-        unlinked.StaffBusinessId = null;
+        // Staff with no tenant relationship (V9) — role must still be Staff.
+        var unlinked = BookingTestBase.CreateStaffWithoutMembership("unlinked@attendance.test");
 
         var location = new AttendanceLocation
         {
@@ -108,7 +107,7 @@ public class AttendanceVerificationTests
             DateTime.UtcNow);
 
     private static AttendanceVerificationContext StaffCtx(Env env, AttendancePolicy? policy = null, string? token = null) =>
-        Ctx(env, env.Staff.Id, "Staff", env.Staff.StaffBusinessId, policy, token);
+        Ctx(env, env.Staff.Id, "Staff", env.Business.Id, policy, token);
 
     private static AttendanceVerificationContext OwnerCtx(Env env, AttendancePolicy? policy = null, string? token = null) =>
         Ctx(env, env.Owner.Id, "Business", null, policy, token);

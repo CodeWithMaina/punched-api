@@ -1,5 +1,6 @@
 using System.Linq;
 using System.Text.Json;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -25,7 +26,7 @@ namespace PunchedApi.API.Controllers;
 [ApiController]
 [Route("v1/automation/rules")]
 [Produces("application/json")]
-[Authorize(Roles = "Business,Staff")]
+[Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
 [EnableRateLimiting("general")]
 public sealed class AutomationRulesController : ControllerBase
 {
@@ -385,20 +386,12 @@ public sealed class AutomationRulesController : ControllerBase
 
     private async Task<bool> IsMemberOfBusinessAsync(Guid userId, Guid businessId, CancellationToken ct)
     {
-        var isOwner = await _context.Businesses
+        // One indexed membership lookup decides every role (Owner/Staff/Customer).
+        return await _context.BusinessMemberships
             .AsNoTracking()
-            .AnyAsync(b => b.Id == businessId && b.OwnerId == userId, ct);
-        if (isOwner) return true;
-
-        var isStaff = await _context.Users
-            .AsNoTracking()
-            .AnyAsync(u => u.Id == userId && u.StaffBusinessId == businessId, ct);
-        if (isStaff) return true;
-
-        var isEnrolled = await _context.CustomerBusinessEnrollments
-            .AsNoTracking()
-            .AnyAsync(e => e.CustomerId == userId && e.BusinessId == businessId, ct);
-        return isEnrolled;
+            .AnyAsync(m => m.UserId == userId &&
+                           m.BusinessId == businessId &&
+                           m.Status == BusinessMembershipStatus.Active, ct);
     }
 
     /// <summary>

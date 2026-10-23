@@ -32,7 +32,6 @@ public class AuthorizationPostureTests
     {
         // Auth lifecycle
         "Auth|POST|register",
-        "Auth|POST|register-business",
         "Auth|POST|verify-email",
         "Auth|POST|login",
         "Auth|POST|refresh-token",

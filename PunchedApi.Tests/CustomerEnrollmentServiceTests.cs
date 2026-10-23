@@ -23,10 +23,12 @@ public class CustomerEnrollmentServiceTests
         customer = new User { Id = Guid.NewGuid(), Email = "c@t.com", FullName = "C", Role = UserRole.Customer, CreatedAt = DateTime.UtcNow,
             Auth = new UserAuth { Id = Guid.NewGuid(), Email = "c@t.com", PasswordHash = "x", IsVerified = true, CreatedAt = DateTime.UtcNow } };
         business = new Business { Id = Guid.NewGuid(), Name = "B", Category = "salon", Location = "Nairobi", MpesaNumber = "1", OwnerId = owner.Id, TimeZoneId = "UTC", CreatedAt = DateTime.UtcNow };
-        var staff = new User { Id = Guid.NewGuid(), Email = "s@t.com", FullName = "S", Role = UserRole.Staff, StaffBusinessId = business.Id, CreatedAt = DateTime.UtcNow,
-            Auth = new UserAuth { Id = Guid.NewGuid(), Email = "s@t.com", PasswordHash = "x", IsVerified = true, CreatedAt = DateTime.UtcNow } };
+        var staff = BookingTestBase.CreateStaffWithoutMembership("s@t.com");
         ctx.Users.AddRange(owner, customer, staff);
         ctx.Businesses.Add(business);
+        ctx.SaveChanges();
+        ctx.BusinessMemberships.Add(
+            BookingTestBase.CreateMembership(staff.Id, business.Id, BusinessMembershipRole.Staff));
         ctx.SaveChanges();
         _staff = staff;
         var uow = new UnitOfWork(ctx);

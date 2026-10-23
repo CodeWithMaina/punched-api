@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
@@ -11,7 +12,7 @@ namespace PunchedApi.API.Controllers;
 [ApiController]
 [Route("v1/cards/managed")]
 [Produces("application/json")]
-[Authorize(Roles = "Business,Staff")]
+[Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
 [RequireModule("stamps")]
 [EnableRateLimiting("general")]
 public sealed class ManagedLoyaltyCardController : ControllerBase

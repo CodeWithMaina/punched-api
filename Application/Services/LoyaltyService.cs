@@ -51,7 +51,7 @@ public class LoyaltyService : ILoyaltyService
     {
         try
         {
-            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
             if (business == null)
                 return ApiResponse<LoyaltyProgramResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -188,7 +188,7 @@ public class LoyaltyService : ILoyaltyService
     {
         var business = await _context.Businesses
             .AsNoTracking()
-            .FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            .FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<List<LoyaltyProgramResponse>>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -274,7 +274,7 @@ public class LoyaltyService : ILoyaltyService
 
     public async Task<ApiResponse<LoyaltyProgramResponse>> GetBusinessProgramAsync(Guid ownerId, Guid programId)
     {
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<LoyaltyProgramResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -291,7 +291,7 @@ public class LoyaltyService : ILoyaltyService
     {
         try
         {
-            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
             if (business == null)
                 return ApiResponse<LoyaltyProgramResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -350,7 +350,7 @@ public class LoyaltyService : ILoyaltyService
     {
         try
         {
-            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
             if (business == null)
                 return ApiResponse<LoyaltyProgramResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -448,7 +448,7 @@ public class LoyaltyService : ILoyaltyService
     {
         try
         {
-            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
             if (business == null)
                 return ApiResponse<bool>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -482,7 +482,7 @@ public class LoyaltyService : ILoyaltyService
     {
         try
         {
-            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
             if (business == null)
                 return ApiResponse<LoyaltyProgramResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -544,7 +544,7 @@ public class LoyaltyService : ILoyaltyService
 
         public async Task<ApiResponse<ProgramDetailResponse>> GetProgramDetailAsync(Guid ownerId, Guid programId)
     {
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
             return ApiResponse<ProgramDetailResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -581,7 +581,7 @@ public class LoyaltyService : ILoyaltyService
     {
         try
         {
-            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
             if (business == null)
                 return ApiResponse<LoyaltyProgramResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
@@ -890,8 +890,16 @@ public class LoyaltyService : ILoyaltyService
 
         Guid? authorizedBusinessId = actor.Role switch
         {
-            UserRole.Business => (await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == actor.Id))?.Id,
-            UserRole.Staff => actor.StaffBusinessId,
+            UserRole.Business => (await _unitOfWork.BusinessMemberships
+                .SelectNoTrackingAsync(m => m.UserId == actor.Id &&
+                                           m.Role == BusinessMembershipRole.Owner &&
+                                           m.Status == BusinessMembershipStatus.Active,
+                    m => (Guid?)m.BusinessId)).FirstOrDefault(),
+            UserRole.Staff => (await _unitOfWork.BusinessMemberships
+                .SelectNoTrackingAsync(m => m.UserId == actor.Id &&
+                                           m.Role == BusinessMembershipRole.Staff &&
+                                           m.Status == BusinessMembershipStatus.Active,
+                    m => (Guid?)m.BusinessId)).FirstOrDefault(),
             _ => null
         };
 

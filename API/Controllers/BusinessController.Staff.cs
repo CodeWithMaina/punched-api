@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.OutputCaching;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Modules;
@@ -20,7 +21,7 @@ public partial class BusinessController
     [RequireModule("staff")]
 
     [HttpGet("me/staff/utilization")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<List<StaffUtilizationResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetStaffUtilization([FromQuery] DateOnly? from = null, [FromQuery] DateOnly? to = null)
     {
@@ -34,7 +35,7 @@ public partial class BusinessController
     [RequireModule("staff")]
 
     [HttpGet("me/staff/{staffId:guid}/shifts")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<List<StaffShiftResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetStaffShifts(Guid staffId, [FromQuery] DateOnly? from = null, [FromQuery] DateOnly? to = null)
     {
@@ -48,7 +49,7 @@ public partial class BusinessController
     [RequireModule("staff")]
 
     [HttpPut("me/staff/{staffId:guid}/shifts")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> UpsertStaffShift(Guid staffId, [FromBody] UpsertStaffShiftRequest request)
     {
@@ -65,7 +66,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("staff")]
     [HttpPost("me/staff/{staffUserId:guid}")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> LinkStaff(Guid staffUserId)
     {
@@ -83,7 +84,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("staff")]
     [HttpGet("me/staff/overview")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<StaffOverviewResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetStaffOverview()
     {
@@ -104,7 +105,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("staff")]
     [HttpGet("me/staff")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<StaffListResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetMyStaff(
         [FromQuery] string? search,
@@ -136,7 +137,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("staff")]
     [HttpPut("me/daily-goal")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<BusinessResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> SetBusinessDailyGoal([FromBody] UpdateBusinessDailyGoalRequest request)
@@ -166,7 +167,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("staff")]
     [HttpPut("me/staff/{staffUserId:guid}/daily-goal")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<StaffMemberResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -191,7 +192,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("staff")]
     [HttpGet("me/staff/{staffId:guid}/analytics")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<StaffMemberAnalyticsResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetStaffMemberAnalytics(Guid staffId, [FromQuery] string period = "all")
@@ -213,7 +214,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("staff")]
     [HttpGet("me/staff/{staffId:guid}/activity")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<StaffActivityFeedResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetStaffMemberActivity(
@@ -250,7 +251,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("staff")]
     [HttpGet("staff/my-business")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<StaffBusinessResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetStaffBusiness()
     {
@@ -267,7 +268,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("staff")]
     [HttpGet("staff/analytics")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<StaffAnalyticsResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetStaffAnalytics()
     {
@@ -286,7 +287,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("customers")]
     [HttpGet("staff/customers")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<BusinessCustomerResponse>>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetMyStaffCustomers(
@@ -309,7 +310,7 @@ public partial class BusinessController
     /// <summary>Staff: get a single customer served by this staff member (business-scoped).</summary>
     [RequireModule("customers")]
     [HttpGet("staff/customers/{customerId:guid}")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<BusinessCustomerResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetMyStaffCustomer(Guid customerId)
@@ -328,7 +329,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("staff")]
     [HttpGet("staff/activity")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [ProducesResponseType(typeof(ApiResponse<StaffActivityFeedResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetMyStaffActivity(

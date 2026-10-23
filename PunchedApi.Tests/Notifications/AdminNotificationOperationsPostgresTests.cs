@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using PunchedApi.API.Controllers;
+using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Notifications;
 using PunchedApi.Application.Services;
@@ -24,7 +25,9 @@ public sealed class AdminNotificationOperationsPostgresTests : IClassFixture<Not
         var authorize = typeof(AdminNotificationsController).GetCustomAttribute<AuthorizeAttribute>();
 
         Assert.NotNull(authorize);
-        Assert.Equal("Admin", authorize!.Roles);
+        // Platform administration is enforced by the PlatformAdmin policy
+        // (ClaimTypes.Role == Admin), not by a raw Roles list.
+        Assert.Equal(MembershipPolicies.PlatformAdmin, authorize!.Policy);
     }
 
     [RequiresNotificationPostgresFact]

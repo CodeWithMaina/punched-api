@@ -63,7 +63,7 @@ public class AttendanceLocationServiceTests
         env.Staff.Id,
         "Staff",
         env.Business.Id,
-        env.Staff.StaffBusinessId,
+        env.Business.Id,
         AttendanceEventType.ClockIn,
         AttendancePolicyService.CreateImplicitDefault(env.Business.Id),
         token,

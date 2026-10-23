@@ -259,13 +259,13 @@ public sealed class AdminNotificationOperationsService
 
         if (row.BusinessId is Guid businessId)
         {
-            var associated = await _context.Businesses.AnyAsync(
-                    business => business.Id == businessId && !business.IsDeleted && business.OwnerId == recipient.Id,
-                    cancellationToken)
-                || recipient.StaffBusinessId == businessId
-                || await _context.CustomerBusinessEnrollments.AnyAsync(
-                    enrollment => enrollment.BusinessId == businessId && enrollment.CustomerId == recipient.Id,
-                    cancellationToken);
+            // The recipient must still hold an ACTIVE membership of the business
+            // (any role) — a revoked staff/owner link blocks the retry.
+            var associated = await _context.BusinessMemberships.AnyAsync(
+                membership => membership.BusinessId == businessId &&
+                              membership.UserId == recipient.Id &&
+                              membership.Status == BusinessMembershipStatus.Active,
+                cancellationToken);
             if (!associated)
                 return RetryDecision.Rejected("TENANT_ASSOCIATION_CHANGED", "The recipient is no longer associated with the notification business.");
         }

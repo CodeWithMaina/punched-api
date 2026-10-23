@@ -8,66 +8,6 @@ namespace PunchedApi.Application.DTOs;
 // ═══════════════════════════════════════════════════════════════
 
 /// <summary>
-/// Combined business owner + business registration request.
-/// Creates the UserAuth + Business-role User + Business atomically.
-/// Account fields + the minimum business information required to stand up a business.
-/// </summary>
-public class RegisterBusinessRequest
-{
-    // ── Owner account ───────────────────────────────────────
-    [JsonPropertyName("fullName")]
-    public string FullName { get; set; } = string.Empty;
-
-    [JsonPropertyName("email")]
-    public string Email { get; set; } = string.Empty;
-
-    [JsonPropertyName("password")]
-    public string Password { get; set; } = string.Empty;
-
-    [JsonPropertyName("phoneNumber")]
-    public string? PhoneNumber { get; set; }
-
-    // ── Business information ────────────────────────────────
-    [JsonPropertyName("businessName")]
-    public string BusinessName { get; set; } = string.Empty;
-
-    [JsonPropertyName("businessCategory")]
-    public string BusinessCategory { get; set; } = string.Empty;
-
-    [JsonPropertyName("businessLocation")]
-    public string BusinessLocation { get; set; } = string.Empty;
-
-    [JsonPropertyName("businessPhone")]
-    public string? BusinessPhone { get; set; }
-
-    [JsonPropertyName("businessEmail")]
-    public string? BusinessEmail { get; set; }
-
-    [JsonPropertyName("businessMpesaNumber")]
-    public string BusinessMpesaNumber { get; set; } = string.Empty;
-
-    [JsonPropertyName("businessDescription")]
-    public string? BusinessDescription { get; set; }
-
-    [JsonPropertyName("logoUrl")]
-    public string? LogoUrl { get; set; }
-}
-
-/// <summary>
-/// POST /v1/auth/register-business response — mirrors the standard
-/// registration response (a verification code is sent, then the user
-/// verifies via the existing flow which issues tokens).
-/// </summary>
-public class RegisterBusinessResponse
-{
-    [JsonPropertyName("message")]
-    public string Message { get; set; } = string.Empty;
-
-    [JsonPropertyName("business")]
-    public BusinessResponse? Business { get; set; }
-}
-
-/// <summary>
 /// POST /v1/businesses/me/staff/invitations — request body.
 /// The invited email address is the primary onboarding identifier.
 /// </summary>

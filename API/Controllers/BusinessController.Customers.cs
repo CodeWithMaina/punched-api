@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.OutputCaching;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Modules;
@@ -25,7 +26,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("customers")]
     [HttpGet("me/customers")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<BusinessCustomerResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetMyCustomers(
         [FromQuery] string? search,
@@ -56,7 +57,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("customers")]
     [HttpGet("me/customers/{customerId:guid}")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<BusinessCustomerResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetSingleCustomer(Guid customerId)
@@ -77,7 +78,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("customers")]
     [HttpGet("me/customers/{customerId:guid}/details")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<CustomerDetailsResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetCustomerDetails(Guid customerId, CancellationToken cancellationToken)
@@ -96,7 +97,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("customers")]
     [HttpGet("me/customers/overview")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<CustomerOverviewResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetCustomerOverview()
     {
@@ -113,7 +114,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("customers")]
     [HttpGet("me/customers/{customerId:guid}/activity")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<CustomerActivityFeedResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetCustomerActivity(
@@ -135,7 +136,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("customers")]
     [HttpGet("me/customers/{customerId:guid}/stats")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<CustomerPeriodStatsResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetCustomerPeriodStats(Guid customerId, [FromQuery] string period = "7d")
@@ -157,7 +158,7 @@ public partial class BusinessController
     /// </summary>
     [RequireModule("customers")]
     [HttpGet("me/customers/export")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [Produces("text/csv")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]

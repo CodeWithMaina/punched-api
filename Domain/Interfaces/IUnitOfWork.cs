@@ -86,6 +86,13 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Repository for CustomerBusinessEnrollment entities.</summary>
     IRepository<CustomerBusinessEnrollment> CustomerBusinessEnrollments { get; }
 
+    /// <summary>
+    /// Repository for the authoritative user ↔ business relationship
+    /// (Owner | Staff | Customer). All membership writes go through
+    /// <c>BusinessMembershipService</c>.
+    /// </summary>
+    IRepository<BusinessMembership> BusinessMemberships { get; }
+
     /// <summary>Repository for CustomerStampCard entities.</summary>
     IRepository<CustomerStampCard> CustomerStampCards { get; }
 

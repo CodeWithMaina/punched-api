@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
@@ -19,7 +20,7 @@ namespace PunchedApi.API.Controllers;
 [ApiController]
 [Route("v1/loyalty/programs/{programId:guid}/earning-rules")]
 [Produces("application/json")]
-[Authorize(Roles = "Business")]
+[Authorize(Policy = MembershipPolicies.Owner)]
 [RequireModule("loyalty")]
 [EnableRateLimiting("general")]
 public class LoyaltyEarningRuleController : ControllerBase

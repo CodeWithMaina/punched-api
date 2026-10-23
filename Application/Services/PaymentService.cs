@@ -431,12 +431,13 @@ public partial class PaymentService : IPaymentService
         if (payment == null)
             return ApiResponse<PaymentResponse>.Fail("NOT_FOUND", "Payment not found.");
 
-        var ownerId = await _context.Businesses.AsNoTracking()
-            .Where(b => b.Id == payment.BusinessId)
-            .Select(b => (Guid?)b.OwnerId)
-            .FirstOrDefaultAsync();
+        var isOwner = await _context.BusinessMemberships.AsNoTracking()
+            .AnyAsync(m => m.BusinessId == payment.BusinessId &&
+                           m.UserId == userId &&
+                           m.Role == BusinessMembershipRole.Owner &&
+                           m.Status == BusinessMembershipStatus.Active);
 
-        if (ownerId == null || ownerId != userId)
+        if (!isOwner)
             return ApiResponse<PaymentResponse>.Fail("FORBIDDEN", "Only the business owner can reverse a payment.");
 
         if (string.IsNullOrWhiteSpace(reason))
@@ -606,17 +607,22 @@ public partial class PaymentService : IPaymentService
     {
         if (role == "Business")
         {
-            return await _context.Businesses.AsNoTracking()
-                .Where(b => b.OwnerId == userId && !b.IsDeleted)
-                .Select(b => (Guid?)b.Id)
+            return await _context.BusinessMemberships.AsNoTracking()
+                .Where(m => m.UserId == userId &&
+                            m.Role == BusinessMembershipRole.Owner &&
+                            m.Status == BusinessMembershipStatus.Active &&
+                            !m.Business.IsDeleted)
+                .Select(m => (Guid?)m.BusinessId)
                 .FirstOrDefaultAsync();
         }
 
         if (role == "Staff")
         {
-            return await _context.Users.AsNoTracking()
-                .Where(u => u.Id == userId)
-                .Select(u => u.StaffBusinessId)
+            return await _context.BusinessMemberships.AsNoTracking()
+                .Where(m => m.UserId == userId &&
+                            m.Role == BusinessMembershipRole.Staff &&
+                            m.Status == BusinessMembershipStatus.Active)
+                .Select(m => (Guid?)m.BusinessId)
                 .FirstOrDefaultAsync();
         }
 

@@ -47,7 +47,7 @@ public partial class ReferralService : IReferralService
     {
         try
         {
-            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
             if (business == null)
                 return ApiResponse<ReferralProgramResponse>.Fail("NO_BUSINESS", "You don't have a registered business.");
 
@@ -491,7 +491,7 @@ public partial class ReferralService : IReferralService
     {
         try
         {
-            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
             if (business == null)
                 return ApiResponse<BusinessReferralOverviewResponse>.Fail("NO_BUSINESS", "You don't have a registered business.");
 

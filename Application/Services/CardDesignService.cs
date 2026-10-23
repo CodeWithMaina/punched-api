@@ -173,7 +173,7 @@ public class CardDesignService : ICardDesignService
     }
 
     private Task<Business?> ResolveBusinessForOwnerAsync(Guid ownerId) =>
-        _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+        _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
 
     private async Task<string?> GetOwnerBusinessNameAsync(CardDesign design)
     {

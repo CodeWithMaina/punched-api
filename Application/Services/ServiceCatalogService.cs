@@ -306,8 +306,11 @@ public class ServiceCatalogService : IServiceCatalogService
         if (distinct.Length == 0)
         {
             // No service filter: every staff member of this business is eligible.
-            var allStaff = await _unitOfWork.Users.FindAsync(u => u.StaffBusinessId == businessId);
-            staffIds = allStaff.Select(u => u.Id).ToList();
+            staffIds = await _unitOfWork.BusinessMemberships.SelectNoTrackingAsync(
+                m => m.BusinessId == businessId &&
+                     m.Role == BusinessMembershipRole.Staff &&
+                     m.Status == BusinessMembershipStatus.Active,
+                m => m.UserId);
         }
         else
         {
@@ -325,7 +328,7 @@ public class ServiceCatalogService : IServiceCatalogService
         if (staffIds.Count == 0)
             return ApiResponse<List<EligibleStaffResponse>>.Ok(new List<EligibleStaffResponse>());
 
-        var staff = await _unitOfWork.Users.FindAsync(u => staffIds.Contains(u.Id) && u.StaffBusinessId == businessId);
+        var staff = await _unitOfWork.Users.FindAsync(u => staffIds.Contains(u.Id) && !u.IsDeleted);
 
         return ApiResponse<List<EligibleStaffResponse>>.Ok(staff
             .OrderBy(u => u.FullName)

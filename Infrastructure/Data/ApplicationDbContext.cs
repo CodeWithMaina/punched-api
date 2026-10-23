@@ -19,6 +19,12 @@ public class ApplicationDbContext : DbContext
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<Business> Businesses => Set<Business>();
 
+    /// <summary>
+    /// The authoritative user ↔ business relationship (Owner | Staff | Customer).
+    /// Every tenant authorization decision resolves through this set.
+    /// </summary>
+    public DbSet<BusinessMembership> BusinessMemberships => Set<BusinessMembership>();
+
     /// <summary>Superseded subdomain slugs — old URLs resolve through this table.</summary>
     public DbSet<BusinessSlugHistory> BusinessSlugHistories => Set<BusinessSlugHistory>();
     public DbSet<LoyaltyProgram> LoyaltyPrograms => Set<LoyaltyProgram>();

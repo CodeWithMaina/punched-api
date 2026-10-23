@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Services;
@@ -9,7 +10,7 @@ namespace PunchedApi.API.Controllers;
 
 [ApiController]
 [Route("v1/admin/notifications")]
-[Authorize(Roles = "Admin")]
+[Authorize(Policy = MembershipPolicies.PlatformAdmin)]
 [EnableRateLimiting("general")]
 [Produces("application/json")]
 public sealed class AdminNotificationsController : ControllerBase

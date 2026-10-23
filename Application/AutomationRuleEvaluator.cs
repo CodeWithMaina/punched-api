@@ -312,15 +312,21 @@ public sealed class AutomationRuleEvaluator
                         }
                         break;
                     case "business.owner":
-                        var business = await _context.Businesses.AsNoTracking()
-                            .FirstOrDefaultAsync(b => b.Id == businessId, ct);
-                        if (business?.OwnerId != null)
-                            recipients.Add(new ResolvedRecipient(business.OwnerId.Value, "business.owner"));
+                        var ownerId = await _context.BusinessMemberships.AsNoTracking()
+                            .Where(m => m.BusinessId == businessId &&
+                                        m.Role == BusinessMembershipRole.Owner &&
+                                        m.Status == BusinessMembershipStatus.Active)
+                            .Select(m => (Guid?)m.UserId)
+                            .FirstOrDefaultAsync(ct);
+                        if (ownerId != null && ownerId != Guid.Empty)
+                            recipients.Add(new ResolvedRecipient(ownerId.Value, "business.owner"));
                         break;
                     case "business.all_staff":
-                        var staff = await _context.Users.AsNoTracking()
-                            .Where(u => u.StaffBusinessId == businessId)
-                            .Select(u => u.Id).ToListAsync(ct);
+                        var staff = await _context.BusinessMemberships.AsNoTracking()
+                            .Where(m => m.BusinessId == businessId &&
+                                        m.Role == BusinessMembershipRole.Staff &&
+                                        m.Status == BusinessMembershipStatus.Active)
+                            .Select(m => m.UserId).ToListAsync(ct);
                         foreach (var sid in staff)
                             recipients.Add(new ResolvedRecipient(sid, "business.all_staff"));
                         break;

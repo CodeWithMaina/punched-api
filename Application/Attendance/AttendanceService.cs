@@ -203,7 +203,7 @@ public partial class AttendanceService : IAttendanceService
             scope.Actor.Id,
             scope.Actor.Role.ToString(),
             scope.BusinessId,
-            scope.Actor.Role == UserRole.Staff ? scope.Actor.StaffBusinessId : scope.BusinessId,
+            scope.BusinessId,
             eventType,
             policy,
             request.Token,

@@ -10,8 +10,8 @@ namespace PunchedApi.Application.Attendance.Verification;
 /// </summary>
 /// <param name="ActorUserId">From the JWT <c>userId</c> claim (structurally enforces "staff never enters identity").</param>
 /// <param name="ActorRole">Role claim string (Business / Staff).</param>
-/// <param name="BusinessId">Server-resolved scope (owner resolver / StaffBusinessId) — the tenant for every check.</param>
-/// <param name="StaffBusinessId">The actor's linked business; null ⇒ NOT_LINKED for staff.</param>
+/// <param name="BusinessId">Server-resolved scope (owner resolver / active membership) — the tenant for every check.</param>
+/// <param name="StaffBusinessId">The staff member's ACTIVE membership business (never a column on <c>User</c>); null ⇒ NOT_LINKED for staff.</param>
 /// <param name="EventType">The declarative verb being verified (ClockIn / ClockOut).</param>
 /// <param name="Policy">The business's effective attendance policy (drives which verifiers run).</param>
 /// <param name="CredentialToken">Raw QR payload — present only for token-based methods.</param>

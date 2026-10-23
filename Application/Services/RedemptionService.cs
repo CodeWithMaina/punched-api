@@ -277,9 +277,9 @@ public class RedemptionService : IRedemptionService
         {
             if (requirePermission && !_permissionService.HasPermission("Staff", "redemptions.fulfill"))
                 throw new InvalidOperationException("FORBIDDEN");
-            if (actor.StaffBusinessId == null)
-                throw new InvalidOperationException("NOT_LINKED");
-            return actor.StaffBusinessId.Value;
+            // Staff scope comes from the membership row, never a legacy pointer.
+            return await _businessScopeResolver.GetMemberBusinessIdAsync(actor.Id)
+                ?? throw new InvalidOperationException("NOT_LINKED");
         }
         throw new InvalidOperationException("UNAUTHORIZED");
     }

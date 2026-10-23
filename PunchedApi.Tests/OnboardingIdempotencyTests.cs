@@ -93,19 +93,27 @@ public class OnboardingIdempotencyTests
         FullName = "Amina Customer"
     };
 
-    private static RegisterBusinessRequest BusinessRequest() => new()
+    private static BusinessService CreateBusinessService(ApplicationDbContext context) =>
+        new(
+            new UnitOfWork(context),
+            context,
+            new Mock<IInsightService>().Object,
+            new Mock<IBusinessScopeResolver>().Object,
+            new Mock<ISubscriptionProvisioningService>().Object,
+            new Mock<IModuleEntitlementService>().Object,
+            new BusinessSlugGenerator(context),
+            new BusinessMembershipResolver(context),
+            TestHelpers.CreateLogger<BusinessService>());
+
+    private static CreateBusinessRequest BusinessRequest() => new()
     {
-        FullName = "Jane Chege",
-        Email = "owner@example.com",
-        Password = "P@ssw0rd!12",
-        PhoneNumber = "+254700000000",
-        BusinessName = "Chege's Java Hut",
-        BusinessCategory = "Cafe",
-        BusinessLocation = "Nairobi",
-        BusinessPhone = "+254700000001",
-        BusinessEmail = "cafe@example.com",
-        BusinessMpesaNumber = "123456",
-        BusinessDescription = "Specialty coffee and pastries."
+        Name = "Chege's Java Hut",
+        Category = "Cafe",
+        Location = "Nairobi",
+        PhoneNumber = "+254700000001",
+        Email = "cafe@example.com",
+        MpesaNumber = "123456",
+        Description = "Specialty coffee and pastries."
     };
 
     private static string HashCode(string code)
@@ -182,51 +190,61 @@ public class OnboardingIdempotencyTests
         Assert.Equal(UserRole.Customer, (await context.Users.FirstAsync(u => u.Email == "customer@example.com")).Role);
     }
 
-    // ── Business-owner registration replay ──────────────────────
+    // ── Business provisioning replay ────────────────────────────
 
     [Fact]
-    public async Task RegisterBusiness_ReplayAfterSuccess_CreatesNoSecondBusinessOrAccount()
+    public async Task CreateBusiness_ReplayAfterSuccess_CreatesNoSecondBusinessOrMembership()
     {
         using var context = CreateContext("Onboarding_BusinessReplay_01");
-        var service = CreateAuthService(context);
+        var owner = new User
+        {
+            Id = Guid.NewGuid(),
+            Email = "owner@example.com",
+            FullName = "Jane Chege",
+            Role = UserRole.Customer,
+            CreatedAt = DateTime.UtcNow
+        };
+        context.Users.Add(owner);
+        await context.SaveChangesAsync();
 
-        var first = await service.RegisterBusinessAsync(BusinessRequest());
+        var service = CreateBusinessService(context);
+        var first = await service.CreateBusinessAsync(owner.Id, BusinessRequest());
         Assert.True(first.Success, first.Error?.Message);
 
-        var replay = await service.RegisterBusinessAsync(BusinessRequest());
+        var replay = await service.CreateBusinessAsync(owner.Id, BusinessRequest());
 
         Assert.False(replay.Success);
-        Assert.Equal("EMAIL_ALREADY_REGISTERED", replay.Error?.Code);
+        Assert.Equal("BUSINESS_EXISTS", replay.Error?.Code);
         Assert.Equal(1, await context.Businesses.CountAsync(b => b.Name == "Chege's Java Hut"));
-        Assert.Equal(1, await context.UserAuths.CountAsync(a => a.Email == "owner@example.com"));
-        Assert.Equal(1, await context.Users.CountAsync(u => u.Email == "owner@example.com"));
+        Assert.Equal(1, await context.BusinessMemberships.CountAsync(m => m.UserId == owner.Id));
     }
 
     [Fact]
-    public async Task RegisterBusiness_ReplayWithTakenBusinessName_CreatesNothing()
+    public async Task CreateBusiness_WithSameName_CreatesASecondBusinessForADifferentOwner()
     {
         using var context = CreateContext("Onboarding_BusinessNameReplay_01");
-        await context.Businesses.AddAsync(new Business
+        var first = new User
         {
-            Id = Guid.NewGuid(),
-            Name = "Chege's Java Hut",
-            Category = "Cafe",
-            Location = "Nairobi",
-            MpesaNumber = "999999",
-            OwnerId = Guid.NewGuid(),
-            CreatedAt = DateTime.UtcNow
-        });
+            Id = Guid.NewGuid(), Email = "one@example.com", FullName = "One",
+            Role = UserRole.Customer, CreatedAt = DateTime.UtcNow
+        };
+        var second = new User
+        {
+            Id = Guid.NewGuid(), Email = "two@example.com", FullName = "Two",
+            Role = UserRole.Customer, CreatedAt = DateTime.UtcNow
+        };
+        context.Users.AddRange(first, second);
         await context.SaveChangesAsync();
-        var service = CreateAuthService(context);
 
-        var result = await service.RegisterBusinessAsync(BusinessRequest());
+        var service = CreateBusinessService(context);
+        Assert.True((await service.CreateBusinessAsync(first.Id, BusinessRequest())).Success);
+        Assert.True((await service.CreateBusinessAsync(second.Id, BusinessRequest())).Success);
 
-        Assert.False(result.Success);
-        Assert.Equal("BUSINESS_NAME_TAKEN", result.Error?.Code);
-        // The owner account must not leak into existence when the business insert is refused.
-        Assert.Equal(0, await context.UserAuths.CountAsync());
-        Assert.Equal(0, await context.Users.CountAsync());
-        Assert.Equal(1, await context.Businesses.CountAsync());
+        // Names are not unique across owners; the slug generator disambiguates.
+        var businesses = await context.Businesses.Where(b => b.Name == "Chege's Java Hut").ToListAsync();
+        Assert.Equal(2, businesses.Count);
+        Assert.Equal(2, businesses.Select(b => b.Slug).Distinct().Count());
+        Assert.Equal(2, await context.BusinessMemberships.CountAsync());
     }
 
     // ── Email verification is single-use ────────────────────────
@@ -279,6 +297,17 @@ public class OnboardingIdempotencyTests
         var (owner, business, invitation) = SeedInvitation();
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(new BusinessMembership
+        {
+            Id = Guid.NewGuid(),
+            UserId = owner.Id,
+            BusinessId = business.Id,
+            Role = BusinessMembershipRole.Owner,
+            Status = BusinessMembershipStatus.Active,
+            JoinedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        });
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateInvitationService(context);
@@ -295,7 +324,12 @@ public class OnboardingIdempotencyTests
         var accepted = await context.StaffInvitations.FirstAsync(i => i.Id == invitation.Id);
         Assert.Equal(InvitationStatus.Accepted, accepted.Status);
         Assert.NotNull(accepted.AcceptedAt);
-        Assert.Equal(business.Id, (await context.Users.FirstAsync(u => u.Email == "staff@example.com")).StaffBusinessId);
+        var staffUser = await context.Users.FirstAsync(u => u.Email == "staff@example.com");
+        Assert.True(await context.BusinessMemberships.AnyAsync(m =>
+            m.UserId == staffUser.Id &&
+            m.BusinessId == business.Id &&
+            m.Role == BusinessMembershipRole.Staff &&
+            m.Status == BusinessMembershipStatus.Active));
     }
 
     [Fact]
@@ -305,6 +339,17 @@ public class OnboardingIdempotencyTests
         var (owner, business, invitation) = SeedInvitation();
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(new BusinessMembership
+        {
+            Id = Guid.NewGuid(),
+            UserId = owner.Id,
+            BusinessId = business.Id,
+            Role = BusinessMembershipRole.Owner,
+            Status = BusinessMembershipStatus.Active,
+            JoinedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        });
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateInvitationService(context);
@@ -327,6 +372,17 @@ public class OnboardingIdempotencyTests
         var (owner, business, invitation) = SeedInvitation();
         await context.Users.AddAsync(owner);
         await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(new BusinessMembership
+        {
+            Id = Guid.NewGuid(),
+            UserId = owner.Id,
+            BusinessId = business.Id,
+            Role = BusinessMembershipRole.Owner,
+            Status = BusinessMembershipStatus.Active,
+            JoinedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        });
         await context.StaffInvitations.AddAsync(invitation);
         await context.SaveChangesAsync();
         var service = CreateInvitationService(context);

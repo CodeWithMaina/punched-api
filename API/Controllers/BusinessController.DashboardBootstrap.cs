@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Interfaces;
 
@@ -23,7 +24,7 @@ public partial class BusinessController
     /// the JWT only — no client-supplied business id.
     /// </summary>
     [HttpGet("me/dashboard/bootstrap")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<DashboardBootstrapResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetDashboardBootstrap()

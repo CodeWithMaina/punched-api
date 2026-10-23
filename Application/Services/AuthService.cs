@@ -26,6 +26,9 @@ public class AuthService : IAuthService
     private readonly ISubscriptionProvisioningService _subscriptionProvisioning;
     private readonly IBusinessSlugGenerator _slugGenerator;
     private readonly IBusinessMembershipResolver _membershipResolver;
+
+    /// <summary>Canonical membership writer (one row per user per business).</summary>
+    private readonly IBusinessMembershipService _memberships;
     private readonly ITenantHostResolver _tenantResolver;
 
     /// <summary>
@@ -58,7 +61,10 @@ public class AuthService : IAuthService
         INotificationService? notifications = null,
         // Optional for the same reason: the active tenant (page host) is only
         // available at runtime, never in unit tests.
-        ITenantContext? tenantContext = null)
+        ITenantContext? tenantContext = null,
+        // Optional: falls back to a membership service over the same unit of
+        // work, so existing test construction keeps working unchanged.
+        IBusinessMembershipService? memberships = null)
     {
         _unitOfWork = unitOfWork;
         _jwtService = jwtService;
@@ -69,6 +75,7 @@ public class AuthService : IAuthService
         _subscriptionProvisioning = subscriptionProvisioning;
         _slugGenerator = slugGenerator;
         _membershipResolver = membershipResolver;
+        _memberships = memberships ?? new BusinessMembershipService(unitOfWork);
         _tenantResolver = tenantResolver;
         _tenantContext = tenantContext;
     }
@@ -99,6 +106,26 @@ public class AuthService : IAuthService
                     "Email already in use");
             }
 
+            // ── Persona boundary: public sign-up can never mint privilege ──
+            // One identity per email; the persona is derived from business
+            // relationships, not from the registration payload:
+            //   • Owner → register here, then POST /v1/businesses (that call
+            //             promotes the Customer identity to Business).
+            //   • Staff → only through an owner-issued invitation token.
+            //   • Admin → provisioned out of band, never self-service.
+            // `role` stays on the wire for backwards compatibility, but any value
+            // other than Customer is rejected outright (not silently coerced) so
+            // a caller can never believe it created a privileged identity.
+            if (request.Role != UserRole.Customer)
+            {
+                _logger.LogWarning(
+                    "Rejected privileged self-registration for {Email}: requested role {Role}",
+                    normalizedEmail, request.Role);
+                return ApiResponse<MessageResponse>.Fail(
+                    "ROLE_NOT_SELF_ASSIGNABLE",
+                    "Public registration creates customer accounts only. Business owners add a business after signing in; staff join through an invitation.");
+            }
+
             // Hash password
             var passwordHash = BCrypt.Net.BCrypt.HashPassword(request.Password, BcryptWorkFactor);
 
@@ -122,10 +149,9 @@ public class AuthService : IAuthService
 
             await _unitOfWork.UserAuths.AddAsync(userAuth);
 
-            // Create User profile — role is ALWAYS forced server-side.
-            // The public register endpoint only ever creates Customers. Business owners must use
-            // /auth/register-business, and staff can only ever onboard through a valid invitation —
-            // never by self-registering here.
+            // Create User profile — role is Customer by construction (the guard
+            // above already rejected every other value). Business owners gain the
+            // Business persona by creating a business; staff through invitations.
             var role = UserRole.Customer;
             var user = new User
             {
@@ -145,13 +171,17 @@ public class AuthService : IAuthService
             await _unitOfWork.Users.AddAsync(user);
 
             // Database-first membership: a customer who signs up on a business
-            // address belongs to that business from the start. The enrollment
-            // row is written in the SAME transaction as the user, so a customer
-            // can never exist without the membership that grants tenant access
-            // to the business they signed up on.
+            // address belongs to that business from the start. The membership
+            // row is the authoritative grant (tenant middleware + policies read
+            // it); the enrollment row is loyalty detail that rides the SAME
+            // commit, so a customer can never exist without the membership that
+            // grants tenant access to the business they signed up on.
             var signupBusinessId = await ResolveSignupBusinessIdAsync(request.BusinessSlug);
             if (signupBusinessId is Guid businessId)
             {
+                await _memberships.EnsureAsync(
+                    user.Id, businessId, BusinessMembershipRole.Customer);
+
                 await _unitOfWork.CustomerBusinessEnrollments.AddAsync(new CustomerBusinessEnrollment
                 {
                     Id = Guid.NewGuid(),
@@ -192,135 +222,6 @@ public class AuthService : IAuthService
     }
 
 /// <inheritdoc />
-    /// <remarks>
-    /// Atomic business onboarding: creates UserAuth, Business-role User, and the Business in a single
-    /// transaction (one SaveChanges), then sends a verification code. If any insert fails the whole
-    /// operation rolls back so no orphan account or business can exist.
-    /// </remarks>
-    public async Task<ApiResponse<RegisterBusinessResponse>> RegisterBusinessAsync(RegisterBusinessRequest request)
-    {
-        try
-        {
-            var normalizedEmail = request.Email.Trim().ToLowerInvariant();
-
-            // 1. Email must be free.
-            var existingAuth = await _unitOfWork.UserAuths.FirstOrDefaultAsync(a => a.Email == normalizedEmail);
-            if (existingAuth != null)
-            {
-                _logger.LogWarning("Business registration attempt with existing email: {Email}", normalizedEmail);
-                return ApiResponse<RegisterBusinessResponse>.Fail("EMAIL_ALREADY_REGISTERED", "Email already in use");
-            }
-
-            // 2. Duplicate business name guard (soft, case-insensitive) among active businesses only.
-            var duplicateName = await _unitOfWork.Businesses.AnyAsync(b =>
-                b.Name.ToLower() == request.BusinessName.Trim().ToLowerInvariant());
-            if (duplicateName)
-            {
-                return ApiResponse<RegisterBusinessResponse>.Fail("BUSINESS_NAME_TAKEN", "A business with this name already exists.");
-            }
-
-            var passwordHash = BCrypt.Net.BCrypt.HashPassword(request.Password, BcryptWorkFactor);
-            var verificationCode = GenerateVerificationCode();
-            var verificationCodeHash = HashVerificationCode(verificationCode);
-            var verificationCodeExpiresAt = DateTime.UtcNow.AddMinutes(VerificationCodeExpiryMinutes);
-
-            var userAuth = new UserAuth
-            {
-                Id = Guid.NewGuid(),
-                Email = normalizedEmail,
-                PasswordHash = passwordHash,
-                IsVerified = false,
-                VerificationCode = verificationCodeHash,
-                VerificationCodeExpiresAt = verificationCodeExpiresAt,
-                VerificationCodeAttempts = 0,
-                CreatedAt = DateTime.UtcNow
-            };
-            await _unitOfWork.UserAuths.AddAsync(userAuth);
-
-            var user = new User
-            {
-                Id = Guid.NewGuid(),
-                Email = normalizedEmail,
-                FullName = request.FullName.Trim(),
-                PhoneNumber = request.PhoneNumber?.Trim(),
-                Role = UserRole.Business,
-                CreatedAt = DateTime.UtcNow
-            };
-            await _unitOfWork.Users.AddAsync(user);
-
-            var business = new Business
-            {
-                Id = Guid.NewGuid(),
-                Name = request.BusinessName.Trim(),
-                Category = request.BusinessCategory.Trim(),
-                Location = request.BusinessLocation.Trim(),
-                PhoneNumber = request.BusinessPhone?.Trim(),
-                Email = request.BusinessEmail?.Trim().ToLowerInvariant(),
-                Description = request.BusinessDescription?.Trim(),
-                LogoUrl = request.LogoUrl?.Trim(),
-                MpesaNumber = request.BusinessMpesaNumber.Trim(),
-                // Subdomain address (java-house.punched.app) — generated,
-                // collision-checked slug; see IBusinessSlugGenerator.
-                Slug = await _slugGenerator.GenerateAsync(request.BusinessName),
-                OwnerId = user.Id,
-                CreatedAt = DateTime.UtcNow
-            };
-            await _unitOfWork.Businesses.AddAsync(business);
-
-            // Phase 1: the OTP intent joins the atomic commit of auth + user + business
-            // (intent-level outbox) — no code email can reference an account that never
-            // exists, and no committed account can exist without its code intent.
-            await QueueVerificationCodeSafelyAsync(user.Id, normalizedEmail, verificationCode, verificationCodeExpiresAt);
-
-            try
-            {
-                // Atomic commit — all three records are persisted or none are.
-                await _unitOfWork.SaveChangesAsync();
-            }
-            catch (DbUpdateException) when (business.Slug != null)
-            {
-                // Lost a unique-index race (two same-named signups at once) —
-                // retry once with a disambiguated slug. A second failure
-                // escapes to the outer catch as REGISTRATION_FAILED.
-                business.Slug = BusinessSlugPolicy.Fallback(BusinessSlugPolicy.Slugify(request.BusinessName));
-                await _unitOfWork.SaveChangesAsync();
-            }
-
-            // Give the new business immediate module access (default Starter plan)
-            // so it is not locked out. Best-effort: no-op if the Starter plan is
-            // not yet seeded or provisioning fails.
-            await _subscriptionProvisioning.EnsureDefaultSubscriptionAsync(business.Id);
-
-            _logger.LogInformation("Business registered successfully: {Email} / {Business}", normalizedEmail, business.Name);
-
-            return ApiResponse<RegisterBusinessResponse>.Ok(new RegisterBusinessResponse
-            {
-                Message = "Business account created. Check your email for the verification code.",
-                Business = new BusinessResponse
-                {
-                    Id = business.Id,
-                    Slug = business.Slug,
-                    Name = business.Name,
-                    Category = business.Category,
-                    Location = business.Location,
-                    PhoneNumber = business.PhoneNumber,
-                    Email = business.Email,
-                    Description = business.Description,
-                    LogoUrl = business.LogoUrl,
-                    OwnerId = business.OwnerId
-                }
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error during business registration for email: {Email}", request.Email);
-            return ApiResponse<RegisterBusinessResponse>.Fail(
-                "REGISTRATION_FAILED",
-                "An unexpected error occurred during registration.");
-        }
-    }
-
-    /// <inheritdoc />
     /// <remarks>
     /// 1. Find UserAuth by email (404 if not found).
     /// 2. Check verification code not expired (410 if expired).
@@ -701,8 +602,8 @@ public class AuthService : IAuthService
     /// The client sends a HINT (the tenant subdomain, or an explicit business
     /// id); this method resolves it to a business and verifies the caller's
     /// membership against the authoritative server-side relationships through
-    /// <see cref="IBusinessMembershipResolver"/> (Owner → <c>Business.OwnerId</c>,
-    /// Staff → <c>User.StaffBusinessId</c>, Customer → active enrollment).
+    /// <see cref="IBusinessMembershipResolver"/> (one active
+    /// <c>business_memberships</c> row; the role on that row decides the claim).
     ///
     /// Returns null whenever the tenant cannot be verified: authentication
     /// itself never fails because of tenant context — the token is simply

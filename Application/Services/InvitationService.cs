@@ -28,18 +28,23 @@ public class InvitationService : IInvitationService
     private readonly PublicAppSettings _publicApp;
     private readonly ILogger<InvitationService> _logger;
 
+    /// <summary>Canonical membership writer — invitation acceptance is a membership grant.</summary>
+    private readonly IBusinessMembershipService _memberships;
+
     public InvitationService(
         IUnitOfWork unitOfWork,
         JwtTokenService jwtService,
         IEmailService emailService,
         IOptions<PublicAppSettings> publicApp,
-        ILogger<InvitationService> logger)
+        ILogger<InvitationService> logger,
+        IBusinessMembershipService? memberships = null)
     {
         _unitOfWork = unitOfWork;
         _jwtService = jwtService;
         _emailService = emailService;
         _publicApp = publicApp.Value;
         _logger = logger;
+        _memberships = memberships ?? new BusinessMembershipService(unitOfWork);
     }
 
     /// <inheritdoc />
@@ -191,23 +196,19 @@ public class InvitationService : IInvitationService
         if (invitation == null)
             return Invalid("INVALID_TOKEN", "This invitation link is invalid or has already been used.");
 
-        var business = await _unitOfWork.Businesses.GetByIdAsync(invitation.BusinessId);
+        var business = await GetInvitableBusinessAsync(invitation);
+        if (business == null)
+            return Invalid("BUSINESS_NOT_FOUND", "The business that issued this invitation is no longer available.");
 
-        if (invitation.Status == InvitationStatus.Revoked)
-            return Invalid("REVOKED", "This invitation has been revoked.");
-
-        if (invitation.Status == InvitationStatus.Accepted)
-            return Invalid("ALREADY_USED", "This invitation has already been accepted.");
-
-        if (invitation.ExpiresAt < DateTime.UtcNow)
-            return Invalid("EXPIRED", "This invitation has expired.");
+        if (LifecycleError(invitation) is { } lifecycle)
+            return Invalid(lifecycle.Code, lifecycle.Message);
 
         return ApiResponse<StaffInvitationValidationResponse>.Ok(new StaffInvitationValidationResponse
         {
             Valid = true,
             BusinessId = invitation.BusinessId,
-            BusinessName = business?.Name ?? "the business",
-            BusinessLogoUrl = business?.LogoUrl,
+            BusinessName = business.Name,
+            BusinessLogoUrl = business.LogoUrl,
             Email = invitation.InvitedEmail,
             ExpiresAt = invitation.ExpiresAt
         });
@@ -225,31 +226,34 @@ public class InvitationService : IInvitationService
             if (invitation == null)
                 return ApiResponse<AuthResponse>.Fail("INVALID_TOKEN", "This invitation link is invalid or has already been used.");
 
-            if (invitation.Status == InvitationStatus.Revoked)
-                return ApiResponse<AuthResponse>.Fail("REVOKED", "This invitation has been revoked.");
+            if (await GetInvitableBusinessAsync(invitation) == null)
+                return ApiResponse<AuthResponse>.Fail("BUSINESS_NOT_FOUND", "The business that issued this invitation is no longer available.");
 
-            if (invitation.Status == InvitationStatus.Accepted)
-                return ApiResponse<AuthResponse>.Fail("ALREADY_USED", "This invitation has already been accepted.");
-
-            if (invitation.ExpiresAt < DateTime.UtcNow)
-                return ApiResponse<AuthResponse>.Fail("EXPIRED", "This invitation has expired.");
+            if (LifecycleError(invitation) is { } lifecycle)
+                return ApiResponse<AuthResponse>.Fail(lifecycle.Code, lifecycle.Message);
 
             // Acceptance is locked to the invited email — derived from the server-side record, never the client.
             var invitedEmail = invitation.InvitedEmail;
             if (!string.Equals(request.EmailConfirmation.Trim().ToLowerInvariant(), invitedEmail, StringComparison.OrdinalIgnoreCase))
                 return ApiResponse<AuthResponse>.Fail("EMAIL_MISMATCH", "The email you confirmed does not match the invited address.");
 
-            // Never attach an existing account without explicit ownership proof.
+            // An existing identity is NEVER attached to a business by this public
+            // endpoint (the token alone is not proof the caller controls the
+            // mailbox). It must sign in and accept explicitly via
+            // POST /v1/invitations/{token}/accept-existing, where the session
+            // proves ownership of the invited address.
             var existingAuth = await _unitOfWork.UserAuths.FirstOrDefaultAsync(a => a.Email == invitedEmail);
             if (existingAuth != null)
             {
                 var existingUser = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Email == invitedEmail);
-                if (existingUser?.Role == UserRole.Staff && existingUser.StaffBusinessId == invitation.BusinessId)
+                if (existingUser != null &&
+                    await _memberships.IsActiveMemberAsync(existingUser.Id, invitation.BusinessId) &&
+                    await _memberships.HasRoleAnywhereAsync(existingUser.Id, BusinessMembershipRole.Staff))
                     return ApiResponse<AuthResponse>.Fail("ALREADY_STAFF", "You are already linked to this business as staff.");
 
                 return ApiResponse<AuthResponse>.Fail(
                     "EMAIL_IN_USE",
-                    "An account with this email already exists. Sign in with that account, or ask the business owner to invite a different address.");
+                    "An account with this email already exists. Sign in and open the invitation link again to join as staff.");
             }
 
             var passwordHash = BCrypt.Net.BCrypt.HashPassword(request.Password, 12);
@@ -274,18 +278,32 @@ public class InvitationService : IInvitationService
                 Id = Guid.NewGuid(),
                 Email = invitedEmail,
                 FullName = request.FullName.Trim(),
+                // Persona hint for UI routing; the grant below is the membership.
                 Role = UserRole.Staff,
-                StaffBusinessId = invitation.BusinessId,
                 CreatedAt = DateTime.UtcNow
             };
             await _unitOfWork.Users.AddAsync(user);
+
+            // The invitation IS the membership grant. Same unit of work as the
+            // identity and the invitation status change: a committed staff
+            // account always has its membership and a consumed token.
+            await _memberships.EnsureAsync(
+                user.Id,
+                invitation.BusinessId,
+                BusinessMembershipRole.Staff,
+                invitation.InvitingUserId);
 
             invitation.Status = InvitationStatus.Accepted;
             invitation.AcceptedAt = DateTime.UtcNow;
             _unitOfWork.StaffInvitations.Update(invitation);
 
-            // Issue tokens so the staff member is authenticated immediately.
-            var accessToken = _jwtService.GenerateAccessToken(userAuth, user);
+            // Issue tenant-aware tokens so the staff member is authenticated
+            // immediately AND carries the tenant context (biz + bizRole=Staff),
+            // exactly like a tenant-aware sign-in would. Without these claims the
+            // new staff session would be treated as tenant-less on every
+            // business-scoped request until the first refresh.
+            var accessToken = _jwtService.GenerateAccessToken(
+                userAuth, user, invitation.BusinessId, TenantClaimNames.RoleStaff);
             var refreshTokenValue = _jwtService.GenerateRefreshToken();
             await _unitOfWork.RefreshTokens.AddAsync(new RefreshToken
             {
@@ -296,7 +314,19 @@ public class InvitationService : IInvitationService
                 CreatedAt = DateTime.UtcNow
             });
 
-            await _unitOfWork.SaveChangesAsync();
+            try
+            {
+                await _unitOfWork.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Concurrent acceptance won the row (Status is a concurrency
+                // token). The account created above was never committed, so the
+                // invitation remains single-use and exactly one staff account
+                // exists.
+                _logger.LogWarning("Concurrent acceptance of staff invitation {InvitationId}", invitation.Id);
+                return ApiResponse<AuthResponse>.Fail("ALREADY_USED", "This invitation has already been accepted.");
+            }
 
             _logger.LogInformation("Staff invitation {InvitationId} accepted for {Email} at business {Business}",
                 invitation.Id, invitedEmail, invitation.BusinessId);
@@ -324,10 +354,184 @@ public class InvitationService : IInvitationService
             return ApiResponse<AuthResponse>.Fail("ACCEPT_FAILED", "Failed to accept the invitation. Please try again.");
         }
     }
+    /// <inheritdoc />
+    public async Task<ApiResponse<AuthResponse>> AcceptStaffInvitationForExistingAccountAsync(Guid userAuthId, string token)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(token))
+                return ApiResponse<AuthResponse>.Fail("INVALID_TOKEN", "This invitation link is invalid.");
+
+            var invitation = await _unitOfWork.StaffInvitations
+                .FirstOrDefaultAsync(i => i.TokenHash == HashToken(token.Trim()));
+
+            if (invitation == null)
+                return ApiResponse<AuthResponse>.Fail("INVALID_TOKEN", "This invitation link is invalid or has already been used.");
+
+            if (await GetInvitableBusinessAsync(invitation) == null)
+                return ApiResponse<AuthResponse>.Fail("BUSINESS_NOT_FOUND", "The business that issued this invitation is no longer available.");
+
+            if (LifecycleError(invitation) is { } lifecycle)
+                return ApiResponse<AuthResponse>.Fail(lifecycle.Code, lifecycle.Message);
+
+            // Ownership proof for an existing identity is the session itself: the
+            // signed-in account's email must equal the invited address. The
+            // invitation token proves the owner invited that address; the session
+            // proves this caller controls it.
+            var auth = await _unitOfWork.UserAuths.FirstOrDefaultAsync(a => a.Id == userAuthId);
+            if (auth == null)
+                return ApiResponse<AuthResponse>.Fail("UNAUTHORIZED", "Invalid session.");
+
+            var user = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Email == auth.Email);
+            if (user == null || user.IsDeleted)
+                return ApiResponse<AuthResponse>.Fail("ACCOUNT_DISABLED", "This account is not available.");
+
+            if (!string.Equals(user.Email, invitation.InvitedEmail, StringComparison.OrdinalIgnoreCase))
+                return ApiResponse<AuthResponse>.Fail(
+                    "EMAIL_MISMATCH",
+                    "You are signed in with a different email address than the one that was invited.");
+
+            if (user.Role == UserRole.Admin)
+                return ApiResponse<AuthResponse>.Fail(
+                    "ROLE_NOT_ELIGIBLE", "Administrator accounts cannot be linked as business staff.");
+
+            // Membership is the only relationship signal. Staff may belong to
+            // several businesses (multi-tenant), so a staff role elsewhere is not
+            // a conflict — but an active membership of THIS business already
+            // exists, and there is nothing to accept twice.
+            var existingMembership = await _memberships.FindAsync(user.Id, invitation.BusinessId);
+            if (existingMembership is { Status: BusinessMembershipStatus.Active })
+            {
+                return existingMembership.Role == BusinessMembershipRole.Staff
+                    ? ApiResponse<AuthResponse>.Fail("ALREADY_STAFF", "You are already linked to this business as staff.")
+                    : ApiResponse<AuthResponse>.Fail(
+                        "ALREADY_MEMBER",
+                        "You already belong to this business. Nothing to accept.");
+            }
+
+            // An owner is a tenant of their own business; the v1 product rule is
+            // one owned business per identity, so an owner cannot also be staff.
+            if (await _memberships.HasRoleAnywhereAsync(user.Id, BusinessMembershipRole.Owner))
+                return ApiResponse<AuthResponse>.Fail(
+                    "OWNS_BUSINESS",
+                    "This account owns a business and cannot also join another business as staff. Use a different email address.");
+
+            // The membership grant rides the same commit as the invitation status
+            // change and the token row, so acceptance is atomic and single-use.
+            await _memberships.EnsureAsync(
+                user.Id,
+                invitation.BusinessId,
+                BusinessMembershipRole.Staff,
+                invitation.InvitingUserId);
+
+            // Persona stays a routing hint derived from membership.
+            if (user.Role != UserRole.Business)
+            {
+                user.Role = UserRole.Staff;
+                _unitOfWork.Users.Update(user);
+            }
+
+            invitation.Status = InvitationStatus.Accepted;
+            invitation.AcceptedAt = DateTime.UtcNow;
+            _unitOfWork.StaffInvitations.Update(invitation);
+
+            var accessToken = _jwtService.GenerateAccessToken(
+                auth, user, invitation.BusinessId, TenantClaimNames.RoleStaff);
+            var refreshTokenValue = _jwtService.GenerateRefreshToken();
+            await _unitOfWork.RefreshTokens.AddAsync(new RefreshToken
+            {
+                Id = Guid.NewGuid(),
+                UserAuthId = auth.Id,
+                Token = refreshTokenValue,
+                ExpiresAt = _jwtService.RefreshTokenExpiry,
+                CreatedAt = DateTime.UtcNow
+            });
+
+            try
+            {
+                await _unitOfWork.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                _logger.LogWarning("Concurrent acceptance of staff invitation {InvitationId}", invitation.Id);
+                return ApiResponse<AuthResponse>.Fail("ALREADY_USED", "This invitation has already been accepted.");
+            }
+
+            _logger.LogInformation(
+                "Existing identity {UserId} accepted staff invitation {InvitationId} at business {BusinessId}",
+                user.Id, invitation.Id, invitation.BusinessId);
+
+            return ApiResponse<AuthResponse>.Ok(new AuthResponse
+            {
+                AccessToken = accessToken,
+                RefreshToken = refreshTokenValue,
+                ExpiresIn = _jwtService.AccessTokenExpirySeconds,
+                User = new UserProfileResponse
+                {
+                    Id = user.Id,
+                    Email = user.Email,
+                    Phone = user.PhoneNumber,
+                    FullName = user.FullName,
+                    AvatarUrl = user.AvatarUrl,
+                    Role = user.Role,
+                    CreatedAt = user.CreatedAt
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error accepting staff invitation for an existing account");
+            return ApiResponse<AuthResponse>.Fail("ACCEPT_FAILED", "Failed to accept the invitation. Please try again.");
+        }
+    }
+
     // ── Private helpers ─────────────────────────────────────
 
+    /// <summary>
+    /// The business the caller OWNS, resolved from their active Owner
+    /// membership (never from <c>Business.OwnerId</c>).
+    /// </summary>
     private async Task<Business?> GetOwnedBusinessAsync(Guid ownerId)
-        => await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerId);
+    {
+        var membership = await _unitOfWork.BusinessMemberships.FirstOrDefaultAsync(m =>
+            m.UserId == ownerId &&
+            m.Role == BusinessMembershipRole.Owner &&
+            m.Status == BusinessMembershipStatus.Active);
+
+        return membership == null
+            ? null
+            : await _unitOfWork.Businesses.GetByIdAsync(membership.BusinessId);
+    }
+
+    /// <summary>
+    /// The tenant that issued the invitation must still exist — a deleted
+    /// business must never grant staff access.
+    /// </summary>
+    private async Task<Business?> GetInvitableBusinessAsync(StaffInvitation invitation)
+    {
+        var business = await _unitOfWork.Businesses.GetByIdAsync(invitation.BusinessId);
+        return business is { IsDeleted: false } ? business : null;
+    }
+
+    /// <summary>
+    /// Single source of truth for the invitation lifecycle gate. Validation and
+    /// both acceptance paths (new account + existing account) call this, so the
+    /// public page, the public accept endpoint and the authenticated accept
+    /// endpoint can never disagree about whether a token is still usable.
+    /// </summary>
+    private static (string Code, string Message)? LifecycleError(StaffInvitation invitation)
+    {
+        if (invitation.Status == InvitationStatus.Revoked)
+            return ("REVOKED", "This invitation has been revoked.");
+
+        if (invitation.Status == InvitationStatus.Accepted)
+            return ("ALREADY_USED", "This invitation has already been accepted.");
+
+        if (invitation.ExpiresAt < DateTime.UtcNow)
+            return ("EXPIRED", "This invitation has expired.");
+
+        return null;
+    }
 
     private async Task SendInvitationEmailAsync(StaffInvitation invitation, string token)
     {

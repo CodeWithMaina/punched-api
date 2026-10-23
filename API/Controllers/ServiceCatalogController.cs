@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Interfaces;
@@ -10,7 +11,7 @@ namespace PunchedApi.API.Controllers;
 /// <summary>
 /// Service catalog controller — owner CRUD + public per-business active list.
 /// Base route: /v1/services
-/// Owner endpoints are [Authorize(Roles = "Business")]; the public list is [AllowAnonymous].
+/// Owner endpoints are [Authorize(Policy = MembershipPolicies.Owner)]; the public list is [AllowAnonymous].
 /// </summary>
 [ApiController]
 [Route("v1/services")]
@@ -27,7 +28,7 @@ public class ServiceCatalogController : ControllerBase
     }
 
     [HttpGet("admin")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Policy = MembershipPolicies.PlatformAdmin)]
     public async Task<IActionResult> GetAdminServices([FromQuery] Guid? businessId)
     {
         var result = await _catalogService.GetAdminServicesAsync(businessId);
@@ -35,7 +36,7 @@ public class ServiceCatalogController : ControllerBase
     }
 
     [HttpPost("admin/{businessId:guid}")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Policy = MembershipPolicies.PlatformAdmin)]
     public async Task<IActionResult> CreateForBusiness(Guid businessId, [FromBody] CreateServiceRequest request)
     {
         var result = await _catalogService.CreateForBusinessAsync(businessId, request);
@@ -43,7 +44,7 @@ public class ServiceCatalogController : ControllerBase
     }
 
     [HttpPatch("admin/{businessId:guid}/{id:guid}")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Policy = MembershipPolicies.PlatformAdmin)]
     public async Task<IActionResult> UpdateForBusiness(Guid businessId, Guid id, [FromBody] UpdateServiceRequest request)
     {
         var result = await _catalogService.UpdateForBusinessAsync(businessId, id, request);
@@ -51,7 +52,7 @@ public class ServiceCatalogController : ControllerBase
     }
 
     [HttpDelete("admin/{businessId:guid}/{id:guid}")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Policy = MembershipPolicies.PlatformAdmin)]
     public async Task<IActionResult> DeleteForBusiness(Guid businessId, Guid id)
     {
         var result = await _catalogService.DeleteForBusinessAsync(businessId, id);
@@ -68,7 +69,7 @@ public class ServiceCatalogController : ControllerBase
 
     /// <summary>Owner: list all of the owner's business services (including inactive).</summary>
     [HttpGet("me")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<List<ServiceCatalogItemResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetMyServices()
     {
@@ -81,7 +82,7 @@ public class ServiceCatalogController : ControllerBase
 
     /// <summary>Owner: get a single service belonging to the owner's business.</summary>
     [HttpGet("me/{id:guid}")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<ServiceCatalogItemResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetService(Guid id)
@@ -95,7 +96,7 @@ public class ServiceCatalogController : ControllerBase
 
     /// <summary>Owner: create a new active service for the owner's business.</summary>
     [HttpPost("me")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<ServiceCatalogItemResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> CreateService([FromBody] CreateServiceRequest request)
     {
@@ -108,7 +109,7 @@ public class ServiceCatalogController : ControllerBase
 
     /// <summary>Owner: partially update a service belonging to the owner's business.</summary>
     [HttpPatch("me/{id:guid}")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<ServiceCatalogItemResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> UpdateService(Guid id, [FromBody] UpdateServiceRequest request)
@@ -122,7 +123,7 @@ public class ServiceCatalogController : ControllerBase
 
     /// <summary>Owner: soft-delete a service by deactivating it.</summary>
     [HttpDelete("me/{id:guid}")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> DeleteService(Guid id)

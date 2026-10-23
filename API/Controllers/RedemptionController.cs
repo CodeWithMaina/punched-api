@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
@@ -15,7 +16,7 @@ namespace PunchedApi.API.Controllers;
 [ApiController]
 [Route("v1/redemptions")]
 [Produces("application/json")]
-[Authorize(Roles = "Customer,Business,Staff")]
+[Authorize(Policy = MembershipPolicies.Authenticated)]
     [RequireModule("rewards")]
 [EnableRateLimiting("general")]
 public class RedemptionController : ControllerBase
@@ -77,7 +78,7 @@ public class RedemptionController : ControllerBase
     /// Pending redemptions for the authenticated business/staff member (fulfilment queue).
     /// </summary>
     [HttpGet("pending")]
-    [Authorize(Roles = "Business,Staff")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
     [ProducesResponseType(typeof(ApiResponse<List<RedemptionResponse>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetPendingRedemptions()
     {
@@ -92,7 +93,7 @@ public class RedemptionController : ControllerBase
     /// Verify a 6-char fulfilment code and mark a pending redemption fulfilled (Business + Staff).
     /// </summary>
     [HttpPost("fulfill")]
-    [Authorize(Roles = "Business,Staff")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
     [ProducesResponseType(typeof(ApiResponse<FulfillRedemptionResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
@@ -121,7 +122,7 @@ public class RedemptionController : ControllerBase
     /// Cancel a pending redemption and restore the consumed stamps (Business only).
     /// </summary>
     [HttpPost("{id:guid}/cancel")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<CancelRedemptionResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]

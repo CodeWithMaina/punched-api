@@ -57,8 +57,16 @@ public class StaffInvitation : BaseEntity
 
     /// <summary>
     /// Current lifecycle status.
+    ///
+    /// <para><c>[ConcurrencyCheck]</c> makes EF append <c>WHERE status = @original</c>
+    /// to the UPDATE, so two simultaneous acceptance requests can never both
+    /// win: the loser gets a <see cref="Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException"/>
+    /// and is answered with <c>ALREADY_USED</c>. That is the single-use
+    /// guarantee — it is enforced by the database, not by a read-then-write
+    /// window in application code.</para>
     /// </summary>
     [Required]
+    [ConcurrencyCheck]
     public InvitationStatus Status { get; set; } = InvitationStatus.Pending;
 
     /// <summary>

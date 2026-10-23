@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using PunchedApi.Application.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using PunchedApi.API.Filters;
@@ -19,7 +20,7 @@ namespace PunchedApi.API.Controllers;
 [ApiController]
 [Route("v1/attendance")]
 [Produces("application/json")]
-[Authorize(Roles = "Business,Staff")]
+[Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
 [RequireModule("attendance")]
 [EnableRateLimiting("general")]
 public class AttendanceController : ControllerBase

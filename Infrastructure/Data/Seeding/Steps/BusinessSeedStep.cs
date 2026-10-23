@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using PunchedApi.Application.Services;
+using PunchedApi.Domain.Entities;
 
 namespace PunchedApi.Infrastructure.Data.Seeding.Steps;
 
@@ -83,12 +84,66 @@ public sealed class BusinessSeedStep : ISeedStep
         await context.Db.SaveChangesAsync(cancellationToken);
         context.Report.Counts["BusinessesCreated"] = created;
 
+        // ── Canonical memberships: every seeded business gets its Owner row ──
+        // Business.OwnerId stays as the denormalized pointer, but authorization
+        // resolves through business_memberships, so a seeded owner must have one.
+        var businessIds = context.BusinessesByKey.Values
+            .Select(b => b.Id)
+            .Distinct()
+            .ToList();
+
+        var ownerMemberships = await context.Db.BusinessMemberships
+            .Where(m => businessIds.Contains(m.BusinessId))
+            .ToListAsync(cancellationToken);
+
+        var seededOwners = 0;
+        foreach (var def in context.Scenario.Businesses)
+        {
+            var businessId = context.BusinessesByKey[def.Key].Id;
+            var owner = context.UsersByKey[def.OwnerUserKey];
+
+            var membership = ownerMemberships.FirstOrDefault(
+                m => m.BusinessId == businessId && m.UserId == owner.Id);
+
+            if (membership == null)
+            {
+                await context.Db.BusinessMemberships.AddAsync(new BusinessMembership
+                {
+                    Id = DeterministicSeed.GuidFor("business-owner", def.Key),
+                    UserId = owner.Id,
+                    BusinessId = businessId,
+                    Role = BusinessMembershipRole.Owner,
+                    Status = BusinessMembershipStatus.Active,
+                    JoinedAt = def.CreatedAt,
+                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = def.CreatedAt
+                }, cancellationToken);
+                seededOwners++;
+                continue;
+            }
+
+            // A reseed must leave the owner with an Active OWNER row: an earlier
+            // run (or a manual edit) may have left it suspended, left, or with a
+            // weaker role, and the partial unique index only grants authority for
+            // role='Owner' AND status='Active'.
+            var changed = membership.Role != BusinessMembershipRole.Owner ||
+                          membership.Status != BusinessMembershipStatus.Active;
+            membership.Role = BusinessMembershipRole.Owner;
+            membership.Status = BusinessMembershipStatus.Active;
+            membership.EndedAt = null;
+            if (changed) membership.UpdatedAt = DateTime.UtcNow;
+        }
+
+        if (seededOwners > 0)
+            await context.Db.SaveChangesAsync(cancellationToken);
+        context.Report.Counts["OwnerMembershipsCreated"] = seededOwners;
+
         // ── Subscriptions: every business needs one for module access ──
         var planRows = await context.Db.SubscriptionPlans
             .Include(p => p.PlanModules)
             .ToDictionaryAsync(p => p.Key, cancellationToken);
 
-        var businessIds = context.BusinessesByKey.Values
+        businessIds = context.BusinessesByKey.Values
             .Select(b => b.Id)
             .Distinct()
             .ToList();

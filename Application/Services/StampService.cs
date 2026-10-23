@@ -229,12 +229,12 @@ public class StampService : IStampService
 
             // If the awarding user is a staff member and they've reached their daily goal,
             // fire a GoalReached in-app notification.
-            if (actor.Role == UserRole.Staff && actor.StaffBusinessId.HasValue)
+            if (actor.Role == UserRole.Staff)
             {
                 var dailyGoal = actor.DailyGoalOverride
                     ?? (await _context.Businesses
                         .AsNoTracking()
-                        .Where(b => b.Id == actor.StaffBusinessId.Value)
+                        .Where(b => b.Id == scopedBusinessId)
                         .Select(b => b.DefaultDailyGoal)
                         .FirstOrDefaultAsync());
 
@@ -476,9 +476,10 @@ public class StampService : IStampService
         {
             if (!_permissionService.HasPermission("Staff", "stamps.award"))
                 return ApiResponse<ActorScope>.Fail("FORBIDDEN", "You do not have permission to award stamps.");
-            if (actor.StaffBusinessId == null)
+            var staffBusinessId = await _businessScopeResolver.GetMemberBusinessIdAsync(actor.Id);
+            if (staffBusinessId == null)
                 return ApiResponse<ActorScope>.Fail("NOT_LINKED", "Staff user is not linked to a business.");
-            return ApiResponse<ActorScope>.Ok(new ActorScope(actor, actor.StaffBusinessId.Value));
+            return ApiResponse<ActorScope>.Ok(new ActorScope(actor, staffBusinessId.Value));
         }
 
         if (actor.Role == UserRole.Business)

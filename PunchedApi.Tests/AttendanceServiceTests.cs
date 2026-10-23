@@ -191,8 +191,7 @@ public class AttendanceServiceTests
         var env = await CreateEnvAsync(connection);
         using var context = env.Context;
 
-        var unlinked = BookingTestBase.CreateStaff(env.Business.Id, "unlinked@clock.test");
-        unlinked.StaffBusinessId = null;
+        var unlinked = BookingTestBase.CreateStaffWithoutMembership("unlinked@clock.test");
         await BookingTestBase.SeedAsync(context, unlinked);
         context.ChangeTracker.Clear();
 

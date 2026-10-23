@@ -325,21 +325,14 @@ public sealed class PreferenceResolver : IPreferenceResolver
     // ── cache ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Owner, staff link, or customer enrollment — the same three relationships the
-    /// send path validates, so a preference row can only be written for a business
-    /// the caller genuinely belongs to.
+    /// Canonical membership check: a preference row can only be written for a
+    /// business the caller genuinely (currently) belongs to.
     /// </summary>
-    private async Task<bool> IsAssociatedWithBusinessAsync(Guid userId, Guid businessId)
-    {
-        if (await _unitOfWork.Businesses.AnyAsync(b => b.Id == businessId && b.OwnerId == userId))
-            return true;
-
-        if (await _unitOfWork.Users.AnyAsync(u => u.Id == userId && u.StaffBusinessId == businessId))
-            return true;
-
-        return await _unitOfWork.CustomerBusinessEnrollments
-            .AnyAsync(e => e.CustomerId == userId && e.BusinessId == businessId);
-    }
+    private Task<bool> IsAssociatedWithBusinessAsync(Guid userId, Guid businessId) =>
+        _unitOfWork.BusinessMemberships.AnyAsync(m =>
+            m.UserId == userId &&
+            m.BusinessId == businessId &&
+            m.Status == BusinessMembershipStatus.Active);
 
     private async Task<IReadOnlyList<PreferenceRow>> LoadOverridesAsync(
         Guid userId, Guid? businessId, CancellationToken ct)

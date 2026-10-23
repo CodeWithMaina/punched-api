@@ -42,7 +42,7 @@ public sealed class ReviewController : ControllerBase
     /// the business has no reviews surface at all, staff included.
     /// </summary>
     [HttpGet("staff/me/reviews")]
-    [Authorize(Roles = "Staff")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
     [RequireModule("reviews")]
     public async Task<IActionResult> GetStaffMine([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     { var id = UserId(); return id == null ? Unauthorized() : Map(await _reviews.GetStaffReviewsAsync(id.Value, page, pageSize)); }
@@ -62,7 +62,7 @@ public sealed class ReviewController : ControllerBase
     public async Task<IActionResult> GetSummary(Guid businessId) => Map(await _reviews.GetSummaryAsync(businessId));
 
     [HttpGet("businesses/me/reviews")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("reviews")]
     public async Task<IActionResult> GetOwner(
         [FromQuery] int page = 1,

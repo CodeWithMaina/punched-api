@@ -197,4 +197,10 @@ public class Business : BaseEntity
     /// The user who owns this business.
     /// </summary>
     public virtual User? Owner { get; set; }
+
+    /// <summary>
+    /// Every identity with a relationship to this business (Owner/Staff/Customer).
+    /// The single source of truth for who may act in this tenant.
+    /// </summary>
+    public virtual ICollection<BusinessMembership> Memberships { get; set; } = new List<BusinessMembership>();
 }

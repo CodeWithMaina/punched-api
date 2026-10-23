@@ -27,7 +27,7 @@ public partial class AttendanceService
     /// <summary>
     /// Resolves the actor + scoped business id server-side from the JWT-derived
     /// user id (the <c>StampService.ResolveActorAsync</c> pattern):
-    /// staff → <c>Users.StaffBusinessId</c>; owner → owned business;
+    /// staff → their ACTIVE staff membership; owner → owned business;
     /// anyone else → FORBIDDEN. A missing (soft-deleted) user maps to
     /// FORBIDDEN with one clear message — §9.6.
     /// </summary>
@@ -51,10 +51,18 @@ public partial class AttendanceService
 
         if (actor.Role == UserRole.Staff)
         {
-            if (actor.StaffBusinessId == null)
+            // The relationship lives in business_memberships, not on the user.
+            var staffBusinessId = await _context.BusinessMemberships.AsNoTracking()
+                .Where(m => m.UserId == actor.Id &&
+                            m.Role == BusinessMembershipRole.Staff &&
+                            m.Status == BusinessMembershipStatus.Active)
+                .Select(m => (Guid?)m.BusinessId)
+                .FirstOrDefaultAsync();
+
+            if (staffBusinessId == null)
                 return ApiResponse<ActorScope>.Fail(
                     "NOT_LINKED", "Staff user is not linked to a business.");
-            return ApiResponse<ActorScope>.Ok(new ActorScope(actor, actor.StaffBusinessId.Value));
+            return ApiResponse<ActorScope>.Ok(new ActorScope(actor, staffBusinessId.Value));
         }
 
         var ownedBusinessId = await _context.Businesses.AsNoTracking()

@@ -108,8 +108,8 @@ public class RegistrationBusinessAssociationTests
             TestHelpers.CreateLogger<AuthService>(),
             new SubscriptionProvisioningService(ctx, TestHelpers.CreateLogger<SubscriptionProvisioningService>()),
             new BusinessSlugGenerator(ctx),
-            // Real membership view: Owner → Business.OwnerId, Staff → StaffBusinessId,
-            // Customer → active CustomerBusinessEnrollment.
+            // Real membership view: one business_memberships read resolves
+            // Owner / Staff / Customer alike.
             new BusinessMembershipResolver(ctx),
             tenantResolver.Object,
             notifications: null,

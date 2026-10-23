@@ -57,6 +57,23 @@ public class AppointmentService : IAppointmentService
     /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
     private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
 
+    /// <summary>True when the identity is ACTIVE staff of the business (membership-sourced).</summary>
+    private Task<bool> IsStaffOfBusinessAsync(Guid userId, Guid businessId) =>
+        _context.BusinessMemberships.AsNoTracking().AnyAsync(m =>
+            m.UserId == userId &&
+            m.BusinessId == businessId &&
+            m.Role == BusinessMembershipRole.Staff &&
+            m.Status == BusinessMembershipStatus.Active);
+
+    /// <summary>The identity's ACTIVE staff business, or null.</summary>
+    private Task<Guid?> GetActiveStaffBusinessIdAsync(Guid userId) =>
+        _context.BusinessMemberships.AsNoTracking()
+            .Where(m => m.UserId == userId &&
+                        m.Role == BusinessMembershipRole.Staff &&
+                        m.Status == BusinessMembershipStatus.Active)
+            .Select(m => (Guid?)m.BusinessId)
+            .FirstOrDefaultAsync();
+
     private Task<string> GetBusinessNameAsync(Guid businessId) => _context.Businesses
         .AsNoTracking()
         .Where(business => business.Id == businessId)
@@ -155,8 +172,7 @@ public class AppointmentService : IAppointmentService
             var createGuard = StaffCreatePermissionGuard(role);
             if (createGuard != null) return createGuard;
 
-            var staffMember = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == callerUserId && u.StaffBusinessId == request.BusinessId);
-            if (staffMember == null)
+            if (!await IsStaffOfBusinessAsync(callerUserId, request.BusinessId))
                 return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "You are not authorized for this business.");
             businessId = request.BusinessId;
         }
@@ -224,8 +240,7 @@ public class AppointmentService : IAppointmentService
             var createGuard = StaffCreatePermissionGuard(role);
             if (createGuard != null) return createGuard;
 
-            var staffMember = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == callerUserId && u.StaffBusinessId == request.BusinessId);
-            if (staffMember == null)
+            if (!await IsStaffOfBusinessAsync(callerUserId, request.BusinessId))
                 return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "You are not authorized for this business.");
             businessId = request.BusinessId;
         }
@@ -483,12 +498,15 @@ public class AppointmentService : IAppointmentService
         await _context.RescheduleRequests.AddAsync(rescheduleRequest);
         await _unitOfWork.SaveChangesAsync();
 
-        // Notify the business owner for confirmation.
-        var ownerId = await _context.Businesses
-            .Where(b => b.Id == appointment.BusinessId)
-            .Select(b => b.OwnerId)
+        // Notify the business owner for confirmation (resolved from the canonical
+        // Owner membership, never from the denormalized Business.OwnerId pointer).
+        var ownerId = await _context.BusinessMemberships
+            .Where(m => m.BusinessId == appointment.BusinessId &&
+                        m.Role == BusinessMembershipRole.Owner &&
+                        m.Status == BusinessMembershipStatus.Active)
+            .Select(m => (Guid?)m.UserId)
             .FirstOrDefaultAsync();
-        if (ownerId != Guid.Empty && ownerId != null)
+        if (ownerId != null && ownerId != Guid.Empty)
         {
             await SendNotificationSafelyAsync(new NotificationRequest(
                 "appointment.reschedule_requested",
@@ -1071,7 +1089,11 @@ public class AppointmentService : IAppointmentService
         // 9. Reference data (unpaginated, lightweight) for filter dropdowns.
         var customers = await (
             from u in _context.Users.AsNoTracking()
-            where u.Role == UserRole.Customer && u.StaffBusinessId == null
+            where _context.BusinessMemberships.Any(m =>
+                m.UserId == u.Id &&
+                m.BusinessId == business.Id &&
+                m.Role == BusinessMembershipRole.Customer &&
+                m.Status == BusinessMembershipStatus.Active)
             join e in _context.CustomerBusinessEnrollments.AsNoTracking()
                 on new { CustomerId = u.Id, BusinessId = business.Id } equals new { e.CustomerId, e.BusinessId }
             join lc in _context.LoyaltyCards.AsNoTracking()
@@ -1091,8 +1113,15 @@ public class AppointmentService : IAppointmentService
             .OrderBy(c => c.FullName)
             .ToListAsync();
 
+        var staffMembershipIds = await _context.BusinessMemberships.AsNoTracking()
+            .Where(m => m.BusinessId == business.Id &&
+                        m.Role == BusinessMembershipRole.Staff &&
+                        m.Status == BusinessMembershipStatus.Active)
+            .Select(m => m.UserId)
+            .ToListAsync();
+
         var staff = await _context.Users.AsNoTracking()
-            .Where(u => u.Role == UserRole.Staff && u.StaffBusinessId == business.Id)
+            .Where(u => staffMembershipIds.Contains(u.Id))
             .OrderBy(u => u.FullName)
             .Select(u => new StaffDashboardItemResponse
             {
@@ -1225,11 +1254,11 @@ public class AppointmentService : IAppointmentService
     public async Task<ApiResponse<AppointmentResponse>> CreateStaffSelfAppointmentAsync(
         Guid staffUserId, CreateAppointmentRequest request)
     {
-        var staff = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId && u.StaffBusinessId != null);
-        if (staff?.StaffBusinessId == null)
+        var staffBusinessId = await GetActiveStaffBusinessIdAsync(staffUserId);
+        if (staffBusinessId == null)
             return ApiResponse<AppointmentResponse>.Fail("NOT_LINKED", "You are not linked to any business.");
 
-        var businessId = staff.StaffBusinessId.Value;
+        var businessId = staffBusinessId.Value;
 
         var (services, svcError, svcMsg) = await ValidateServicesAsync(businessId, request.ServiceIds);
         if (svcError != null)
@@ -1265,15 +1294,15 @@ public class AppointmentService : IAppointmentService
     public async Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetStaffCustomerAppointmentsAsync(
         Guid staffUserId, Guid customerId, int page, int pageSize)
     {
-                var staff = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == staffUserId);
+        var staffBusinessId = await GetActiveStaffBusinessIdAsync(staffUserId);
 
-        if (staff == null || staff.StaffBusinessId == null)
+        if (staffBusinessId == null)
             return ApiResponse<PaginatedResponse<AppointmentResponse>>.Fail(
                 "NOT_LINKED", "You are not linked to any business.");
 
         return await GetCustomerAppointmentsAsync(customerId, new CustomerAppointmentsQueryRequest
         {
-            BusinessId = staff.StaffBusinessId.Value,
+            BusinessId = staffBusinessId.Value,
             Page = page,
             PageSize = pageSize,
             SortBy = "upcoming"
@@ -1850,7 +1879,10 @@ public class AppointmentService : IAppointmentService
                 : (owner, null, null);
         }
 
-        var staff = await _context.Users.FirstOrDefaultAsync(u => u.Id == staffUserId.Value && u.StaffBusinessId == businessId);
+        if (!await IsStaffOfBusinessAsync(staffUserId.Value, businessId))
+            return (null, "STAFF_NOT_FOUND", "Staff member not found in this business.");
+
+        var staff = await _context.Users.FirstOrDefaultAsync(u => u.Id == staffUserId.Value);
         if (staff == null)
             return (null, "STAFF_NOT_FOUND", "Staff member not found in this business.");
 

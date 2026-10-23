@@ -139,8 +139,7 @@ public class StampingEcosystemTests : IDisposable
 
     internal StampService CreateStampService(Tenant t, INotificationService? notificationService = null)
     {
-        var scopeResolver = new Mock<IBusinessScopeResolver>();
-        scopeResolver.Setup(r => r.GetOwnedBusinessIdAsync(t.Owner.Id)).ReturnsAsync(t.Business.Id);
+        var scopeResolver = CreateScopeResolver(t);
         return new StampService(
             new UnitOfWork(_db),
             _db,
@@ -148,21 +147,33 @@ public class StampingEcosystemTests : IDisposable
             new Mock<IReferralService>().Object,
             new Mock<IAnalyticsAggregationService>().Object,
             notificationService ?? CreateNotificationService(),
-            scopeResolver.Object,
+            scopeResolver,
             new PermissionService(),
             new IdempotencyService(new UnitOfWork(_db), _db, NullLogger<IdempotencyService>.Instance),
             NullLogger<StampService>.Instance);
     }
 
-    internal RedemptionService CreateRedemptionService(Tenant t, INotificationService? notificationService = null)
+    /// <summary>
+    /// Scope stub backed by the canonical memberships seeded for the tenant:
+    /// the owner resolves as OWNER, staff resolve as members (Staff membership),
+    /// customers resolve as members of their enrolled business.
+    /// </summary>
+    internal IBusinessScopeResolver CreateScopeResolver(Tenant t)
     {
         var scopeResolver = new Mock<IBusinessScopeResolver>();
         scopeResolver.Setup(r => r.GetOwnedBusinessIdAsync(t.Owner.Id)).ReturnsAsync(t.Business.Id);
+        scopeResolver.Setup(r => r.GetMemberBusinessIdAsync(t.Staff.Id)).ReturnsAsync(t.Business.Id);
+        return scopeResolver.Object;
+    }
+
+    internal RedemptionService CreateRedemptionService(Tenant t, INotificationService? notificationService = null)
+    {
+        var scopeResolver = CreateScopeResolver(t);
         return new RedemptionService(
             new UnitOfWork(_db),
             _db,
             new Mock<IAnalyticsAggregationService>().Object,
-            scopeResolver.Object,
+            scopeResolver,
             new PermissionService(),
             notificationService ?? CreateNotificationService(),
             new Mock<ISseService>().Object,

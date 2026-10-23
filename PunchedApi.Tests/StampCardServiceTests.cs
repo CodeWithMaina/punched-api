@@ -92,6 +92,10 @@ public class StampCardServiceTests : IDisposable
         _context.Users.Add(owner);
         _context.LoyaltyPrograms.Add(program);
         _context.SaveChanges();
+        // OwnerId is denormalized only; the Owner membership authorizes.
+        _context.BusinessMemberships.Add(BookingTestBase.CreateMembership(
+            _ownerId, _businessId, BusinessMembershipRole.Owner));
+        _context.SaveChanges();
     }
 
     private async Task<Guid> FirstProgramIdAsync() =>

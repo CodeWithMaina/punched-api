@@ -47,21 +47,17 @@ public class ApiEventLoggingMiddleware
             Guid? tenantId = null;
             if (userId.HasValue)
             {
-                var business = await db.Businesses
+                // Tenant attribution comes from the canonical membership row
+                // (owner first, then staff) — never a persona or pointer column.
+                tenantId = await db.BusinessMemberships
                     .IgnoreQueryFilters()
-                    .FirstOrDefaultAsync(b => b.OwnerId == userId.Value);
-
-                if (business != null)
-                {
-                    tenantId = business.Id;
-                }
-                else
-                {
-                    var staff = await db.Users
-                        .IgnoreQueryFilters()
-                        .FirstOrDefaultAsync(u => u.Id == userId.Value);
-                    tenantId = staff?.StaffBusinessId;
-                }
+                    .AsNoTracking()
+                    .Where(m => m.UserId == userId.Value &&
+                                m.Status == BusinessMembershipStatus.Active)
+                    .OrderByDescending(m => m.Role == BusinessMembershipRole.Owner)
+                    .ThenByDescending(m => m.Role == BusinessMembershipRole.Staff)
+                    .Select(m => (Guid?)m.BusinessId)
+                    .FirstOrDefaultAsync();
             }
 
             var log = new ApiEventLog

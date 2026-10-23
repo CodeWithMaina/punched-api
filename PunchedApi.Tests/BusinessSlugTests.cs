@@ -102,6 +102,10 @@ public class BusinessSlugTests
         };
         context.Businesses.Add(business);
         context.SaveChanges();
+        // OwnerId is denormalized only — the Owner membership is what authorizes.
+        context.BusinessMemberships.Add(
+            BookingTestBase.CreateMembership(owner.Id, business.Id, BusinessMembershipRole.Owner));
+        context.SaveChanges();
         return business;
     }
 
@@ -222,28 +226,22 @@ public class BusinessSlugTests
     // ── Service flows (create / edit / resolve / backfill) ─────────────
 
     [Fact]
-    public async Task RegisterBusiness_AssignsGeneratedSlug()
+    public async Task CreateBusiness_NormalisesTheNameIntoTheSlug()
     {
-        using var context = CreateContext("Slug_Register");
-        var service = CreateAuthService(context);
+        using var context = CreateContext("Slug_Create_Apostrophe");
+        var owner = AddOwner(context, "apostrophe@t.com");
+        var service = CreateBusinessService(context);
 
-        var result = await service.RegisterBusinessAsync(new RegisterBusinessRequest
+        var result = await service.CreateBusinessAsync(owner.Id, new CreateBusinessRequest
         {
-            FullName = "Jane Chege",
-            Email = "owner@example.com",
-            Password = "P@ssw0rd!12",
-            PhoneNumber = "+254700000000",
-            BusinessName = "Chege's Java Hut",
-            BusinessCategory = "Cafe",
-            BusinessLocation = "Nairobi",
-            BusinessPhone = "+254700000001",
-            BusinessEmail = "cafe@example.com",
-            BusinessMpesaNumber = "123456",
-            BusinessDescription = "Specialty coffee and pastries."
+            Name = "Chege's Java Hut",
+            Category = "Cafe",
+            Location = "Nairobi",
+            MpesaNumber = "1"
         });
 
         Assert.True(result.Success, result.Error?.Message);
-        Assert.Equal("chege-s-java-hut", result.Data!.Business!.Slug);
+        Assert.Equal("chege-s-java-hut", result.Data!.Slug);
 
         var persisted = await context.Businesses.SingleAsync(b => b.Name == "Chege's Java Hut");
         Assert.Equal("chege-s-java-hut", persisted.Slug);

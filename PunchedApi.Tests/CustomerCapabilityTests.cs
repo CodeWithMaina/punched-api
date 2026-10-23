@@ -147,6 +147,7 @@ public class CustomerCapabilityTests : IDisposable
         private readonly Guid? _businessId;
         public StubScopeResolver(Guid? businessId) => _businessId = businessId;
         public Task<Guid?> GetOwnedBusinessIdAsync(Guid ownerId) => Task.FromResult(_businessId);
+        public Task<Guid?> GetMemberBusinessIdAsync(Guid userId) => Task.FromResult(_businessId);
         public void InvalidateOwner(Guid ownerId) { }
     }
 

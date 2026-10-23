@@ -78,8 +78,8 @@ public sealed class LoyaltyScopeResolver : ILoyaltyScopeResolver
             // Owner: resolved from the business they own, via the cached resolver.
             UserRole.Business => await _businessScopeResolver.GetOwnedBusinessIdAsync(actor.Id),
 
-            // Staff: the business they are linked to.
-            UserRole.Staff => actor.StaffBusinessId,
+            // Staff: the business of their ACTIVE staff membership.
+            UserRole.Staff => await _businessScopeResolver.GetMemberBusinessIdAsync(actor.Id),
 
             _ => null
         };

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PunchedApi.Application.Authorization;
 using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Interfaces;
@@ -25,7 +26,7 @@ public class ReferralController : ControllerBase
 
     /// <summary>Create or update the referral program for the current business.</summary>
     [HttpPut("programs/me")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     public async Task<IActionResult> UpsertProgram([FromBody] UpsertReferralProgramRequest request)
     {
         var userId = GetUserId();
@@ -48,7 +49,7 @@ public class ReferralController : ControllerBase
 
     /// <summary>Generate a referral link for a specific business.</summary>
     [HttpPost("links")]
-    [Authorize(Roles = "Customer,Business")]
+    [Authorize(Policy = MembershipPolicies.Authenticated)]
     public async Task<IActionResult> GenerateLink([FromBody] GenerateReferralLinkRequest request)
     {
         var userId = GetUserId();
@@ -60,7 +61,7 @@ public class ReferralController : ControllerBase
 
     /// <summary>Get all my referral links across businesses.</summary>
     [HttpGet("links")]
-    [Authorize(Roles = "Customer,Business")]
+    [Authorize(Policy = MembershipPolicies.Authenticated)]
     public async Task<IActionResult> GetMyLinks()
     {
         var userId = GetUserId();
@@ -72,7 +73,7 @@ public class ReferralController : ControllerBase
 
     /// <summary>Get my referral link for a specific business.</summary>
     [HttpGet("links/{businessId:guid}")]
-    [Authorize(Roles = "Customer,Business")]
+    [Authorize(Policy = MembershipPolicies.Authenticated)]
     public async Task<IActionResult> GetLinkForBusiness(Guid businessId)
     {
         var userId = GetUserId();
@@ -95,7 +96,7 @@ public class ReferralController : ControllerBase
 
     /// <summary>Resolve a referral code — creates referral record and auto-enrolls referee.</summary>
     [HttpPost("resolve")]
-    [Authorize(Roles = "Customer,Business")]
+    [Authorize(Policy = MembershipPolicies.Authenticated)]
     public async Task<IActionResult> ResolveCode([FromBody] ResolveReferralRequest request)
     {
         var userId = GetUserId();
@@ -109,7 +110,7 @@ public class ReferralController : ControllerBase
 
     /// <summary>Get all referrals I've made (as referrer).</summary>
     [HttpGet]
-    [Authorize(Roles = "Customer,Business")]
+    [Authorize(Policy = MembershipPolicies.Authenticated)]
     public async Task<IActionResult> GetMyReferrals()
     {
         var userId = GetUserId();
@@ -121,7 +122,7 @@ public class ReferralController : ControllerBase
 
     /// <summary>Get referrals where I'm the referee.</summary>
     [HttpGet("incoming")]
-    [Authorize(Roles = "Customer,Business")]
+    [Authorize(Policy = MembershipPolicies.Authenticated)]
     public async Task<IActionResult> GetIncomingReferrals()
     {
         var userId = GetUserId();
@@ -133,7 +134,7 @@ public class ReferralController : ControllerBase
 
     /// <summary>Get my referral statistics.</summary>
     [HttpGet("stats")]
-    [Authorize(Roles = "Customer,Business")]
+    [Authorize(Policy = MembershipPolicies.Authenticated)]
     public async Task<IActionResult> GetMyStats()
     {
         var userId = GetUserId();
@@ -148,7 +149,7 @@ public class ReferralController : ControllerBase
     /// referral counts by lifecycle stage, conversion rate and recent activity.
     /// </summary>
     [HttpGet("business")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     public async Task<IActionResult> GetBusinessReferrals()
     {
         var userId = GetUserId();

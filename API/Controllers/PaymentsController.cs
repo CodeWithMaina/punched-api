@@ -29,7 +29,7 @@ public class PaymentsController : ControllerBase
 
     /// <summary>Create a payment for an appointment (customer pays, or staff/business records an intent).</summary>
     [HttpPost]
-    [Authorize(Roles = "Customer,Staff,Business")]
+    [Authorize(Policy = MembershipPolicies.Authenticated)]
     [ProducesResponseType(typeof(ApiResponse<PaymentResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> Create([FromBody] CreatePaymentRequest request)
     {
@@ -52,7 +52,7 @@ public class PaymentsController : ControllerBase
 
     /// <summary>List payments with filters (tenant-scoped by role).</summary>
     [HttpGet]
-    [Authorize(Roles = "Customer,Staff,Business,Admin")]
+    [Authorize(Policy = MembershipPolicies.Authenticated)]
     [ProducesResponseType(typeof(ApiResponse<PaymentListResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> List(
         [FromQuery] Guid? appointmentId, [FromQuery] Guid? customerId, [FromQuery] string? status,
@@ -82,7 +82,7 @@ public class PaymentsController : ControllerBase
 
     /// <summary>Business finance dashboard aggregates.</summary>
     [HttpGet("dashboard")]
-    [Authorize(Roles = "Business,Staff,Admin")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaffOrAdmin)]
     [ProducesResponseType(typeof(ApiResponse<PaymentDashboardResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> Dashboard()
     {
@@ -94,7 +94,7 @@ public class PaymentsController : ControllerBase
 
     /// <summary>Authorised staff/business confirms physical cash was received (audited, idempotent).</summary>
     [HttpPost("{id:guid}/confirm-cash")]
-    [Authorize(Roles = "Staff,Business")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
     [ProducesResponseType(typeof(ApiResponse<PaymentResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> ConfirmCash(Guid id, [FromBody] ConfirmCashRequest request)
     {
@@ -128,7 +128,7 @@ public class PaymentsController : ControllerBase
 
     /// <summary>Reverse/refund a successful payment (business owner only; audited).</summary>
     [HttpPost("{id:guid}/reverse")]
-    [Authorize(Roles = "Business")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
     [ProducesResponseType(typeof(ApiResponse<PaymentResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> Reverse(Guid id, [FromBody] ReversePaymentRequest request)
     {
