@@ -5,6 +5,7 @@ using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
+using PunchedApi.Infrastructure.Data;
 
 namespace PunchedApi.Application.Services;
 
@@ -28,6 +29,13 @@ public class ServiceCatalogService : IServiceCatalogService
     private readonly ILogger<ServiceCatalogService> _logger;
     private readonly IModuleEntitlementService _moduleEntitlementService;
 
+    /// <summary>
+    /// Direct context access for DB-first filtered/paged reads. The repository
+    /// abstraction has no queryable surface, and materialising the whole
+    /// catalogue to filter in memory would defeat pagination.
+    /// </summary>
+    private readonly ApplicationDbContext _context;
+
     /// <summary>Active tenant (null on the platform root) — scoping only, never a grant.</summary>
     private readonly ITenantContext? _tenant;
 
@@ -35,11 +43,13 @@ public class ServiceCatalogService : IServiceCatalogService
         IUnitOfWork unitOfWork,
         ILogger<ServiceCatalogService> logger,
         IModuleEntitlementService moduleEntitlementService,
+        ApplicationDbContext context,
         ITenantContext? tenant = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _moduleEntitlementService = moduleEntitlementService;
+        _context = context;
         _tenant = tenant;
     }
 
@@ -178,6 +188,65 @@ public class ServiceCatalogService : IServiceCatalogService
             await MapManyAsync(services.OrderBy(s => s.CreatedAt)));
     }
 
+    /// <inheritdoc />
+    public async Task<ApiResponse<PaginatedResponse<ServiceCatalogItemResponse>>> QueryMyServicesAsync(
+        Guid ownerUserId, ServiceCatalogQueryRequest request)
+    {
+        var business = await ResolveOwnerBusinessAsync(ownerUserId);
+        if (business == null)
+            return ApiResponse<PaginatedResponse<ServiceCatalogItemResponse>>.Fail(
+                "NOT_FOUND", "No business found for this account.");
+
+        var page = Math.Max(request.Page, 1);
+        var pageSize = Math.Clamp(request.PageSize, 1, 200);
+
+        var query = _context.ServiceCatalogItems.AsNoTracking()
+            .Where(s => s.BusinessId == business.Id);
+
+        if (request.Uncategorized)
+            query = query.Where(s => s.CategoryId == null);
+        else if (request.CategoryId.HasValue)
+            query = query.Where(s => s.CategoryId == request.CategoryId.Value);
+
+        if (request.IsActive.HasValue)
+            query = query.Where(s => s.IsActive == request.IsActive.Value);
+
+        if (!string.IsNullOrWhiteSpace(request.Search))
+        {
+            var search = request.Search.Trim();
+            query = query.Where(s => EF.Functions.ILike(s.Name, $"%{search}%") ||
+                                     (s.Description != null && EF.Functions.ILike(s.Description, $"%{search}%")));
+        }
+
+        var total = await query.CountAsync();
+
+        // Deterministic ordering: an explicit sort, else category order then
+        // name, so a paginated list never reshuffles between pages.
+        var descending = string.Equals(request.SortDirection?.Trim(), "desc", StringComparison.OrdinalIgnoreCase);
+        query = (request.SortBy?.Trim().ToLowerInvariant()) switch
+        {
+            "name" => descending ? query.OrderByDescending(s => s.Name) : query.OrderBy(s => s.Name),
+            "price" => descending ? query.OrderByDescending(s => s.Price) : query.OrderBy(s => s.Price),
+            "duration" => descending ? query.OrderByDescending(s => s.DurationMinutes) : query.OrderBy(s => s.DurationMinutes),
+            "createdat" => descending ? query.OrderByDescending(s => s.CreatedAt) : query.OrderBy(s => s.CreatedAt),
+            _ => query.OrderBy(s => s.CategoryId == null).ThenBy(s => s.Name)
+        };
+
+        var services = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+
+        return ApiResponse<PaginatedResponse<ServiceCatalogItemResponse>>.Ok(
+            new PaginatedResponse<ServiceCatalogItemResponse>
+            {
+                Items = await MapManyAsync(services),
+                TotalCount = total,
+                Page = page,
+                PageSize = pageSize
+            });
+    }
+
     public async Task<ApiResponse<ServiceCatalogItemResponse>> GetServiceAsync(Guid ownerUserId, Guid serviceId)
     {
         var business = await ResolveOwnerBusinessAsync(ownerUserId);
@@ -205,6 +274,10 @@ public class ServiceCatalogService : IServiceCatalogService
     private async Task<ApiResponse<ServiceCatalogItemResponse>> CreateForBusinessCoreAsync(Guid businessId, CreateServiceRequest request)
     {
 
+        var categoryError = await ValidateCategoryAsync(businessId, request.CategoryId);
+        if (categoryError != null)
+            return ApiResponse<ServiceCatalogItemResponse>.Fail(categoryError.Value.Code, categoryError.Value.Message);
+
         var service = new ServiceCatalogItem
         {
             Id = Guid.NewGuid(),
@@ -215,6 +288,7 @@ public class ServiceCatalogService : IServiceCatalogService
             Price = request.Price,
             IsActive = true,
             Showcase = request.Showcase ?? true,
+            CategoryId = request.CategoryId,
             CreatedAt = DateTime.UtcNow
         };
 
@@ -222,6 +296,23 @@ public class ServiceCatalogService : IServiceCatalogService
         await _unitOfWork.SaveChangesAsync();
 
         return ApiResponse<ServiceCatalogItemResponse>.Ok(await MapAsync(service));
+    }
+
+    /// <summary>
+    /// A service may only be filed under a category of its OWN business, so a
+    /// category id from another tenant can never be attached (IDOR guard).
+    /// Returns null when the assignment is valid.
+    /// </summary>
+    private async Task<(string Code, string Message)?> ValidateCategoryAsync(Guid businessId, Guid? categoryId)
+    {
+        if (categoryId is not Guid id) return null;
+
+        var exists = await _unitOfWork.ServiceCategories
+            .AnyAsync(c => c.Id == id && c.BusinessId == businessId);
+
+        return exists
+            ? null
+            : ("CATEGORY_NOT_FOUND", "The category does not belong to this business.");
     }
 
     public async Task<ApiResponse<ServiceCatalogItemResponse>> UpdateServiceAsync(Guid ownerUserId, Guid serviceId, UpdateServiceRequest request)
@@ -254,6 +345,22 @@ public class ServiceCatalogService : IServiceCatalogService
             service.IsActive = request.IsActive.Value;
         if (request.Showcase.HasValue)
             service.Showcase = request.Showcase.Value;
+
+        // Category moves are explicit: `categoryId` files the service (validated
+        // against THIS business), `clearCategory` uncategorises it, and neither
+        // being sent leaves the current filing untouched.
+        if (request.ClearCategory == true)
+        {
+            service.CategoryId = null;
+        }
+        else if (request.CategoryId.HasValue)
+        {
+            var categoryError = await ValidateCategoryAsync(businessId, request.CategoryId);
+            if (categoryError != null)
+                return ApiResponse<ServiceCatalogItemResponse>.Fail(categoryError.Value.Code, categoryError.Value.Message);
+
+            service.CategoryId = request.CategoryId.Value;
+        }
 
         _unitOfWork.ServiceCatalogItems.Update(service);
         await _unitOfWork.SaveChangesAsync();
@@ -362,9 +469,34 @@ public class ServiceCatalogService : IServiceCatalogService
                 x => new ServiceImageProjection(x.Id, x.BusinessId, x.Purpose, x.Status, x.Visibility, x.VariantsJson));
         var mediaById = relatedMedia.ToDictionary(x => x.Id);
 
+        // One batched category query, keyed for the response projection.
+        var categoryIds = list.Where(s => s.CategoryId.HasValue)
+            .Select(s => s.CategoryId!.Value).Distinct().ToArray();
+        var categories = categoryIds.Length == 0
+            ? new Dictionary<Guid, ServiceCategory>()
+            : (await _unitOfWork.ServiceCategories
+                    .FindNoTrackingAsync(c => categoryIds.Contains(c.Id)))
+                .ToDictionary(c => c.Id);
+
         return list.Select(s =>
         {
             var response = Map(s);
+
+            if (s.CategoryId.HasValue && categories.TryGetValue(s.CategoryId.Value, out var category))
+            {
+                // A category from another business can never be rendered, even
+                // if the id somehow landed on the row.
+                if (category.BusinessId == s.BusinessId)
+                {
+                    response.CategoryName = category.Name;
+                    response.CategorySortOrder = category.SortOrder;
+                }
+                else
+                {
+                    response.CategoryId = null;
+                }
+            }
+
             if (mediaByService.TryGetValue(s.Id, out var mediaId))
             {
                 response.ImageMediaId = mediaId;
@@ -416,6 +548,7 @@ public class ServiceCatalogService : IServiceCatalogService
         Price = s.Price ?? 0,
         IsActive = s.IsActive,
         Showcase = s.Showcase,
+        CategoryId = s.CategoryId,
         CreatedAt = s.CreatedAt
     };
 }

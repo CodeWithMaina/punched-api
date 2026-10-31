@@ -20,6 +20,7 @@ public class AppointmentConfiguration : IEntityTypeConfiguration<Appointment>
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(20);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
         builder.Property(x => x.ReminderOptOut).HasColumnName("reminder_opt_out").HasDefaultValue(false);
+        builder.Property(x => x.Version).HasColumnName("version").HasDefaultValue(0);
 
         builder.HasOne<Business>()
             .WithMany()
@@ -91,6 +92,9 @@ public class ServiceCatalogItemConfiguration : IEntityTypeConfiguration<ServiceC
         builder.Property(x => x.DurationMinutes).HasColumnName("duration_minutes");
         builder.Property(x => x.Price).HasColumnName("price").HasPrecision(10, 2);
         builder.Property(x => x.IsActive).HasColumnName("is_active");
+        builder.Property(x => x.Showcase).HasColumnName("showcase").HasDefaultValue(true);
+        builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(500);
+        builder.Property(x => x.CategoryId).HasColumnName("category_id");
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
 
         builder.HasOne<Business>()
@@ -98,7 +102,17 @@ public class ServiceCatalogItemConfiguration : IEntityTypeConfiguration<ServiceC
             .HasForeignKey(x => x.BusinessId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // A category that still has services cannot be deleted (Restrict); the
+        // service rejects the request with CATEGORY_IN_USE before it ever
+        // reaches the database, and the constraint is the race-safe backstop.
+        builder.HasOne(x => x.Category)
+            .WithMany()
+            .HasForeignKey(x => x.CategoryId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         builder.HasIndex(x => new { x.BusinessId, x.IsActive });
+        builder.HasIndex(x => new { x.BusinessId, x.CategoryId })
+            .HasDatabaseName("ix_services_business_category");
     }
 }
 

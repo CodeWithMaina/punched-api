@@ -60,7 +60,11 @@ internal static class BookingTestBase
             context,
             new AppointmentAvailabilityService(context, TestHelpers.CreateLogger<AppointmentAvailabilityService>()),
             CreateMapper(),
-            new PunchedApi.Application.Authorization.PermissionService(),
+            // The DB-backed permission service: appointment transitions check
+            // business-scoped permissions (appointments.confirm, .complete,
+            // .cancel, .no_show) and provision the default roles lazily.
+            new PunchedApi.Application.Authorization.PermissionService(
+                BusinessOperationsTestBase.CreatePermissionService(context)),
             CreateNotificationService(context),
             new Mock<IDomainEventPublisher>().Object,
             TestHelpers.CreateLogger<AppointmentService>());
@@ -88,7 +92,8 @@ internal static class BookingTestBase
         => new(
             new UnitOfWork(context),
             TestHelpers.CreateLogger<ServiceCatalogService>(),
-            entitlements ?? new StubModuleEntitlements("serviceCatalog"));
+            entitlements ?? new StubModuleEntitlements("serviceCatalog"),
+            context);
 
     /// <summary>Adds and saves the given entities in one commit.</summary>
     public static async Task SeedAsync(ApplicationDbContext context, params object[] entities)

@@ -188,6 +188,74 @@ public partial class BusinessController
     }
 
 
+    /// <summary>
+    /// Owner/staff: approve a customer's pending reschedule request. Availability
+    /// is re-validated at approval time — the slot proposed days ago is not
+    /// trusted to still be free.
+    /// </summary>
+    [RequireModule("appointments")]
+    [HttpPost("me/appointments/{id:guid}/reschedule/approve")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
+    [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> ApproveReschedule(Guid id)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.ApproveRescheduleRequestAsync(userId.Value, GetTenantRole(), id);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>Owner/staff: reject a customer's pending reschedule request.</summary>
+    [RequireModule("appointments")]
+    [HttpPost("me/appointments/{id:guid}/reschedule/reject")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
+    [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> RejectReschedule(Guid id, [FromBody] RejectRescheduleRequest? request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.RejectRescheduleRequestAsync(
+            userId.Value, GetTenantRole(), id, request?.Reason);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>Owner/staff: withdraw the open reschedule request on this appointment.</summary>
+    [RequireModule("appointments")]
+    [HttpPost("me/appointments/{id:guid}/reschedule/withdraw")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
+    [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> WithdrawReschedule(Guid id)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.WithdrawRescheduleRequestAsync(userId.Value, GetTenantRole(), id);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// Owner/staff: the preserved rescheduling history for an appointment —
+    /// every proposal and its decision, including rejected/withdrawn/expired.
+    /// </summary>
+    [RequireModule("appointments")]
+    [HttpGet("me/appointments/{id:guid}/reschedule/history")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
+    [ProducesResponseType(typeof(ApiResponse<List<AppointmentRescheduleHistoryItemResponse>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetRescheduleHistory(Guid id)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.GetRescheduleHistoryAsync(userId.Value, GetTenantRole(), id);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  BOOKING — STAFF APPOINTMENT ROUTES
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•

@@ -8,7 +8,11 @@ public class NotificationTypeRegistryTests
     [Fact]
     public void Every_registered_type_has_email_and_in_app_templates()
     {
-        Assert.Equal(26, NotificationTypes.All.Count);
+        // 32 registered types: the original 26 plus the reschedule
+        // withdrawn/expired, staff-assigned and commission lifecycle types added
+        // with the rescheduling and commission work. Every one of them must have
+        // both an email and an in-app template (asserted below).
+        Assert.Equal(32, NotificationTypes.All.Count);
         foreach (var definition in NotificationTypes.All.Where(definition => definition.DefaultChannels.Contains(NotificationChannel.Email)))
         {
             Assert.Contains(NotificationChannel.InApp, definition.DefaultChannels);
@@ -25,7 +29,11 @@ public class NotificationTypeRegistryTests
                 {
                     "businessName", "scheduledAt", "stamps", "amount", "code", "rewardName", "appointmentId",
                     "customerName", "daysInactive", "renewalDate", "balance", "cardName",
-                    "BookLink", "BillingLink", "NotebookLink"
+                    "BookLink", "BillingLink", "NotebookLink",
+                    // Added with the commission lifecycle notifications: both are
+                    // registered payload keys (commission.adjusted requires
+                    // "reason"; commission.payout_recorded requires "reference").
+                    "reason", "reference"
                 }));
         }
     }

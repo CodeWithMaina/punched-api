@@ -30,5 +30,13 @@ public class Appointment : BaseEntity
     /// </summary>
     public bool ReminderOptOut { get; set; } = false;
 
+    /// <summary>
+    /// Optimistic-concurrency token for status transitions and scheduling
+    /// writes. Incremented by every accepted state change, so two concurrent
+    /// transition requests for the same appointment cannot both succeed (the
+    /// loser gets a concurrency conflict instead of a duplicate side effect).
+    /// </summary>
+    public int Version { get; set; }
+
     public ICollection<AppointmentResource> Resources { get; set; } = new List<AppointmentResource>();
 }

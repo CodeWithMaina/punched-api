@@ -44,6 +44,7 @@ public class BusinessMembershipConfiguration : IEntityTypeConfiguration<Business
             .HasColumnName("status");
 
         builder.Property(e => e.InvitedByUserId).HasColumnName("invited_by_user_id");
+        builder.Property(e => e.PositionId).HasColumnName("position_id");
         builder.Property(e => e.JoinedAt).IsRequired().HasColumnName("joined_at");
         builder.Property(e => e.EndedAt).HasColumnName("ended_at");
         builder.Property(e => e.UpdatedAt).IsRequired().HasColumnName("updated_at");
@@ -84,5 +85,15 @@ public class BusinessMembershipConfiguration : IEntityTypeConfiguration<Business
             .WithMany()
             .HasForeignKey(e => e.InvitedByUserId)
             .OnDelete(DeleteBehavior.SetNull);
+
+        // A position is descriptive metadata: deleting the label clears the
+        // pointer but never removes the member or their history.
+        builder.HasOne(e => e.Position)
+            .WithMany()
+            .HasForeignKey(e => e.PositionId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        builder.HasIndex(e => new { e.BusinessId, e.PositionId })
+            .HasDatabaseName("ix_business_memberships_business_position");
     }
 }

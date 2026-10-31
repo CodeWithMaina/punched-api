@@ -42,28 +42,20 @@ public sealed class ValidationAndReportSeedStep : ISeedStep
         context.Report.Counts["UsersTotal"] = await context.Db.Users.CountAsync(cancellationToken);
         context.Report.Counts["CustomersTotal"] = await context.Db.Users.CountAsync(u => u.Role == Domain.Entities.UserRole.Customer, cancellationToken);
         context.Report.Counts["StaffTotal"] = await context.Db.Users.CountAsync(u => u.Role == Domain.Entities.UserRole.Staff, cancellationToken);
+        context.Report.Counts["MembershipsTotal"] = await context.Db.BusinessMemberships.CountAsync(cancellationToken);
         context.Report.Counts["LoyaltyCardsTotal"] = await context.Db.LoyaltyCards.CountAsync(cancellationToken);
         context.Report.Counts["StampsTotal"] = await context.Db.Stamps.CountAsync(cancellationToken);
+        context.Report.Counts["StampTransactionsTotal"] = await context.Db.StampTransactions.CountAsync(cancellationToken);
         context.Report.Counts["RedemptionsTotal"] = await context.Db.Redemptions.CountAsync(cancellationToken);
         context.Report.Counts["ReferralsTotal"] = await context.Db.Referrals.CountAsync(cancellationToken);
-        context.Report.Counts["NotificationsTotal"] = 0;
-        context.Report.Counts["AppointmentsTotal"] = 0;
+        context.Report.Counts["ServicesTotal"] = await context.Db.ServiceCatalogItems.CountAsync(cancellationToken);
+        context.Report.Counts["AppointmentsTotal"] = await context.Db.Appointments.CountAsync(cancellationToken);
+        context.Report.Counts["PaymentsTotal"] = await context.Db.Payments.CountAsync(cancellationToken);
+        context.Report.Counts["AttendanceSessionsTotal"] = await context.Db.AttendanceSessions.CountAsync(cancellationToken);
+        context.Report.Counts["ReviewsTotal"] = await context.Db.Reviews.CountAsync(cancellationToken);
+        context.Report.Counts["NotificationsTotal"] = await context.Db.Notifications.CountAsync(cancellationToken);
+        context.Report.Counts["NotificationLogsTotal"] = await context.Db.NotificationLogs.CountAsync(cancellationToken);
         context.Report.Counts["InventoryRecordsTotal"] = 0;
-
-        var limitations = new[]
-        {
-            "No appointment tables exist in current schema.",
-            "No payment/invoice tables exist beyond loyalty redemptions.",
-            "No notification tables exist; SSE events are ephemeral.",
-            "No review tables exist.",
-            "No inventory tables exist.",
-            "No persisted audit tables exist.",
-        };
-
-        foreach (var item in limitations)
-        {
-            context.Report.Warnings.Add(item);
-        }
 
         AppendCredentialGroups(context);
     }

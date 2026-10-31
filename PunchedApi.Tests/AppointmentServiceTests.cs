@@ -553,9 +553,14 @@ public class AppointmentServiceTests
         var r3 = await env.Service.ConfirmAsync(env.Owner.Id, "Business", noShow.Id);
         Assert.Equal("INVALID_STATUS_TRANSITION", r3.Error?.Code);
 
-        // confirmed → confirmed (confirmed requires from 'booked')
+        // confirmed → confirmed: an idempotent no-op, NOT an error. Repeating a
+        // transition must never duplicate its side effects, so the service
+        // answers with the current state instead of failing.
         var r4 = await env.Service.ConfirmAsync(env.Owner.Id, "Business", confirmed.Id);
-        Assert.Equal("INVALID_STATUS_TRANSITION", r4.Error?.Code);
+        Assert.True(r4.Success, r4.Error?.Message);
+        Assert.Equal("confirmed", r4.Data!.Status);
+        Assert.Equal(0, await context.AppointmentStatusHistory
+            .CountAsync(h => h.AppointmentId == confirmed.Id && h.Status == "confirmed"));
     }
 
     [Fact]

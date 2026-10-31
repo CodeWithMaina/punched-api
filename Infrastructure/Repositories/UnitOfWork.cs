@@ -36,6 +36,7 @@ public class UnitOfWork : IUnitOfWork
     private IRepository<AppointmentResource>? _appointmentResources;
     private IRepository<AppointmentStatusHistory>? _appointmentStatusHistory;
     private IRepository<ServiceCatalogItem>? _serviceCatalogItems;
+    private IRepository<ServiceCategory>? _serviceCategories;
     private IRepository<StaffShift>? _staffShifts;
     private IRepository<StaffServiceAssignment>? _staffServiceAssignments;
     private IRepository<StampCard>? _stampCards;
@@ -144,6 +145,10 @@ public class UnitOfWork : IUnitOfWork
     /// <inheritdoc />
     public IRepository<ServiceCatalogItem> ServiceCatalogItems =>
         _serviceCatalogItems ??= new Repository<ServiceCatalogItem>(_context);
+
+    /// <inheritdoc />
+    public IRepository<ServiceCategory> ServiceCategories =>
+        _serviceCategories ??= new Repository<ServiceCategory>(_context);
 
     /// <inheritdoc />
     public IRepository<StaffShift> StaffShifts =>

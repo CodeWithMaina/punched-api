@@ -1452,6 +1452,25 @@ public class StaffMemberResponse
     /// <summary>UTC timestamp of this staff member's most recent stamp activity (null = never active).</summary>
     [JsonPropertyName("lastActivityAt")]
     public DateTime? LastActivityAt { get; set; }
+
+    /// <summary>
+    /// The business position (job title) this staff member holds, or null when
+    /// none is assigned. Purely descriptive: a position never grants a
+    /// permission and never affects service eligibility.
+    /// </summary>
+    [JsonPropertyName("positionId")]
+    public Guid? PositionId { get; set; }
+
+    /// <summary>The position's display name, resolved server-side so a client needs no second call.</summary>
+    [JsonPropertyName("positionName")]
+    public string? PositionName { get; set; }
+
+    /// <summary>
+    /// False when the held position has been deactivated: the assignment is kept
+    /// (and still rendered) but the label is retired from assignment pickers.
+    /// </summary>
+    [JsonPropertyName("positionIsActive")]
+    public bool? PositionIsActive { get; set; }
 }
 
 /// <summary>Paginated staff list envelope with filter metadata.</summary>

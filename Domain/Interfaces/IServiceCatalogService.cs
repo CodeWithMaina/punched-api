@@ -19,6 +19,14 @@ public interface IServiceCatalogService
     /// <summary>Owner list of all services (including inactive).</summary>
     Task<ApiResponse<List<ServiceCatalogItemResponse>>> GetMyServicesAsync(Guid ownerUserId);
 
+    /// <summary>
+    /// Owner list with DB-first filtering (category, uncategorised, active,
+    /// search), sorting and pagination. Category names are resolved server-side
+    /// so a client never has to join two collections.
+    /// </summary>
+    Task<ApiResponse<PaginatedResponse<ServiceCatalogItemResponse>>> QueryMyServicesAsync(
+        Guid ownerUserId, ServiceCatalogQueryRequest request);
+
     /// <summary>Owner-scoped single-service lookup.</summary>
     Task<ApiResponse<ServiceCatalogItemResponse>> GetServiceAsync(Guid ownerUserId, Guid serviceId);
 

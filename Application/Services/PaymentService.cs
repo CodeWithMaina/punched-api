@@ -34,6 +34,14 @@ public partial class PaymentService : IPaymentService
     private readonly INotificationService _notifications;
     private readonly ILogger<PaymentService> _logger;
 
+    /// <summary>
+    /// Optional commission ledger. Optional so every existing construction site
+    /// (including the test suite) keeps compiling; when present, a successful
+    /// payment releases the appointment's accrued commission and a reversal
+    /// claws it back.
+    /// </summary>
+    private readonly ICommissionService? _commissions;
+
     public PaymentService(
         ApplicationDbContext context,
         IUnitOfWork uow,
@@ -42,7 +50,8 @@ public partial class PaymentService : IPaymentService
         PaymentCredentialProtector protector,
         IOptions<PaymentOptions> options,
         INotificationService notifications,
-        ILogger<PaymentService> logger)
+        ILogger<PaymentService> logger,
+        ICommissionService? commissions = null)
     {
         _context = context;
         _uow = uow;
@@ -52,6 +61,48 @@ public partial class PaymentService : IPaymentService
         _options = options;
         _notifications = notifications;
         _logger = logger;
+        _commissions = commissions;
+    }
+
+    /// <summary>
+    /// Releases commission for an appointment whose payment just settled.
+    /// Idempotent (the ledger dedupes and only moves statuses forward) and
+    /// non-fatal: a commission problem never fails a confirmed payment.
+    /// </summary>
+    private async Task SettleCommissionSafelyAsync(Guid businessId, Guid? appointmentId, Guid paymentId)
+    {
+        if (_commissions == null || appointmentId is not Guid id) return;
+
+        try
+        {
+            await _commissions.SettleForAppointmentAsync(businessId, id, paymentId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Commission settlement failed for appointment {AppointmentId} after payment {PaymentId}; the payment stands.",
+                id, paymentId);
+        }
+    }
+
+    /// <summary>
+    /// Reverses commission because a payment was refunded or reversed.
+    /// Idempotent and non-fatal, for the same reasons as settlement.
+    /// </summary>
+    private async Task ReverseCommissionSafelyAsync(Guid businessId, Guid? appointmentId, Guid paymentId, string reason)
+    {
+        if (_commissions == null || appointmentId is not Guid id) return;
+
+        try
+        {
+            await _commissions.ReverseForPaymentAsync(businessId, id, paymentId, reason);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Commission reversal failed for appointment {AppointmentId} after payment {PaymentId} was refunded; the payment stands.",
+                id, paymentId);
+        }
     }
 
     // ── Queries ─────────────────────────────────────────────
@@ -353,6 +404,10 @@ public partial class PaymentService : IPaymentService
 
         await _uow.SaveChangesAsync();
 
+        // The money arrived, so the appointment's accrued commission can be
+        // released. Idempotent, and never able to fail the payment itself.
+        await SettleCommissionSafelyAsync(payment.BusinessId, payment.AppointmentId, payment.Id);
+
         _logger.LogInformation(
             "Cash payment {PaymentId} confirmed by user {UserId} (business {BusinessId}), note present: {HasNote}",
             payment.Id, userId, payment.BusinessId, !string.IsNullOrWhiteSpace(note));
@@ -492,6 +547,10 @@ public partial class PaymentService : IPaymentService
         }
 
         await _uow.SaveChangesAsync();
+
+        // A refund/reversal must claw the commission back. Idempotent and
+        // non-fatal: the financial record of the reversal is what matters.
+        await ReverseCommissionSafelyAsync(payment.BusinessId, payment.AppointmentId, payment.Id, reason);
 
         _logger.LogWarning(
             "Payment {PaymentId} outcome {Outcome} by business owner {UserId}; reason: {Reason}",

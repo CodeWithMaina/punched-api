@@ -117,6 +117,25 @@ public class ApplicationDbContext : DbContext
     // ── Durable analytics backfill tracking (Phase: resumable backfills) ──
     public DbSet<AnalyticsBackfillRun> AnalyticsBackfillRuns => Set<AnalyticsBackfillRun>();
 
+    // ── Commission ledger (configuration, immutable entries, payouts) ──
+    public DbSet<CommissionConfig> CommissionConfigs => Set<CommissionConfig>();
+    public DbSet<CommissionRate> CommissionRates => Set<CommissionRate>();
+    public DbSet<CommissionEntry> CommissionEntries => Set<CommissionEntry>();
+    public DbSet<CommissionPayout> CommissionPayouts => Set<CommissionPayout>();
+
+    // ── Structured service categorisation ──
+    public DbSet<ServiceCategory> ServiceCategories => Set<ServiceCategory>();
+
+    // ── Staff positions (titles) and their history ──
+    public DbSet<StaffPosition> StaffPositions => Set<StaffPosition>();
+    public DbSet<StaffPositionHistory> StaffPositionHistory => Set<StaffPositionHistory>();
+
+    // ── Granular RBAC (permissions, business roles, assignments) ──
+    public DbSet<Permission> Permissions => Set<Permission>();
+    public DbSet<BusinessRole> BusinessRoles => Set<BusinessRole>();
+    public DbSet<BusinessRolePermission> BusinessRolePermissions => Set<BusinessRolePermission>();
+    public DbSet<BusinessMembershipRoleAssignment> BusinessMembershipRoleAssignments => Set<BusinessMembershipRoleAssignment>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

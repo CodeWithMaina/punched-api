@@ -66,6 +66,7 @@ public static class ModuleCatalog
             {
                 new PermissionDefinition("customers.view",   new[] { "Business", "Staff" }),
                 new PermissionDefinition("customers.manage", new[] { "Business" }),
+                new PermissionDefinition("customers.delete", new[] { "Business" }),
             }),
         new ModuleDefinition(
             Key: "staff", Name: "Staff",
@@ -79,6 +80,7 @@ public static class ModuleCatalog
             {
                 new PermissionDefinition("staff.view",   new[] { "Business", "Staff" }),
                 new PermissionDefinition("staff.manage", new[] { "Business" }),
+                new PermissionDefinition("staff.positions.manage", new[] { "Business" }),
             }),
         new ModuleDefinition(
             Key: "settings", Name: "Settings",
@@ -93,6 +95,11 @@ public static class ModuleCatalog
             {
                 new PermissionDefinition("settings.view",   new[] { "Business" }),
                 new PermissionDefinition("settings.manage", new[] { "Business" }),
+                // Role/permission administration is its own permission so that
+                // "may configure the business" and "may hand out authority"
+                // are never conflated.
+                new PermissionDefinition("roles.view",   new[] { "Business" }),
+                new PermissionDefinition("roles.manage", new[] { "Business" }),
             }),
 
         // ── Standard ────────────────────────────────────────────
@@ -108,6 +115,20 @@ public static class ModuleCatalog
                 new PermissionDefinition("appointments.view",   new[] { "Business", "Staff", "Customer" }),
                 new PermissionDefinition("appointments.manage", new[] { "Business" }),
                 new PermissionDefinition("appointments.create", new[] { "Customer" }),
+                // Fine-grained appointment capabilities. Deliberately NOT
+                // granted to the "Customer" persona here: customer self-service
+                // is ownership-scoped (a customer may only act on their own
+                // appointment) and is enforced by AppointmentService, while
+                // these codes gate BUSINESS-side operations. Granting
+                // appointments.create to Staff here would break the documented
+                // staff-create guard, so it stays Customer-only.
+                new PermissionDefinition("appointments.update",  new[] { "Business", "Staff" }),
+                new PermissionDefinition("appointments.confirm", new[] { "Business", "Staff" }),
+                new PermissionDefinition("appointments.cancel",  new[] { "Business", "Staff" }),
+                new PermissionDefinition("appointments.complete", new[] { "Business", "Staff" }),
+                new PermissionDefinition("appointments.no_show", new[] { "Business", "Staff" }),
+                new PermissionDefinition("appointments.reschedule", new[] { "Business", "Staff" }),
+                new PermissionDefinition("appointments.approve_reschedule", new[] { "Business" }),
             }),
         new ModuleDefinition(
             Key: "stamps", Name: "Stamps",
@@ -149,6 +170,8 @@ public static class ModuleCatalog
             {
                 new PermissionDefinition("serviceCatalog.view",   new[] { "Business", "Customer" }),
                 new PermissionDefinition("serviceCatalog.manage", new[] { "Business" }),
+                new PermissionDefinition("serviceCategories.view",   new[] { "Business", "Customer" }),
+                new PermissionDefinition("serviceCategories.manage", new[] { "Business" }),
             }),
         new ModuleDefinition(
             Key: "attendance", Name: "Attendance",
@@ -320,6 +343,26 @@ public static class ModuleCatalog
             {
                 new PermissionDefinition("storefront.view",   new[] { "Business" }),
                 new PermissionDefinition("storefront.manage", new[] { "Business" }),
+            }),
+        // ── Commissions ────────────────────────────────────────
+        // Depends on appointments because commission is earned from
+        // appointment service lines: a business without the appointments
+        // module has nothing to accrue commission from.
+        new ModuleDefinition(
+            Key: "commissions", Name: "Commissions",
+            Description: "Staff commission configuration, ledger and payouts",
+            Version: "1.0.0", Visibility: ModuleVisibility.Standard,
+            Dependencies: new[] { "appointments" },
+            RequiredRoles: new[] { "Business", "Staff" },
+            // Business-internal: staff see their own earnings, never other
+            // staff's. Customers have no commission surface at all.
+            CustomerCapability: null,
+            Permissions: new[]
+            {
+                new PermissionDefinition("commissions.view",    new[] { "Business", "Staff" }),
+                new PermissionDefinition("commissions.manage",  new[] { "Business" }),
+                new PermissionDefinition("commissions.approve", new[] { "Business" }),
+                new PermissionDefinition("commissions.payout",  new[] { "Business" }),
             }),
     };
 

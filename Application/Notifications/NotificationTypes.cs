@@ -54,6 +54,35 @@ public static class NotificationTypes
         {
             PayloadSchema = Schema(Required("businessName", "scheduledAt"), "appointmentId")
         },
+        new("appointment.reschedule_withdrawn", NotificationCategory.Appointment, Channels)
+        {
+            PayloadSchema = Schema(Required("businessName", "scheduledAt"), "appointmentId")
+        },
+        new("appointment.reschedule_expired", NotificationCategory.Appointment, Channels)
+        {
+            PayloadSchema = Schema(Required("businessName", "scheduledAt"), "appointmentId")
+        },
+        new("appointment.staff_assigned", NotificationCategory.Appointment, Channels)
+        {
+            PayloadSchema = Schema(Required("businessName", "scheduledAt"), "appointmentId")
+        },
+
+        // ── Commissions ─────────────────────────────────────────────────────
+        // The staff member is the recipient of every commission notification;
+        // these are operational, not marketing, so they respect the same
+        // preference resolution as everything else.
+        new("commission.approved", NotificationCategory.System, Channels)
+        {
+            PayloadSchema = Schema(Required("businessName", "amount"), "appointmentId")
+        },
+        new("commission.adjusted", NotificationCategory.System, Channels)
+        {
+            PayloadSchema = Schema(Required("businessName", "amount", "reason"), "appointmentId")
+        },
+        new("commission.payout_recorded", NotificationCategory.System, Channels)
+        {
+            PayloadSchema = Schema(Required("businessName", "amount", "reference"), "appointmentId")
+        },
 
         // ── Loyalty ─────────────────────────────────────────────────────────
         new("loyalty.stamp_received", NotificationCategory.Loyalty, Channels)

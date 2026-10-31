@@ -66,7 +66,14 @@ public class LoyaltyProgramConfiguration : IEntityTypeConfiguration<LoyaltyProgr
         builder.Property(e => e.Status)
             .IsRequired()
             .HasColumnName("status")
-            .HasDefaultValue(ProgramStatus.Active);
+            .HasDefaultValue(ProgramStatus.Active)
+            // Draft is 0 — the CLR default — so without a sentinel that never
+            // occurs in practice, EF would treat `Status = ProgramStatus.Draft`
+            // as "not set" and let the database default (Active) win. That made
+            // duplicating a program publish the copy instead of leaving it as a
+            // draft (LoyaltyService's copy path sets Status = Draft explicitly).
+            // -1 is outside ProgramStatus, so every real status is always written.
+            .HasSentinel((ProgramStatus)(-1));
 
         builder.Property(e => e.Description)
             .HasMaxLength(500)

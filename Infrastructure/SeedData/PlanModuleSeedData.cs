@@ -24,12 +24,16 @@ public static class PlanModuleSeedData
         ("growth", "appointments"), ("growth", "stamps"), ("growth", "notifications"),
         ("growth", "serviceCatalog"), ("growth", "attendance"), ("growth", "payments"),
         ("growth", "reviews"), ("growth", "gallery"), ("growth", "storefront"),
+        // Commissions is an operational/financial capability: granted from
+        // Growth up (never Starter), and its "appointments" dependency is
+        // granted explicitly in the same plan.
+        ("growth", "commissions"),
 
         // Pro
         ("pro", "customers"), ("pro", "staff"), ("pro", "settings"),
         ("pro", "appointments"), ("pro", "stamps"), ("pro", "notifications"),
         ("pro", "loyalty"), ("pro", "analytics"), ("pro", "referral"), ("pro", "serviceCatalog"),
-        ("pro", "attendance"), ("pro", "payments"),
+        ("pro", "attendance"), ("pro", "payments"), ("pro", "commissions"),
         ("pro", "reviews"), ("pro", "gallery"), ("pro", "storefront"),
 
         // Enterprise — the only tier that includes the optional Custom Card
@@ -39,7 +43,7 @@ public static class PlanModuleSeedData
         ("enterprise", "appointments"), ("enterprise", "stamps"), ("enterprise", "notifications"),
         ("enterprise", "loyalty"), ("enterprise", "rewards"), ("enterprise", "analytics"), ("enterprise", "programs"),
         ("enterprise", "referral"), ("enterprise", "serviceCatalog"), ("enterprise", "attendance"),
-        ("enterprise", "customCardDesign"), ("enterprise", "payments"),
+        ("enterprise", "customCardDesign"), ("enterprise", "payments"), ("enterprise", "commissions"),
         ("enterprise", "reviews"), ("enterprise", "gallery"), ("enterprise", "storefront")
     };
 }

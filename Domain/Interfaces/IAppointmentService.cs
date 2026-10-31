@@ -31,7 +31,25 @@ public interface IAppointmentService
     Task<ApiResponse<AppointmentResponse>> ApproveRescheduleRequestAsync(Guid callerUserId, string role, Guid appointmentId);
 
     /// <summary>Business rejects a customer's pending reschedule request; the appointment is unchanged.</summary>
-    Task<ApiResponse<AppointmentResponse>> RejectRescheduleRequestAsync(Guid callerUserId, string role, Guid appointmentId);
+    Task<ApiResponse<AppointmentResponse>> RejectRescheduleRequestAsync(Guid callerUserId, string role, Guid appointmentId, string? reason = null);
+
+    /// <summary>The requester withdraws their own pending reschedule request.</summary>
+    Task<ApiResponse<AppointmentResponse>> WithdrawRescheduleRequestAsync(Guid callerUserId, string role, Guid appointmentId);
+
+    /// <summary>
+    /// Sweeps undecided reschedule requests past their expiry into the
+    /// <c>expired</c> terminal state and notifies both parties. Idempotent, so a
+    /// repeated or concurrent sweep is harmless. Driven by the background expiry
+    /// worker; returns the number of requests expired.
+    /// </summary>
+    Task<int> ExpireStaleRescheduleRequestsAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The preserved history of every rescheduling proposal for an appointment,
+    /// including rejected, withdrawn and expired ones.
+    /// </summary>
+    Task<ApiResponse<List<AppointmentRescheduleHistoryItemResponse>>> GetRescheduleHistoryAsync(
+        Guid callerUserId, string role, Guid appointmentId);
 
     /// <summary>Cancels an existing appointment.</summary>
     Task<ApiResponse<AppointmentResponse>> CancelAsync(Guid callerUserId, string role, Guid appointmentId, CancelAppointmentRequest request);

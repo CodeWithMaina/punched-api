@@ -29,6 +29,13 @@ public class AppointmentService : IAppointmentService
     private readonly IDomainEventPublisher _domainEventPublisher;
     private readonly ILogger<AppointmentService> _logger;
 
+    /// <summary>
+    /// Optional commission ledger. Optional so the many existing construction
+    /// sites (including the test suite) keep compiling unchanged; when it is
+    /// absent the appointment lifecycle simply accrues nothing.
+    /// </summary>
+    private readonly ICommissionService? _commissions;
+
     /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
     private readonly ITenantContext? _tenant;
 
@@ -41,7 +48,8 @@ public class AppointmentService : IAppointmentService
         INotificationService notifications,
         IDomainEventPublisher domainEventPublisher,
         ILogger<AppointmentService> logger,
-        ITenantContext? tenant = null)
+        ITenantContext? tenant = null,
+        ICommissionService? commissions = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
@@ -52,6 +60,7 @@ public class AppointmentService : IAppointmentService
         _domainEventPublisher = domainEventPublisher;
         _logger = logger;
         _tenant = tenant;
+        _commissions = commissions;
     }
 
     /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
@@ -487,12 +496,20 @@ public class AppointmentService : IAppointmentService
         {
             Id = Guid.NewGuid(),
             AppointmentId = appointment.Id,
+            BusinessId = appointment.BusinessId,
             RequestedByUserId = customerId,
+            RequestedByParty = RescheduleRequestedByParty.Customer,
+            RequestReason = string.IsNullOrWhiteSpace(request.Note) ? null : Truncate(request.Note.Trim(), 300),
+            OriginalScheduledAt = appointment.ScheduledAt,
+            OriginalEndAt = appointment.EndAt,
+            OriginalStaffUserId = appointment.StaffUserId,
             ProposedScheduledAt = scheduledAt,
             ProposedEndAt = endAt,
             ProposedStaffUserId = effectiveStaffId,
             ProposedServicesJson = System.Text.Json.JsonSerializer.Serialize(snapshot),
             Status = "pending",
+            ExpiresAt = DateTime.UtcNow.AddDays(RescheduleRequestExpiryDays),
+            UpdatedAt = DateTime.UtcNow,
             CreatedAt = DateTime.UtcNow
         };
         await _context.RescheduleRequests.AddAsync(rescheduleRequest);
@@ -528,20 +545,38 @@ public class AppointmentService : IAppointmentService
     public async Task<ApiResponse<AppointmentResponse>> ApproveRescheduleRequestAsync(
         Guid callerUserId, string role, Guid appointmentId)
     {
-        if (!IsRole(role, "Business"))
-            return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "Only the business can confirm a reschedule request.");
-
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == callerUserId);
-        if (business == null)
-            return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "No business found for this account.");
+        if (!IsRole(role, "Business") && !IsRole(role, "Staff"))
+            return ApiResponse<AppointmentResponse>.Fail(
+                "FORBIDDEN", "Only the business or its staff can confirm a reschedule request.");
 
         var appointment = await LoadAsync(appointmentId);
-        if (appointment == null || appointment.BusinessId != business.Id)
+        if (appointment == null)
             return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "Appointment not found.");
+
+        var ownershipError = await AssertOwnershipAsync(callerUserId, role, appointment);
+        if (ownershipError != null)
+            return ownershipError;
+
+        if (!await _permissionService.HasBusinessPermissionAsync(
+                callerUserId, appointment.BusinessId, "appointments.approve_reschedule"))
+            return ApiResponse<AppointmentResponse>.Fail(
+                "FORBIDDEN", "You are not allowed to approve reschedule requests (appointments.approve_reschedule required).");
 
         var rescheduleRequest = await LatestPendingRequestAsync(appointmentId);
         if (rescheduleRequest == null)
             return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "No pending reschedule request for this appointment.");
+
+        // A proposal that outlived its window is retired, not applied.
+        if (HasExpired(rescheduleRequest, DateTime.UtcNow))
+        {
+            rescheduleRequest.Status = WireStatus(RescheduleRequestStatus.Expired);
+            rescheduleRequest.ResolvedAt = DateTime.UtcNow;
+            rescheduleRequest.UpdatedAt = DateTime.UtcNow;
+            rescheduleRequest.Version++;
+            await _unitOfWork.SaveChangesAsync();
+            return ApiResponse<AppointmentResponse>.Fail(
+                "RESCHEDULE_EXPIRED", "This reschedule request has expired; the customer must submit a new one.");
+        }
 
         var snapshot = System.Text.Json.JsonSerializer.Deserialize<List<AppointmentServiceSnapshot>>(
             rescheduleRequest.ProposedServicesJson) ?? new List<AppointmentServiceSnapshot>();
@@ -582,9 +617,12 @@ public class AppointmentService : IAppointmentService
 
         _unitOfWork.Appointments.Update(appointment);
 
-        rescheduleRequest.Status = "approved";
+        rescheduleRequest.Status = WireStatus(RescheduleRequestStatus.Approved);
         rescheduleRequest.ResolvedAt = DateTime.UtcNow;
         rescheduleRequest.ResolvedByUserId = callerUserId;
+        rescheduleRequest.DecisionNotes = "Approved.";
+        rescheduleRequest.UpdatedAt = DateTime.UtcNow;
+        rescheduleRequest.Version++;
 
         await _unitOfWork.AppointmentStatusHistory.AddAsync(new AppointmentStatusHistory
         {
@@ -602,19 +640,22 @@ public class AppointmentService : IAppointmentService
         await RewriteReminderJobsAsync(appointment, _context, default);
         await PublishAppointmentRescheduledAsync(appointment, default);
 
-        await _unitOfWork.SaveChangesAsync();
-
-        await SendNotificationSafelyAsync(new NotificationRequest(
+        // The customer notice is queued INSIDE this unit of work (intent-level
+        // outbox), so a notification outage can never leave a rescheduled
+        // appointment whose owner was never told.
+        await QueueNotificationSafelyAsync(new NotificationRequest(
             "appointment.reschedule_approved",
             appointment.CustomerId,
             appointment.BusinessId,
             new Dictionary<string, object?>
             {
-                ["businessName"] = business.Name,
+                ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
                 ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
                 ["appointmentId"] = appointment.Id
             },
             $"appt:{rescheduleRequest.Id}:reschedule-approved"));
+
+        await _unitOfWork.SaveChangesAsync();
 
         var updated = await LoadAsync(appointmentId);
         return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(updated!));
@@ -622,29 +663,49 @@ public class AppointmentService : IAppointmentService
 
     /// <summary>Business owner rejects the pending reschedule request; the appointment is unchanged.</summary>
     public async Task<ApiResponse<AppointmentResponse>> RejectRescheduleRequestAsync(
-        Guid callerUserId, string role, Guid appointmentId)
+        Guid callerUserId, string role, Guid appointmentId, string? reason = null)
     {
-        if (!IsRole(role, "Business"))
-            return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "Only the business can reject a reschedule request.");
-
-        var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == callerUserId);
-        if (business == null)
-            return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "No business found for this account.");
+        if (!IsRole(role, "Business") && !IsRole(role, "Staff"))
+            return ApiResponse<AppointmentResponse>.Fail(
+                "FORBIDDEN", "Only the business or its staff can reject a reschedule request.");
 
         var appointment = await LoadAsync(appointmentId);
-        if (appointment == null || appointment.BusinessId != business.Id)
+        if (appointment == null)
             return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "Appointment not found.");
+
+        var ownershipError = await AssertOwnershipAsync(callerUserId, role, appointment);
+        if (ownershipError != null)
+            return ownershipError;
+
+        if (!await _permissionService.HasBusinessPermissionAsync(
+                callerUserId, appointment.BusinessId, "appointments.approve_reschedule"))
+            return ApiResponse<AppointmentResponse>.Fail(
+                "FORBIDDEN", "You are not allowed to reject reschedule requests (appointments.approve_reschedule required).");
 
         var rescheduleRequest = await LatestPendingRequestAsync(appointmentId);
         if (rescheduleRequest == null)
             return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "No pending reschedule request for this appointment.");
 
-        rescheduleRequest.Status = "rejected";
+        if (HasExpired(rescheduleRequest, DateTime.UtcNow))
+        {
+            rescheduleRequest.Status = WireStatus(RescheduleRequestStatus.Expired);
+            rescheduleRequest.ResolvedAt = DateTime.UtcNow;
+            rescheduleRequest.UpdatedAt = DateTime.UtcNow;
+            rescheduleRequest.Version++;
+            await _unitOfWork.SaveChangesAsync();
+            return ApiResponse<AppointmentResponse>.Fail(
+                "RESCHEDULE_EXPIRED", "This reschedule request has expired; the customer must submit a new one.");
+        }
+
+        rescheduleRequest.Status = WireStatus(RescheduleRequestStatus.Rejected);
         rescheduleRequest.ResolvedAt = DateTime.UtcNow;
         rescheduleRequest.ResolvedByUserId = callerUserId;
-        await _unitOfWork.SaveChangesAsync();
+        rescheduleRequest.DecisionNotes = string.IsNullOrWhiteSpace(reason) ? "Rejected." : Truncate(reason.Trim(), 500);
+        rescheduleRequest.UpdatedAt = DateTime.UtcNow;
+        rescheduleRequest.Version++;
 
-        await SendNotificationSafelyAsync(new NotificationRequest(
+        // The customer notice joins the decision transaction (intent-level outbox).
+        await QueueNotificationSafelyAsync(new NotificationRequest(
             "appointment.reschedule_rejected",
             appointment.CustomerId,
             appointment.BusinessId,
@@ -656,7 +717,164 @@ public class AppointmentService : IAppointmentService
             },
             $"appt:{rescheduleRequest.Id}:reschedule-rejected"));
 
+        await _unitOfWork.SaveChangesAsync();
+
         return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
+    }
+
+    /// <summary>
+    /// The requester withdraws their own pending proposal. Only the party that
+    /// raised it (or the business) may withdraw; the appointment is unchanged.
+    /// </summary>
+    public async Task<ApiResponse<AppointmentResponse>> WithdrawRescheduleRequestAsync(
+        Guid callerUserId, string role, Guid appointmentId)
+    {
+        var appointment = await LoadAsync(appointmentId);
+        if (appointment == null)
+            return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "Appointment not found.");
+
+        var ownershipError = await AssertOwnershipAsync(callerUserId, role, appointment);
+        if (ownershipError != null)
+            return ownershipError;
+
+        var rescheduleRequest = await LatestPendingRequestAsync(appointmentId);
+        if (rescheduleRequest == null)
+            return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "No pending reschedule request for this appointment.");
+
+        // A customer may only withdraw their OWN proposal; business/staff may
+        // withdraw any proposal on an appointment they own.
+        if (IsRole(role, "Customer") && rescheduleRequest.RequestedByUserId != callerUserId)
+            return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "You can only withdraw your own reschedule request.");
+
+        var now = DateTime.UtcNow;
+        rescheduleRequest.Status = WireStatus(RescheduleRequestStatus.Withdrawn);
+        rescheduleRequest.ResolvedAt = now;
+        rescheduleRequest.ResolvedByUserId = callerUserId;
+        rescheduleRequest.DecisionNotes = "Withdrawn by the requester.";
+        rescheduleRequest.UpdatedAt = now;
+        rescheduleRequest.Version++;
+
+        // Tell the OTHER side: a customer withdrawing informs the business; a
+        // business withdrawing informs the customer.
+        var recipient = IsRole(role, "Customer")
+            ? await ResolveOwnerUserIdAsync(appointment.BusinessId)
+            : appointment.CustomerId;
+
+        if (recipient is Guid recipientId && recipientId != Guid.Empty && recipientId != callerUserId)
+        {
+            await QueueNotificationSafelyAsync(new NotificationRequest(
+                "appointment.reschedule_withdrawn",
+                recipientId,
+                appointment.BusinessId,
+                new Dictionary<string, object?>
+                {
+                    ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+                    ["scheduledAt"] = rescheduleRequest.ProposedScheduledAt.ToString("O"),
+                    ["appointmentId"] = appointment.Id
+                },
+                $"appt:{rescheduleRequest.Id}:reschedule-withdrawn:{recipientId}"));
+        }
+
+        await _unitOfWork.SaveChangesAsync();
+
+        return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
+    }
+
+    /// <summary>The canonical active Owner of the business, or null.</summary>
+    private async Task<Guid?> ResolveOwnerUserIdAsync(Guid businessId) =>
+        await _context.BusinessMemberships
+            .Where(m => m.BusinessId == businessId &&
+                        m.Role == BusinessMembershipRole.Owner &&
+                        m.Status == BusinessMembershipStatus.Active)
+            .Select(m => (Guid?)m.UserId)
+            .FirstOrDefaultAsync();
+
+    /// <summary>
+    /// Moves every undecided reschedule request whose <c>ExpiresAt</c> has passed
+    /// to <c>expired</c> and tells both parties.
+    ///
+    /// <para>This is the only writer of the <c>expired</c> state. It is driven by
+    /// <see cref="RescheduleExpiryWorker"/> and is deliberately idempotent: the
+    /// selection is filtered on <c>status = 'pending'</c>, so a second sweep
+    /// (or a concurrent instance) finds nothing left to do and cannot
+    /// double-notify. The appointment itself is untouched — an expired proposal
+    /// simply leaves the original schedule in force.</para>
+    ///
+    /// <para>Returns the number of requests expired.</para>
+    /// </summary>
+    public async Task<int> ExpireStaleRescheduleRequestsAsync(CancellationToken cancellationToken = default)
+    {
+        var now = DateTime.UtcNow;
+        var pendingWire = WireStatus(RescheduleRequestStatus.Pending);
+        var expiredWire = WireStatus(RescheduleRequestStatus.Expired);
+
+        var stale = await _context.RescheduleRequests
+            .Where(r => r.Status == pendingWire && r.ExpiresAt != null && r.ExpiresAt < now)
+            .OrderBy(r => r.ExpiresAt)
+            .Take(500)
+            .ToListAsync(cancellationToken);
+
+        if (stale.Count == 0) return 0;
+
+        // One batched appointment lookup instead of one query per request.
+        var appointmentIds = stale.Select(r => r.AppointmentId).Distinct().ToList();
+        var appointments = await _context.Appointments
+            .Where(a => appointmentIds.Contains(a.Id))
+            .ToDictionaryAsync(a => a.Id, cancellationToken);
+
+        var expiredCount = 0;
+        foreach (var request in stale)
+        {
+            // Re-check on the tracked instance: a decision may have landed
+            // between the selection and this loop.
+            if (!string.Equals(request.Status, pendingWire, StringComparison.Ordinal)) continue;
+
+            request.Status = expiredWire;
+            request.ResolvedAt = now;
+            request.DecisionNotes = "Expired before a decision was recorded.";
+            request.UpdatedAt = now;
+            request.Version++;
+
+            if (!appointments.TryGetValue(request.AppointmentId, out var appointment)) continue;
+
+            var businessName = await GetBusinessNameAsync(appointment.BusinessId);
+            var data = new Dictionary<string, object?>
+            {
+                ["businessName"] = businessName,
+                ["scheduledAt"] = request.ProposedScheduledAt.ToString("O"),
+                ["appointmentId"] = appointment.Id
+            };
+
+            // Both sides are told: the requester learns their proposal lapsed and
+            // the business learns the slot it was holding is free again.
+            var ownerId = await ResolveOwnerUserIdAsync(appointment.BusinessId);
+            var recipients = new List<Guid> { appointment.CustomerId };
+            if (ownerId is Guid owner && owner != Guid.Empty) recipients.Add(owner);
+
+            foreach (var recipient in recipients.Distinct())
+            {
+                if (recipient == Guid.Empty) continue;
+
+                await QueueNotificationSafelyAsync(new NotificationRequest(
+                    "appointment.reschedule_expired",
+                    recipient,
+                    appointment.BusinessId,
+                    data,
+                    $"appt:{request.Id}:reschedule-expired:{recipient}"));
+            }
+
+            expiredCount++;
+        }
+
+        if (expiredCount > 0)
+        {
+            await _unitOfWork.SaveChangesAsync();
+
+            _logger.LogInformation(
+                "Expired {Count} stale reschedule request(s).", expiredCount);
+        }
+
+        return expiredCount;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -1397,6 +1615,23 @@ public class AppointmentService : IAppointmentService
             await PublishAppointmentCreatedAsync(appointment, createdBusiness, default);
             await CreatePendingReminderJobsAsync(appointment, _context, default);
 
+            // The assigned professional is told the slot is theirs. Same
+            // transaction as the row, so the notice can never outlive a rollback.
+            if (appointment.StaffUserId is Guid assignedStaffId && assignedStaffId != Guid.Empty)
+            {
+                await QueueNotificationSafelyAsync(new NotificationRequest(
+                    "appointment.staff_assigned",
+                    assignedStaffId,
+                    appointment.BusinessId,
+                    new Dictionary<string, object?>
+                    {
+                        ["businessName"] = createdBusiness?.Name ?? "your business",
+                        ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+                        ["appointmentId"] = appointment.Id
+                    },
+                    $"appt:{appointment.Id}:staff-assigned:{assignedStaffId}"));
+            }
+
             // Reactivation: cancel any pending customer.lapsed jobs for this customer
             // at this business so they stop receiving lapse nudges.
             await CancelPendingWinBackJobsAsync(
@@ -1613,16 +1848,37 @@ public class AppointmentService : IAppointmentService
     private async Task<ApiResponse<AppointmentResponse>> TransitionAsync(
         Appointment appointment, string toStatus, Guid changedByUserId, string? note, string role, bool staffOrOwnerOnly)
     {
-        var allowedFrom = GetAllowedFromStatus(toStatus);
-        if (appointment.Status != allowedFrom)
+        // ── 1. Lifecycle validation (server-side, authoritative) ────────────
+        if (!AppointmentStatusMachine.CanTransition(appointment.Status, toStatus))
             return ApiResponse<AppointmentResponse>.Fail(
                 "INVALID_STATUS_TRANSITION",
-                $"Cannot transition from '{appointment.Status}' to '{toStatus}'.");
+                AppointmentStatusMachine.DescribeRefusal(appointment.Status, toStatus));
 
+        // ── 2. Idempotent repeat ────────────────────────────────────────────
+        // Asking for the status the appointment already has is not an error and
+        // MUST NOT repeat side effects: no second history row, no second
+        // notification, no second commission. This is what makes a retried
+        // request (or a double-tapped button) safe.
+        if (string.Equals(appointment.Status, toStatus, StringComparison.Ordinal))
+            return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
+
+        // ── 3. Actor authorization ──────────────────────────────────────────
         if (staffOrOwnerOnly && !IsRole(role, "Business") && !IsRole(role, "Staff"))
             return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "Only Business or Staff may perform this action.");
 
+        if (IsRole(role, "Business") || IsRole(role, "Staff"))
+        {
+            var required = AppointmentStatusMachine.RequiredPermission(toStatus);
+            if (required != null &&
+                !await _permissionService.HasBusinessPermissionAsync(changedByUserId, appointment.BusinessId, required))
+                return ApiResponse<AppointmentResponse>.Fail(
+                    "FORBIDDEN",
+                    $"You do not have permission to move this appointment to '{toStatus}' ({required} required).");
+        }
+
+        // ── 4. Apply ────────────────────────────────────────────────────────
         appointment.Status = toStatus;
+        appointment.Version++;
         _unitOfWork.Appointments.Update(appointment);
 
         await _unitOfWork.AppointmentStatusHistory.AddAsync(new AppointmentStatusHistory
@@ -1636,7 +1892,18 @@ public class AppointmentService : IAppointmentService
             CreatedAt = DateTime.UtcNow
         });
 
-        if (toStatus == "cancelled")
+        // A terminal status retires any open reschedule proposal: leaving it
+        // pending would offer a decision that can no longer be applied.
+        if (AppointmentStatuses.IsTerminal(toStatus))
+            await ResolvePendingRescheduleRequestsAsync(
+                appointment,
+                changedByUserId,
+                toStatus == AppointmentStatuses.Cancelled
+                    ? RescheduleRequestStatus.Withdrawn
+                    : RescheduleRequestStatus.Rejected,
+                $"Appointment became '{toStatus}'.");
+
+        if (toStatus == AppointmentStatuses.Cancelled)
         {
             // Phase 1: the cancellation notice joins this SaveChanges — it exists if and
             // only if the status change does (intent-level outbox).
@@ -1658,7 +1925,7 @@ public class AppointmentService : IAppointmentService
             await CancelPendingJobsAsync(appointment.Id, _context, default);
         }
 
-        if (toStatus == "completed")
+        if (toStatus == AppointmentStatuses.Completed)
         {
             await PublishAppointmentCompletedAsync(appointment, default);
             await CancelPendingJobsAsync(appointment.Id, _context, default);
@@ -1671,7 +1938,7 @@ public class AppointmentService : IAppointmentService
             await ScheduleFollowUpAsync(appointment, _context, default);
         }
 
-        if (toStatus == "no_show")
+        if (toStatus == AppointmentStatuses.NoShow)
         {
             await PublishAppointmentNoShowAsync(appointment, default);
             await QueueNotificationSafelyAsync(new NotificationRequest(
@@ -1688,26 +1955,58 @@ public class AppointmentService : IAppointmentService
             await CancelPendingJobsAsync(appointment.Id, _context, default);
         }
 
-        if (toStatus == "confirmed")
+        if (toStatus == AppointmentStatuses.Confirmed)
         {
             await PublishAppointmentConfirmedAsync(appointment, default);
         }
 
-        await _unitOfWork.SaveChangesAsync();
+        try
+        {
+            await _unitOfWork.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Another request changed this appointment between the read and the
+            // write. The loser is told so plainly instead of silently winning a
+            // race it lost (which is what would otherwise duplicate a
+            // notification, a commission entry or a loyalty stamp).
+            _logger.LogWarning(
+                "Concurrent modification detected while transitioning appointment {AppointmentId} to '{Status}'.",
+                appointment.Id, toStatus);
+            return ApiResponse<AppointmentResponse>.Fail(
+                "CONCURRENT_MODIFICATION",
+                "This appointment was changed by another request. Reload it and try again.");
+        }
+
+        // ── 5. Commission accrual ───────────────────────────────────────────
+        // Runs after the status change is committed. It is idempotent, so a
+        // repeated call cannot produce a second entry, and a commission failure
+        // never invalidates the appointment transition itself.
+        if (AppointmentStatuses.IsTerminal(toStatus))
+            await AccrueCommissionSafelyAsync(appointment.Id);
 
         return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
     }
 
-    private static string GetAllowedFromStatus(string toStatus)
+    /// <summary>
+    /// Accrues commission for a terminal appointment. Failures are logged and
+    /// swallowed: a commission problem must never surface as a failed
+    /// appointment transition (the ledger can always be reconciled later).
+    /// </summary>
+    private async Task AccrueCommissionSafelyAsync(Guid appointmentId)
     {
-        return toStatus switch
+        if (_commissions == null) return;
+
+        try
         {
-            "confirmed" => "booked",
-            "completed" => "confirmed",
-            "cancelled" => "booked",
-            "no_show" => "confirmed",
-            _ => string.Empty
-        };
+            await _commissions.AccrueForAppointmentAsync(appointmentId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Commission accrual failed for appointment {AppointmentId}; the appointment transition stands.",
+                appointmentId);
+        }
     }
 
     private async Task<(List<ServiceCatalogItem> Services, string? ErrorCode, string? ErrorMessage)> ValidateServicesAsync(
@@ -1904,6 +2203,127 @@ public class AppointmentService : IAppointmentService
             .Where(r => r.AppointmentId == appointmentId && r.Status == "pending")
             .OrderByDescending(r => r.CreatedAt)
             .FirstOrDefaultAsync();
+
+    /// <summary>
+    /// How long an undecided reschedule proposal stays actionable. After this
+    /// window the request expires (by the background sweep, or lazily when a
+    /// decision is attempted) instead of lingering forever.
+    /// </summary>
+    private const int RescheduleRequestExpiryDays = 7;
+
+    private static string Truncate(string value, int maxLength) =>
+        value.Length <= maxLength ? value : value[..maxLength];
+
+    /// <summary>
+    /// Retires every open reschedule proposal for an appointment. Used when the
+    /// appointment reaches a terminal status (nothing can be rescheduled any
+    /// more) and when a proposal is withdrawn or expired.
+    ///
+    /// <para>The request is never deleted: it is moved to a terminal state with
+    /// its decision metadata, so the full rescheduling history survives.</para>
+    /// </summary>
+    private async Task<int> ResolvePendingRescheduleRequestsAsync(
+        Appointment appointment,
+        Guid? actorUserId,
+        RescheduleRequestStatus outcome,
+        string? notes)
+    {
+        var pending = await _context.RescheduleRequests
+            .Where(r => r.AppointmentId == appointment.Id && r.Status == "pending")
+            .ToListAsync();
+        if (pending.Count == 0) return 0;
+
+        var now = DateTime.UtcNow;
+        foreach (var request in pending)
+        {
+            request.Status = WireStatus(outcome);
+            request.ResolvedAt = now;
+            request.ResolvedByUserId = actorUserId;
+            request.DecisionNotes = notes == null ? null : Truncate(notes, 500);
+            request.Version++;
+            request.UpdatedAt = now;
+        }
+
+        return pending.Count;
+    }
+
+    private static string WireStatus(RescheduleRequestStatus status) => status switch
+    {
+        RescheduleRequestStatus.Approved => "approved",
+        RescheduleRequestStatus.Rejected => "rejected",
+        RescheduleRequestStatus.Withdrawn => "withdrawn",
+        RescheduleRequestStatus.Expired => "expired",
+        _ => "pending"
+    };
+
+    /// <summary>
+    /// True when a pending proposal has passed its expiry instant. Approval and
+    /// rejection refuse such a request rather than applying a stale decision.
+    /// </summary>
+    private static bool HasExpired(RescheduleRequest request, DateTime now) =>
+        request.ExpiresAt.HasValue && request.ExpiresAt.Value <= now;
+
+    /// <summary>
+    /// The complete rescheduling history for an appointment, newest first. Every
+    /// proposal is preserved — including rejected, withdrawn and expired ones —
+    /// so the record of previous schedule changes is never overwritten.
+    /// </summary>
+    public async Task<ApiResponse<List<AppointmentRescheduleHistoryItemResponse>>> GetRescheduleHistoryAsync(
+        Guid callerUserId, string role, Guid appointmentId)
+    {
+        var appointment = await LoadAsync(appointmentId);
+        if (appointment == null)
+            return ApiResponse<List<AppointmentRescheduleHistoryItemResponse>>.Fail("NOT_FOUND", "Appointment not found.");
+
+        var ownershipError = await AssertOwnershipAsync(callerUserId, role, appointment);
+        if (ownershipError != null)
+            return ApiResponse<List<AppointmentRescheduleHistoryItemResponse>>.Fail(
+                ownershipError.Error!.Code!, ownershipError.Error.Message);
+
+        var requests = await _context.RescheduleRequests
+            .AsNoTracking()
+            .Where(r => r.AppointmentId == appointmentId)
+            .OrderByDescending(r => r.CreatedAt)
+            .ToListAsync();
+
+        return ApiResponse<List<AppointmentRescheduleHistoryItemResponse>>.Ok(
+            requests.Select(MapRescheduleHistoryItem).ToList());
+    }
+
+    private static AppointmentRescheduleHistoryItemResponse MapRescheduleHistoryItem(RescheduleRequest request)
+    {
+        List<AppointmentServiceSnapshot> services;
+        try
+        {
+            services = System.Text.Json.JsonSerializer.Deserialize<List<AppointmentServiceSnapshot>>(
+                request.ProposedServicesJson) ?? new List<AppointmentServiceSnapshot>();
+        }
+        catch
+        {
+            services = new List<AppointmentServiceSnapshot>();
+        }
+
+        return new AppointmentRescheduleHistoryItemResponse
+        {
+            Id = request.Id,
+            Status = request.Status,
+            RequestedByUserId = request.RequestedByUserId,
+            RequestedByParty = request.RequestedByParty.ToString().ToLowerInvariant(),
+            RequestReason = request.RequestReason,
+            OriginalScheduledAt = request.OriginalScheduledAt,
+            OriginalEndAt = request.OriginalEndAt,
+            OriginalStaffUserId = request.OriginalStaffUserId,
+            ProposedScheduledAt = request.ProposedScheduledAt,
+            ProposedEndAt = request.ProposedEndAt,
+            ProposedStaffUserId = request.ProposedStaffUserId,
+            ProposedServices = services,
+            ExpiresAt = request.ExpiresAt,
+            RequestedAt = request.CreatedAt,
+            ResolvedAt = request.ResolvedAt,
+            ResolvedByUserId = request.ResolvedByUserId,
+            DecisionNotes = request.DecisionNotes
+        };
+    }
 
     private static AppointmentRescheduleRequestResponse? MapPendingReschedule(RescheduleRequest? request)
     {

@@ -31,6 +31,7 @@ using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
 using PunchedApi.Infrastructure.Data.Seeding;
+using PunchedApi.Infrastructure.Data.Seeding.Demo.AureliaLuxe;
 using PunchedApi.Infrastructure.Services.Payments;
 using PunchedApi.Infrastructure.Data.Seeding.Steps;
 using PunchedApi.Infrastructure.Notifications;
@@ -168,6 +169,11 @@ try
 
     builder.Services.AddScoped<IUserService, UserService>();
     builder.Services.AddScoped<IBusinessService, BusinessService>();
+    // The concrete type is also registered: CustomerDashboardController injects
+    // BusinessService directly (its bootstrap composes several partial-class
+    // sections), so resolving only the interface leaves that controller
+    // unresolvable and the customer dashboard bootstrap answers 500.
+    builder.Services.AddScoped<BusinessService>();
     builder.Services.AddScoped<ILandingPageService, LandingPageService>();
 
     // Business subdomain URLs (java-house.punched.app): slug generation,
@@ -331,6 +337,22 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<IBusinessContext, BusinessContext>();
     builder.Services.AddScoped<IPermissionService, PermissionService>();
+    // Tenant-scoped RBAC authority: resolves effective permissions from
+    // business_roles + business_role_permissions + role assignments, and
+    // provisions the platform's default role templates per business lazily and
+    // idempotently.
+    builder.Services.AddScoped<IBusinessPermissionService, BusinessPermissionService>();
+
+    // Business operations completion: service categories, staff positions and
+    // RBAC role management. Each resolves the caller's business server-side and
+    // re-checks business-scoped permissions inside the service.
+    builder.Services.AddScoped<IServiceCategoryService, ServiceCategoryService>();
+    builder.Services.AddScoped<IStaffPositionService, StaffPositionService>();
+    builder.Services.AddScoped<IBusinessRoleService, BusinessRoleService>();
+    // Commission configuration resolution (specificity-ranked: staff+service >
+    // service > staff > business default) and the ledger service itself.
+    builder.Services.AddScoped<ICommissionResolver, CommissionResolver>();
+    builder.Services.AddScoped<ICommissionService, CommissionService>();
 
     // ── Tenant context (business subdomains: java-house.punched.app) ──
     // Host chooses the page; the token chooses the data. None of these
@@ -371,6 +393,12 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     builder.Services.AddScoped<ISeedStep, ReferralSeedStep>();
     builder.Services.AddScoped<ISeedStep, SessionSeedStep>();
     builder.Services.AddScoped<ISeedStep, UnsupportedDomainsSeedStep>();
+    // ── Aurelia Luxe Hair Atelier demo tenant (see Infrastructure/Data/Seeding/Demo) ──
+    // Adopts the existing atelier business and populates the full salon: profile,
+    // entitlements, catalogue, team, loyalty, appointments, payments, attendance,
+    // reviews and engagement. Both steps are idempotent and tenant-scoped.
+    builder.Services.AddScoped<ISeedStep, AureliaLuxeSetupSeedStep>();
+    builder.Services.AddScoped<ISeedStep, AureliaLuxeActivitySeedStep>();
     builder.Services.AddScoped<ISeedStep, ValidationAndReportSeedStep>();
 
     // SSE broker: singleton so all requests share the same in-process channels
@@ -382,6 +410,7 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
         builder.Services.AddHostedService<CleanupService>();
         builder.Services.AddHostedService<NotificationDeliveryWorker>();
         builder.Services.AddHostedService<PaymentExpiryWorker>();
+        builder.Services.AddHostedService<RescheduleExpiryWorker>();
         builder.Services.AddHostedService<PayoutWorker>();
         builder.Services.AddHostedService<AnalyticsWorker>();
         builder.Services.AddHostedService<SubscriptionExpiryWorker>();

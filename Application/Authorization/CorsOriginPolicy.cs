@@ -36,7 +36,7 @@ public static class CorsOriginPolicy
 
     /// <summary>
     /// Fallback allow-list used when <c>CorsOrigins</c> is not configured:
-    /// local development (root + tenant subdomains on both dev ports) and the
+    /// local development (root + tenant subdomains on every dev port) and the
     /// production root, <c>www</c> and every tenant subdomain.
     /// </summary>
     public static readonly string[] DefaultAllowedOrigins =
@@ -44,8 +44,10 @@ public static class CorsOriginPolicy
         "http://localhost:3000",      // Next.js dev (platform root)
         "http://localhost:3001",      // Alternative dev port
         "http://localhost:5091",      // Swagger/API local origin
+        "http://localhost:5173",      // Vite dev (zenbokk-ui platform root)
         "http://*.localhost:3000",    // Dev with a business subdomain (java-house.localhost:3000)
         "http://*.localhost:3001",    // Alternative dev port with a business subdomain
+        "http://*.localhost:5173",    // Vite dev with a business subdomain
         "https://punched.app",        // Production root
         "https://www.punched.app",    // Production www
         "https://*.punched.app",      // Production business subdomains (java-house.punched.app)

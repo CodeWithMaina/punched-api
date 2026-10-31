@@ -1674,6 +1674,28 @@ public partial class BusinessService : IBusinessService
             LastActivityAt = _context.Stamps
                 .Where(s => s.AwardedByUserId == u.Id && s.Card.BusinessId == business.Id)
                 .Max(s => (DateTime?)s.StampedAt),
+
+            // The position (job title) is resolved in the same statement — a
+            // correlated subquery per row, no N+1 and no second round trip.
+            // A position never grants a permission, so it is display metadata only.
+            PositionId = _context.BusinessMemberships
+                .Where(m => m.UserId == u.Id && m.BusinessId == business.Id && m.PositionId != null)
+                .Select(m => m.PositionId)
+                .FirstOrDefault(),
+            PositionName = _context.BusinessMemberships
+                .Where(m => m.UserId == u.Id && m.BusinessId == business.Id && m.PositionId != null)
+                .Select(m => _context.StaffPositions
+                    .Where(p => p.Id == m.PositionId!.Value && p.BusinessId == business.Id)
+                    .Select(p => p.Name)
+                    .FirstOrDefault())
+                .FirstOrDefault(),
+            PositionIsActive = _context.BusinessMemberships
+                .Where(m => m.UserId == u.Id && m.BusinessId == business.Id && m.PositionId != null)
+                .Select(m => _context.StaffPositions
+                    .Where(p => p.Id == m.PositionId!.Value && p.BusinessId == business.Id)
+                    .Select(p => (bool?)p.IsActive)
+                    .FirstOrDefault())
+                .FirstOrDefault(),
         });
 
         return await ProjectStaffListAsync(projected, status, activity, goalStatus, sortBy, sortDirection, page, pageSize);
@@ -1778,6 +1800,24 @@ public partial class BusinessService : IBusinessService
                 LastActivityAt = _context.Stamps
                     .Where(s => s.AwardedByUserId == u.Id && s.Card.BusinessId == business.Id)
                     .Max(s => (DateTime?)s.StampedAt),
+                PositionId = _context.BusinessMemberships
+                    .Where(m => m.UserId == u.Id && m.BusinessId == business.Id && m.PositionId != null)
+                    .Select(m => m.PositionId)
+                    .FirstOrDefault(),
+                PositionName = _context.BusinessMemberships
+                    .Where(m => m.UserId == u.Id && m.BusinessId == business.Id && m.PositionId != null)
+                    .Select(m => _context.StaffPositions
+                        .Where(p => p.Id == m.PositionId!.Value && p.BusinessId == business.Id)
+                        .Select(p => p.Name)
+                        .FirstOrDefault())
+                    .FirstOrDefault(),
+                PositionIsActive = _context.BusinessMemberships
+                    .Where(m => m.UserId == u.Id && m.BusinessId == business.Id && m.PositionId != null)
+                    .Select(m => _context.StaffPositions
+                        .Where(p => p.Id == m.PositionId!.Value && p.BusinessId == business.Id)
+                        .Select(p => (bool?)p.IsActive)
+                        .FirstOrDefault())
+                    .FirstOrDefault(),
             })
             .ToListAsync();
 
@@ -1885,6 +1925,14 @@ public partial class BusinessService : IBusinessService
         var stampsIssued = await _context.Stamps.CountAsync(s => s.AwardedByUserId == staffUser.Id && s.Card.BusinessId == business.Id);
         var todayUtc = DateTime.UtcNow.Date;
         var appointmentsToday = await _context.Appointments.CountAsync(a => a.StaffUserId == staffUser.Id && a.BusinessId == business.Id && a.ScheduledAt >= todayUtc);
+
+        // The position is display metadata, resolved so the response shape matches
+        // the list projection exactly (a client renders one model everywhere).
+        var staffPosition = await _context.BusinessMemberships.AsNoTracking()
+            .Where(m => m.UserId == staffUser.Id && m.BusinessId == business.Id && m.PositionId != null)
+            .Select(m => _context.StaffPositions
+                .FirstOrDefault(p => p.Id == m.PositionId!.Value && p.BusinessId == business.Id))
+            .FirstOrDefaultAsync();
         return ApiResponse<StaffMemberResponse>.Ok(new StaffMemberResponse
         {
             UserId = staffUser.Id,
@@ -1900,6 +1948,9 @@ public partial class BusinessService : IBusinessService
             AppointmentDailyGoalOverride = staffUser.AppointmentDailyGoalOverride,
             AppointmentDailyGoal = staffUser.AppointmentDailyGoalOverride ?? business.DefaultAppointmentDailyGoal,
             AppointmentsToday = appointmentsToday,
+            PositionId = staffPosition?.Id,
+            PositionName = staffPosition?.Name,
+            PositionIsActive = staffPosition?.IsActive,
         });
     }
 

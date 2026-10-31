@@ -32,4 +32,13 @@ public class ServiceCatalogItem : BaseEntity
     /// column existed, so adding it cannot silently empty the storefront.</para>
     /// </summary>
     public bool Showcase { get; set; } = true;
+
+    /// <summary>
+    /// Optional business-scoped grouping. Null means "uncategorised", which is
+    /// the state every pre-existing service keeps after the category migration —
+    /// no service is silently filed under a guessed category.
+    /// </summary>
+    public Guid? CategoryId { get; set; }
+
+    public virtual ServiceCategory? Category { get; set; }
 }

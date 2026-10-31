@@ -76,11 +76,20 @@ public class BusinessMembership : BaseEntity
     /// <summary>When the membership stopped granting access (left/suspended/revoked).</summary>
     public DateTime? EndedAt { get; set; }
 
+    /// <summary>
+    /// Optional job title / position within the business (Senior Stylist,
+    /// Receptionist, ...). Purely descriptive: a position grants no permission
+    /// and no service eligibility. History is preserved in
+    /// <see cref="StaffPositionHistory"/>.
+    /// </summary>
+    public Guid? PositionId { get; set; }
+
     [Required]
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     public virtual User User { get; set; } = null!;
     public virtual Business Business { get; set; } = null!;
+    public virtual StaffPosition? Position { get; set; }
 
     /// <summary>Tenant claim value for this role (Owner | Staff | Customer).</summary>
     public string RoleName => Role switch

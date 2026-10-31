@@ -71,6 +71,9 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Repository for AppointmentStatusHistory entities.</summary>
     IRepository<AppointmentStatusHistory> AppointmentStatusHistory { get; }
 
+    /// <summary>Repository for ServiceCategory entities.</summary>
+    IRepository<ServiceCategory> ServiceCategories { get; }
+
     /// <summary>Repository for ServiceCatalogItem entities.</summary>
     IRepository<ServiceCatalogItem> ServiceCatalogItems { get; }
 

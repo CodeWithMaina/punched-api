@@ -429,6 +429,48 @@ public class AppointmentRescheduleRequestResponse
 }
 
 /// <summary>
+/// One entry of an appointment's rescheduling history. Unlike
+/// <see cref="AppointmentRescheduleRequestResponse"/> (which describes the single
+/// OPEN proposal), this record is the preserved evidence of a past proposal and
+/// its decision.
+/// </summary>
+public class AppointmentRescheduleHistoryItemResponse
+{
+    [JsonPropertyName("id")] public Guid Id { get; set; }
+
+    /// <summary><c>pending</c> | <c>approved</c> | <c>rejected</c> | <c>withdrawn</c> | <c>expired</c>.</summary>
+    [JsonPropertyName("status")] public string Status { get; set; } = string.Empty;
+
+    [JsonPropertyName("requestedByUserId")] public Guid RequestedByUserId { get; set; }
+
+    /// <summary><c>customer</c> | <c>staff</c> | <c>owner</c>.</summary>
+    [JsonPropertyName("requestedByParty")] public string RequestedByParty { get; set; } = string.Empty;
+
+    [JsonPropertyName("requestReason")] public string? RequestReason { get; set; }
+
+    [JsonPropertyName("originalScheduledAt")] public DateTime OriginalScheduledAt { get; set; }
+    [JsonPropertyName("originalEndAt")] public DateTime OriginalEndAt { get; set; }
+    [JsonPropertyName("originalStaffUserId")] public Guid? OriginalStaffUserId { get; set; }
+
+    [JsonPropertyName("proposedScheduledAt")] public DateTime ProposedScheduledAt { get; set; }
+    [JsonPropertyName("proposedEndAt")] public DateTime ProposedEndAt { get; set; }
+    [JsonPropertyName("proposedStaffUserId")] public Guid? ProposedStaffUserId { get; set; }
+    [JsonPropertyName("proposedServices")] public List<AppointmentServiceSnapshot> ProposedServices { get; set; } = new();
+
+    [JsonPropertyName("expiresAt")] public DateTime? ExpiresAt { get; set; }
+    [JsonPropertyName("requestedAt")] public DateTime RequestedAt { get; set; }
+    [JsonPropertyName("resolvedAt")] public DateTime? ResolvedAt { get; set; }
+    [JsonPropertyName("resolvedByUserId")] public Guid? ResolvedByUserId { get; set; }
+    [JsonPropertyName("decisionNotes")] public string? DecisionNotes { get; set; }
+}
+
+/// <summary>Rejects a pending reschedule request with an optional explanation.</summary>
+public class RejectRescheduleRequest
+{
+    [JsonPropertyName("reason")] public string? Reason { get; set; }
+}
+
+/// <summary>
 /// Immutable snapshot of a service at booking time.
 /// </summary>
 public class AppointmentServiceSnapshot

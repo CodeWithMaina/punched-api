@@ -17,6 +17,12 @@ public static class NotificationTemplates
         Add(templates, "appointment.reminder", "Appointment reminder", "Appointment reminder", "Reminder: your appointment with {{businessName}} is scheduled for {{scheduledAt}}.");
         Add(templates, "appointment.completed", "Appointment completed", "Appointment completed", "Thanks for visiting {{businessName}} on {{scheduledAt}}. We hope to see you again soon.");
         Add(templates, "appointment.no_show_notice", "Missed appointment", "Missed appointment", "You missed your appointment with {{businessName}} scheduled for {{scheduledAt}}. Reply to rebook.");
+        Add(templates, "appointment.reschedule_withdrawn", "Reschedule withdrawn", "Reschedule withdrawn", "A reschedule request for {{businessName}} at {{scheduledAt}} was withdrawn.");
+        Add(templates, "appointment.reschedule_expired", "Reschedule request expired", "Reschedule request expired", "The reschedule request for your appointment with {{businessName}} at {{scheduledAt}} expired without a decision.");
+        Add(templates, "appointment.staff_assigned", "Appointment assigned", "Appointment assigned", "You have been assigned an appointment at {{businessName}} for {{scheduledAt}}.");
+        Add(templates, "commission.approved", "Commission approved", "Commission approved", "{{amount}} of commission at {{businessName}} has been approved and is ready to be paid.");
+        Add(templates, "commission.adjusted", "Commission adjusted", "Commission adjusted", "Your commission at {{businessName}} was adjusted by {{amount}}. Reason: {{reason}}.");
+        Add(templates, "commission.payout_recorded", "Commission paid", "Commission paid", "{{businessName}} recorded a commission payout of {{amount}} to you (reference {{reference}}).");
         Add(templates, "loyalty.stamp_received", "Stamp collected", "Stamp collected", "You collected a stamp at {{businessName}}. You now have {{stamps}}.");
         Add(templates, "loyalty.goal_reached", "Daily goal reached", "Daily goal reached", "You collected {{stamps}} stamps at {{businessName}} and reached your daily goal.");
         Add(templates, "loyalty.reward_ready", "Reward ready", "Reward ready", "You have a reward ready to claim at {{businessName}}.");

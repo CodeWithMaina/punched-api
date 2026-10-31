@@ -26,16 +26,25 @@ public class PaymentCallbackService : IPaymentCallbackService
     private readonly INotificationService _notifications;
     private readonly ILogger<PaymentCallbackService> _logger;
 
+    /// <summary>
+    /// Optional commission ledger: a callback that confirms money must release
+    /// the appointment's accrued commission. Optional so existing construction
+    /// sites (including the test suite) keep compiling unchanged.
+    /// </summary>
+    private readonly ICommissionService? _commissions;
+
     public PaymentCallbackService(
         ApplicationDbContext context,
         IUnitOfWork uow,
         INotificationService notifications,
-        ILogger<PaymentCallbackService> logger)
+        ILogger<PaymentCallbackService> logger,
+        ICommissionService? commissions = null)
     {
         _context = context;
         _uow = uow;
         _notifications = notifications;
         _logger = logger;
+        _commissions = commissions;
     }
 
     // ── STK push result callback ────────────────────────────
@@ -180,7 +189,34 @@ public class PaymentCallbackService : IPaymentCallbackService
 
         await _context.PaymentCallbacks.AddAsync(record);
         await _uow.SaveChangesAsync();
+
+        // Money is confirmed: release the appointment's accrued commission.
+        // Idempotent (a replayed callback changes nothing) and non-fatal.
+        if (record.Outcome == "applied" && payment.Status == PaymentStatus.Success)
+            await SettleCommissionSafelyAsync(payment);
+
         return (record.Outcome ?? "applied", payment.Id);
+    }
+
+    /// <summary>
+    /// Releases commission for the appointment a settled payment belongs to.
+    /// A commission failure is logged, never surfaced: the payment is already
+    /// confirmed and the ledger can always be reconciled afterwards.
+    /// </summary>
+    private async Task SettleCommissionSafelyAsync(Payment payment)
+    {
+        if (_commissions == null || payment.AppointmentId is not Guid appointmentId) return;
+
+        try
+        {
+            await _commissions.SettleForAppointmentAsync(payment.BusinessId, appointmentId, payment.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Commission settlement failed for appointment {AppointmentId} after payment {PaymentId}; the payment stands.",
+                appointmentId, payment.Id);
+        }
     }
 
     // ── C2B confirmation (PayBill / Till) ───────────────────
@@ -296,6 +332,11 @@ public class PaymentCallbackService : IPaymentCallbackService
 
         await _context.PaymentCallbacks.AddAsync(record);
         await _uow.SaveChangesAsync();
+
+        // Money is confirmed: release the appointment's accrued commission.
+        if (record.Outcome == "applied" && payment.Status == PaymentStatus.Success)
+            await SettleCommissionSafelyAsync(payment);
+
         return (record.Outcome ?? "applied", payment.Id);
     }
 

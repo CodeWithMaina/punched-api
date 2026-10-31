@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using PunchedApi.Application.Authorization;
 using PunchedApi.Application.Modules;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Infrastructure.SeedData;
@@ -64,6 +65,42 @@ public sealed class ModuleCatalogSeeder : IModuleCatalogSeeder
                 _dbContext.Modules.Add(definition);
                 changed = true;
                 _logger.LogInformation("Seeding module: {ModuleKey}", definition.Key);
+            }
+        }
+
+        // ── Permission catalogue (upsert by Code) ───────────────
+        // The catalogue is code-owned (PermissionCatalog derives it from
+        // ModuleCatalog); these rows exist so business roles can reference
+        // permission codes and admins can read the catalogue without a deploy.
+        // Rows are never deleted here: a permission removed from the catalogue
+        // stays in the table so historical role assignments remain readable.
+        var catalogue = PermissionCatalog.All;
+        var existingPermissions = await _dbContext.Permissions
+            .ToDictionaryAsync(p => p.Code, StringComparer.Ordinal, cancellationToken);
+
+        foreach (var definition in catalogue)
+        {
+            if (existingPermissions.TryGetValue(definition.Code, out var existing))
+            {
+                existing.Name = definition.Name;
+                existing.Description = definition.Description;
+                existing.ModuleKey = definition.ModuleKey;
+                existing.IsSystem = true;
+            }
+            else
+            {
+                _dbContext.Permissions.Add(new Permission
+                {
+                    Id = Guid.NewGuid(),
+                    Code = definition.Code,
+                    Name = definition.Name,
+                    Description = definition.Description,
+                    ModuleKey = definition.ModuleKey,
+                    IsSystem = true,
+                    CreatedAt = now
+                });
+                changed = true;
+                _logger.LogInformation("Seeding permission: {PermissionCode}", definition.Code);
             }
         }
 

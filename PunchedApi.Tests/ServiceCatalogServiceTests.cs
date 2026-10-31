@@ -139,7 +139,7 @@ public class ServiceCatalogServiceTests
         var tenant = new TenantContext();
         tenant.Set("other", Guid.NewGuid());
         var service = new ServiceCatalogService(new PunchedApi.Infrastructure.Repositories.UnitOfWork(context),
-            TestHelpers.CreateLogger<ServiceCatalogService>(), new StubModuleEntitlements("serviceCatalog"), tenant);
+            TestHelpers.CreateLogger<ServiceCatalogService>(), new StubModuleEntitlements("serviceCatalog"), context, tenant);
         Assert.Equal("NOT_FOUND", (await service.GetMyServicesAsync(env.Owner.Id)).Error?.Code);
         Assert.Equal("NOT_FOUND", (await service.CreateServiceAsync(env.Owner.Id,
             new CreateServiceRequest { Name = "Cut", DurationMinutes = 30, Price = 500 })).Error?.Code);
@@ -177,7 +177,7 @@ public class ServiceCatalogServiceTests
         var tenant = new TenantContext();
         tenant.Set("other-business", Guid.NewGuid());
         var scoped = new ServiceCatalogService(new PunchedApi.Infrastructure.Repositories.UnitOfWork(context),
-            TestHelpers.CreateLogger<ServiceCatalogService>(), new StubModuleEntitlements("serviceCatalog"), tenant);
+            TestHelpers.CreateLogger<ServiceCatalogService>(), new StubModuleEntitlements("serviceCatalog"), context, tenant);
         Assert.Equal("NOT_FOUND", (await scoped.GetMyServicesAsync(env.Owner.Id)).Error?.Code);
         Assert.Equal("NOT_FOUND", (await scoped.UpdateServiceAsync(env.Owner.Id, created.Data!.Id, new UpdateServiceRequest { Price = 999 })).Error?.Code);
         Assert.Equal("NOT_FOUND", (await scoped.DeleteServiceAsync(env.Owner.Id, created.Data.Id)).Error?.Code);

@@ -57,6 +57,13 @@ public class AuthorizationPostureTests
         "Review|GET|businesses/{businessId:guid}/reviews",
         "Review|GET|businesses/{businessId:guid}/reviews/summary",
         "ServiceCatalog|GET|{businessId:guid}",
+        // Public storefront catalogue grouped by ACTIVE category. Same
+        // visibility rules as the flat public list above (active + showcased
+        // services only) plus the serviceCatalog entitlement check performed
+        // inside the service, because an anonymous route has no caller business
+        // for [RequireModule] to resolve. It exists so a storefront renders
+        // groups from backend data instead of re-implementing visibility rules.
+        "ServiceCatalog|GET|{businessId:guid}/catalogue",
         "ServiceCatalog|GET|{businessId:guid}/staff",
         "ServiceCatalog|GET|{businessId:guid}/{id:guid}",
         "LandingPage|GET|public/{businessId:guid}/landing-page",

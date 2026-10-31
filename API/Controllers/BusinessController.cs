@@ -355,4 +355,21 @@ public partial class BusinessController : ControllerBase
         var claim = User.FindFirst("userId")?.Value;
         return Guid.TryParse(claim, out var id) ? id : null;
     }
+
+    /// <summary>
+    /// The caller's tenant persona ("Business" for an owner, "Staff" for a staff
+    /// member) for endpoints that admit either. The service then applies the
+    /// persona's own scoping — a staff caller is still restricted to their own
+    /// appointments. When the claim is absent the more restrictive "Staff"
+    /// persona is assumed.
+    /// </summary>
+    private string GetTenantRole()
+    {
+        var role = User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value
+                   ?? User.FindFirst("role")?.Value;
+
+        return string.Equals(role?.Trim(), "Business", StringComparison.OrdinalIgnoreCase)
+            ? "Business"
+            : "Staff";
+    }
 }

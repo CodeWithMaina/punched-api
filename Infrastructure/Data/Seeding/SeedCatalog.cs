@@ -38,11 +38,11 @@ internal static class SeedCatalog
             new SeedBusinessDefinition(
                 Key: "business-1",
                 Name: "Aurelia Luxe Hair Atelier",
-                Category: "Luxury Hair Salon",
+                Category: "Hair & Beauty Salon",
                 Location: "Westlands, Nairobi",
                 PhoneNumber: "+254712440001",
                 Email: "hello@aurelialuxe.co.ke",
-                Description: "Premium color, bridal styling, and restorative hair rituals.",
+                Description: "A premium hair atelier offering professional hairstyling, hair treatments, braiding, extensions, and beauty services.",
                 LogoUrl: "https://images.unsplash.com/photo-1524504388940-b1c1722653e1",
                 MpesaNumber: "4021001",
                 OwnerUserKey: "owner-1",
@@ -56,8 +56,9 @@ internal static class SeedCatalog
                 ReferralRewardValue: 2m,
                 ReferralsRequired: 2,
                 ReferralExpirationDays: 45,
-                StaffUserKeys: ["staff-1-manager", "staff-1-senior-stylist", "staff-1-barber", "staff-1-nail-tech", "staff-1-reception"],
-                CustomerUserKeys: BuildCustomerKeys("b1", 20),
+                StaffUserKeys: ["staff-1-manager", "staff-1-senior-stylist", "staff-1-barber", "staff-1-nail-tech", "staff-1-reception",
+                                "staff-1-braiding", "staff-1-natural-hair", "staff-1-treatment", "staff-1-junior"],
+                CustomerUserKeys: BuildCustomerKeys("b1", 45),
                 IsFocusBusiness: true),
 
             new SeedBusinessDefinition(
@@ -177,6 +178,10 @@ internal static class SeedCatalog
             Staff("staff-1-barber", "leo.kiptoo@aurelialuxe.co.ke", "Leo Kiptoo", "+254702330103", "Male", 1996, 11, 5),
             Staff("staff-1-nail-tech", "amy.naliaka@aurelialuxe.co.ke", "Amy Naliaka", "+254702330104", "Female", 1997, 8, 29),
             Staff("staff-1-reception", "ruth.kendi@aurelialuxe.co.ke", "Ruth Kendi", "+254702330105", "Female", 1998, 1, 19),
+            Staff("staff-1-braiding", "zawadi.omondi@aurelialuxe.co.ke", "Zawadi Omondi", "+254702330106", "Female", 1993, 8, 14),
+            Staff("staff-1-natural-hair", "nairobi.wangari@aurelialuxe.co.ke", "Nairobi Wangari", "+254702330107", "Female", 1995, 3, 27),
+            Staff("staff-1-treatment", "halima.yusuf@aurelialuxe.co.ke", "Halima Yusuf", "+254702330108", "Female", 1996, 12, 3),
+            Staff("staff-1-junior", "kevin.ochieng@aurelialuxe.co.ke", "Kevin Ochieng", "+254702330109", "Male", 2000, 5, 21),
 
             Staff("staff-2-manager", "david.ndungu@harborlinebarbers.com", "David Ndungu", "+254702330201", "Male", 1990, 3, 8),
             Staff("staff-2-master-barber", "omar.hassan@harborlinebarbers.com", "Omar Hassan", "+254702330202", "Male", 1993, 7, 25),
@@ -193,7 +198,7 @@ internal static class SeedCatalog
             Staff("staff-5-advisor", "grace.karimi@northlightwellness.africa", "Grace Karimi", "+254702330502", "Female", 1995, 2, 16),
         };
 
-        users.AddRange(BuildCustomers("b1", 20, -7));
+        users.AddRange(BuildCustomers("b1", 45, -7));
         users.AddRange(BuildCustomers("b2", 16, -6));
         users.AddRange(BuildCustomers("b3", 8, -5));
         users.AddRange(BuildCustomers("b4", 7, -4));

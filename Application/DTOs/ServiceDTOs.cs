@@ -43,6 +43,25 @@ public class ServiceCatalogItemResponse
     [JsonPropertyName("showcase")]
     public bool Showcase { get; set; } = true;
 
+    /// <summary>
+    /// The business-scoped category this service is filed under, or null when
+    /// the service is uncategorised. Uncategorised services are a supported
+    /// state, not an error.
+    /// </summary>
+    [JsonPropertyName("categoryId")]
+    public Guid? CategoryId { get; set; }
+
+    /// <summary>
+    /// The category's display name, resolved server-side so a client never has
+    /// to join two collections to render a group heading.
+    /// </summary>
+    [JsonPropertyName("categoryName")]
+    public string? CategoryName { get; set; }
+
+    /// <summary>Category display order, so a client can sort groups without a second call.</summary>
+    [JsonPropertyName("categorySortOrder")]
+    public int? CategorySortOrder { get; set; }
+
     [JsonPropertyName("imageMediaId")]
     public Guid? ImageMediaId { get; set; }
 
@@ -118,6 +137,13 @@ public class CreateServiceRequest
     /// </summary>
     [JsonPropertyName("showcase")]
     public bool? Showcase { get; set; }
+
+    /// <summary>
+    /// Optional category to file the service under. Omitted leaves it
+    /// uncategorised, so an older client keeps working unchanged.
+    /// </summary>
+    [JsonPropertyName("categoryId")]
+    public Guid? CategoryId { get; set; }
 }
 
 /// <summary>
@@ -146,4 +172,19 @@ public class UpdateServiceRequest
     /// </summary>
     [JsonPropertyName("showcase")]
     public bool? Showcase { get; set; }
+
+    /// <summary>
+    /// Moves the service to a category. Null leaves the current category
+    /// unchanged; send <see cref="ClearCategory"/> = true to uncategorise.
+    /// </summary>
+    [JsonPropertyName("categoryId")]
+    public Guid? CategoryId { get; set; }
+
+    /// <summary>
+    /// Explicitly removes the service from its category. Separate from
+    /// <see cref="CategoryId"/> so "leave as is" and "uncategorise" are
+    /// distinguishable in a partial update.
+    /// </summary>
+    [JsonPropertyName("clearCategory")]
+    public bool? ClearCategory { get; set; }
 }

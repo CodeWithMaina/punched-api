@@ -21,10 +21,14 @@ namespace PunchedApi.API.Controllers;
 public class ServiceCatalogController : ControllerBase
 {
     private readonly IServiceCatalogService _catalogService;
+    private readonly IServiceCategoryService _categoryService;
 
-    public ServiceCatalogController(IServiceCatalogService catalogService)
+    public ServiceCatalogController(
+        IServiceCatalogService catalogService,
+        IServiceCategoryService categoryService)
     {
         _catalogService = catalogService;
+        _categoryService = categoryService;
     }
 
     [HttpGet("admin")]
@@ -77,6 +81,42 @@ public class ServiceCatalogController : ControllerBase
         if (userId == null) return Unauthorized();
 
         var result = await _catalogService.GetMyServicesAsync(userId.Value);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// Owner: the business catalogue with DB-first filtering (category,
+    /// uncategorised, active, search), sorting and pagination. Category names are
+    /// resolved server-side so the client never joins two collections.
+    /// </summary>
+    [HttpGet("me/query")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
+    [ProducesResponseType(typeof(ApiResponse<PaginatedResponse<ServiceCatalogItemResponse>>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> QueryMyServices(
+        [FromQuery] Guid? categoryId,
+        [FromQuery] bool uncategorized = false,
+        [FromQuery] bool? isActive = null,
+        [FromQuery] string? search = null,
+        [FromQuery] string? sortBy = null,
+        [FromQuery] string? sortDirection = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 25)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _catalogService.QueryMyServicesAsync(userId.Value, new ServiceCatalogQueryRequest
+        {
+            CategoryId = categoryId,
+            Uncategorized = uncategorized,
+            IsActive = isActive,
+            Search = search,
+            SortBy = sortBy,
+            SortDirection = sortDirection,
+            Page = page,
+            PageSize = pageSize
+        });
+
         return result.Success ? Ok(result) : MapFailure(result);
     }
 
@@ -143,6 +183,26 @@ public class ServiceCatalogController : ControllerBase
     public async Task<IActionResult> GetServicesForBusiness(Guid businessId)
     {
         var result = await _catalogService.GetServicesForBusinessAsync(businessId);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// Public: the business's published catalogue grouped by ACTIVE category,
+    /// plus the uncategorised remainder (which includes services filed under a
+    /// deactivated category, so nothing bookable is ever hidden).
+    ///
+    /// <para>This is the storefront grouping contract: the client renders groups
+    /// from backend data and never re-implements visibility rules. Honours the
+    /// serviceCatalog entitlement, the active+showcase service rules and tenant
+    /// narrowing.</para>
+    /// </summary>
+    [HttpGet("{businessId:guid}/catalogue")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<PublicServiceCatalogResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetCatalogueForBusiness(Guid businessId)
+    {
+        var result = await _categoryService.GetPublicCatalogueAsync(businessId);
         return result.Success ? Ok(result) : MapFailure(result);
     }
 
