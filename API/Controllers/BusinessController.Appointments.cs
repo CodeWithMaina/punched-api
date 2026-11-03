@@ -69,6 +69,43 @@ public partial class BusinessController
         return result.Success ? Ok(result) : MapFailure(result);
     }
 
+    /// <summary>
+    /// Owner: replace the business's working note on an appointment. The write is
+    /// recorded in the appointment's status history, so the detail screen's
+    /// activity feed shows who changed it and when.
+    /// </summary>
+    [RequireModule("appointments")]
+    [HttpPatch("me/appointments/{id:guid}/note")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
+    [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> UpdateBusinessAppointmentNote(Guid id, [FromBody] UpdateAppointmentNoteRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.UpdateNoteAsync(userId.Value, "Business", id, request.Note);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// Owner: the appointment's persisted status-change history, newest first —
+    /// the audit trail every transition already writes.
+    /// </summary>
+    [RequireModule("appointments")]
+    [HttpGet("me/appointments/{id:guid}/activity")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
+    [ProducesResponseType(typeof(ApiResponse<List<AppointmentActivityItemResponse>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetBusinessAppointmentActivity(Guid id)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.GetActivityAsync(userId.Value, "Business", id);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
     /// <summary>Owner: book an appointment on behalf of a customer.</summary>
     [RequireModule("appointments")]
     [HttpPost("me/appointments")]

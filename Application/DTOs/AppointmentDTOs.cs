@@ -402,6 +402,53 @@ public class AppointmentResponse
     /// </summary>
     [JsonPropertyName("reminderOptOut")]
     public bool ReminderOptOut { get; set; }
+
+    /// <summary>
+    /// The business's working note for this booking (editable from the
+    /// appointment detail screen). Null when none has been written.
+    /// </summary>
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
+}
+
+/// <summary>
+/// Replaces an appointment's working note. An empty/whitespace value clears it,
+/// so the same route covers writing, editing and removing.
+/// </summary>
+public class UpdateAppointmentNoteRequest
+{
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
+}
+
+/// <summary>
+/// One entry of an appointment's status-change history — the persisted audit
+/// trail written by every transition (booking, confirm, reschedule, cancel,
+/// complete, no-show). Read-only projection of
+/// <c>appointment_status_history</c>; nothing here is synthesised.
+/// </summary>
+public class AppointmentActivityItemResponse
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    /// <summary>The status the appointment moved INTO.</summary>
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = string.Empty;
+
+    [JsonPropertyName("changedAt")]
+    public DateTime ChangedAt { get; set; }
+
+    /// <summary>Who made the change. Null for system-driven transitions.</summary>
+    [JsonPropertyName("changedByUserId")]
+    public Guid? ChangedByUserId { get; set; }
+
+    [JsonPropertyName("changedByName")]
+    public string? ChangedByName { get; set; }
+
+    /// <summary>Free-text explanation recorded with the transition, if any.</summary>
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
 }
 
 /// <summary>

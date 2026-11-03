@@ -31,6 +31,16 @@ public class Appointment : BaseEntity
     public bool ReminderOptOut { get; set; } = false;
 
     /// <summary>
+    /// Free-text note the business keeps against the booking (preparation
+    /// instructions, allergies, "paying by M-Pesa"). Distinct from
+    /// <see cref="AppointmentStatusHistory.Note"/>, which records *why* a
+    /// transition happened; this is the appointment's working note and is edited
+    /// from the appointment detail screen.
+    /// </summary>
+    [MaxLength(500)]
+    public string? Note { get; set; }
+
+    /// <summary>
     /// Optimistic-concurrency token for status transitions and scheduling
     /// writes. Incremented by every accepted state change, so two concurrent
     /// transition requests for the same appointment cannot both succeed (the

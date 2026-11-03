@@ -1194,6 +1194,117 @@ public class AppointmentService : IAppointmentService
         return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
     }
 
+    public async Task<ApiResponse<AppointmentResponse>> UpdateNoteAsync(
+        Guid callerUserId, string role, Guid appointmentId, string? note)
+    {
+        var appointment = await LoadAsync(appointmentId);
+        if (appointment == null)
+            return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "Appointment not found.");
+
+        var ownershipError = await AssertOwnershipAsync(callerUserId, role, appointment);
+        if (ownershipError != null)
+            return ownershipError;
+
+        // Owners and staff may keep notes; customers may not write into the
+        // business's working record.
+        if (!IsRole(role, "Business") && !IsRole(role, "Staff"))
+            return ApiResponse<AppointmentResponse>.Fail(
+                "FORBIDDEN", "Only Business or Staff may edit an appointment note.");
+
+        var trimmed = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
+        if (trimmed != null && trimmed.Length > 500)
+            trimmed = trimmed[..500];
+
+        var previous = appointment.Note;
+        if (string.Equals(previous, trimmed, StringComparison.Ordinal))
+            // Nothing changed: no history row, no version bump, no side effect.
+            return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
+
+        appointment.Note = trimmed;
+        appointment.Version++;
+        _unitOfWork.Appointments.Update(appointment);
+
+        // The edit is part of the appointment's auditable trail, exactly like a
+        // status change, so the detail screen's activity feed stays complete.
+        await _unitOfWork.AppointmentStatusHistory.AddAsync(new AppointmentStatusHistory
+        {
+            Id = Guid.NewGuid(),
+            AppointmentId = appointment.Id,
+            Status = appointment.Status,
+            ChangedAt = DateTime.UtcNow,
+            ChangedByUserId = callerUserId,
+            Note = trimmed == null ? "Note cleared" : Truncate($"Note updated: {trimmed}", 300),
+            CreatedAt = DateTime.UtcNow
+        });
+
+        await _unitOfWork.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "Appointment {AppointmentId} note updated by {UserId}.", appointment.Id, callerUserId);
+
+        return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(appointment));
+    }
+
+    public async Task<ApiResponse<List<AppointmentActivityItemResponse>>> GetActivityAsync(
+        Guid callerUserId, string role, Guid appointmentId)
+    {
+        var appointment = await LoadAsync(appointmentId);
+        if (appointment == null)
+            return ApiResponse<List<AppointmentActivityItemResponse>>.Fail(
+                "NOT_FOUND", "Appointment not found.");
+
+        var ownershipError = await AssertOwnershipAsync(callerUserId, role, appointment);
+        if (ownershipError != null)
+            return ApiResponse<List<AppointmentActivityItemResponse>>.Fail(
+                ownershipError.Error?.Code ?? "FORBIDDEN",
+                ownershipError.Error?.Message ?? "Not authorized to access this appointment.");
+
+        // Actor names are joined in one projection so the feed reads "Confirmed
+        // by Chris Mwangi" without an N+1 across the history rows.
+        var rows = await _context.AppointmentStatusHistory
+            .AsNoTracking()
+            .Where(h => h.AppointmentId == appointment.Id)
+            .OrderByDescending(h => h.ChangedAt)
+            .Select(h => new
+            {
+                h.Id,
+                h.Status,
+                h.ChangedAt,
+                h.ChangedByUserId,
+                h.Note
+            })
+            .ToListAsync();
+
+        var actorIds = rows
+            .Where(r => r.ChangedByUserId.HasValue)
+            .Select(r => r.ChangedByUserId!.Value)
+            .Distinct()
+            .ToList();
+
+        var actorNames = actorIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _context.Users
+                .AsNoTracking()
+                .Where(u => actorIds.Contains(u.Id))
+                .Select(u => new { u.Id, u.FullName })
+                .ToDictionaryAsync(u => u.Id, u => u.FullName);
+
+        var activity = rows.Select(r => new AppointmentActivityItemResponse
+        {
+            Id = r.Id,
+            Status = r.Status,
+            ChangedAt = r.ChangedAt,
+            ChangedByUserId = r.ChangedByUserId,
+            ChangedByName = r.ChangedByUserId.HasValue &&
+                            actorNames.TryGetValue(r.ChangedByUserId.Value, out var name)
+                ? name
+                : null,
+            Note = r.Note
+        }).ToList();
+
+        return ApiResponse<List<AppointmentActivityItemResponse>>.Ok(activity);
+    }
+
     public async Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetBusinessAppointmentsAsync(
         Guid ownerUserId, string? status, DateTime? from, DateTime? to, Guid? staffUserId, Guid? customerId, Guid? serviceId, int page, int pageSize)
     {

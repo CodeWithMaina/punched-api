@@ -82,6 +82,21 @@ public interface IAppointmentService
     /// <summary>Gets a single appointment, asserting caller tenant ownership.</summary>
     Task<ApiResponse<AppointmentResponse>> GetAppointmentAsync(Guid callerUserId, string role, Guid appointmentId);
 
+    /// <summary>
+    /// Replaces the business's working note on an appointment. Authorized exactly
+    /// like a status transition (owner, or the assigned staff member), and
+    /// recorded in the status history so the edit is auditable.
+    /// </summary>
+    Task<ApiResponse<AppointmentResponse>> UpdateNoteAsync(
+        Guid callerUserId, string role, Guid appointmentId, string? note);
+
+    /// <summary>
+    /// The appointment's persisted status-change history, newest first — the
+    /// audit trail every transition already writes. Read-only.
+    /// </summary>
+    Task<ApiResponse<List<AppointmentActivityItemResponse>>> GetActivityAsync(
+        Guid callerUserId, string role, Guid appointmentId);
+
     /// <summary>Paged business appointment list with filters.</summary>
 
     /// <summary>

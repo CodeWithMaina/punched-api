@@ -188,6 +188,11 @@ namespace PunchedApi.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("end_at");
 
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("note");
+
                     b.Property<bool>("ReminderOptOut")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")

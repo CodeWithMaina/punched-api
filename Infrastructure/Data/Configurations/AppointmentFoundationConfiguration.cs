@@ -20,6 +20,7 @@ public class AppointmentConfiguration : IEntityTypeConfiguration<Appointment>
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(20);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
         builder.Property(x => x.ReminderOptOut).HasColumnName("reminder_opt_out").HasDefaultValue(false);
+        builder.Property(x => x.Note).HasColumnName("note").HasMaxLength(500);
         builder.Property(x => x.Version).HasColumnName("version").HasDefaultValue(0)
             // Enforced optimistic concurrency (not just a documented intention): the
             // token joins every UPDATE's WHERE clause, so two concurrent writes to the
