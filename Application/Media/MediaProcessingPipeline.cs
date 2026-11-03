@@ -5,6 +5,7 @@ using Amazon.S3;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Entities;
@@ -95,7 +96,8 @@ public sealed class MediaProcessor(
     IMediaUrlFactory urls,
     IMediaValidator validator,
     IOptions<MediaStorageOptions> options,
-    IHttpClientFactory httpClientFactory) : IMediaProcessor
+    IHttpClientFactory httpClientFactory,
+    ILogger<MediaProcessor>? logger = null) : IMediaProcessor
 {
     private readonly ApplicationDbContext _db = db;
     private readonly IObjectStore _store = store;
@@ -104,6 +106,14 @@ public sealed class MediaProcessor(
     private readonly IMediaValidator _validator = validator;
     private readonly MediaStorageOptions _options = options.Value;
     private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
+
+    /// <summary>
+    /// Optional so the processor stays constructible in unit tests without a
+    /// logging stack; the container always supplies one. Without this, a failed
+    /// upload was visible only as a metric — an operator could see that uploads
+    /// stopped reaching Ready but never why.
+    /// </summary>
+    private readonly ILogger? _logger = logger;
 
     public async Task<bool> ProcessAsync(Guid mediaId, CancellationToken cancellationToken)
     {
@@ -210,7 +220,12 @@ public sealed class MediaProcessor(
                 // One public-delivery probe instead of one HEAD per variant: every key shares
                 // the same delivery path, so a single successful HEAD proves the whole batch is
                 // reachable and removes 2N R2 HEAD round trips from time-to-Ready.
-                using (var publicResponse = await _httpClientFactory.CreateClient().SendAsync(
+                // The timeout is bounded on purpose: the worker drains its batch
+                // sequentially, so an unbounded probe would let one unreachable delivery
+                // URL hold every queued upload behind it for the client default (100s).
+                var probeClient = _httpClientFactory.CreateClient();
+                probeClient.Timeout = TimeSpan.FromSeconds(_options.DeliveryProbeTimeoutSeconds);
+                using (var publicResponse = await probeClient.SendAsync(
                     new HttpRequestMessage(HttpMethod.Head, variants[0].Url),
                     HttpCompletionOption.ResponseHeadersRead,
                     cancellationToken))
@@ -244,7 +259,12 @@ public sealed class MediaProcessor(
                 // This attempt succeeded after at least one prior failure: a real recovery,
                 // which is the number that proves retry policy actually rescues uploads.
                 if (attempt >= 2)
+                {
                     MediaMetrics.RecordProcessingRecovered(media.Purpose, attempt);
+                    _logger?.LogInformation(
+                        "Media processing recovered for {MediaId} ({Purpose}) on attempt {Attempt}.",
+                        media.Id, media.Purpose, attempt);
+                }
                 return true;
             }
         }
@@ -261,7 +281,8 @@ public sealed class MediaProcessor(
             media.ProcessingLeaseUntil = null;
 
             var attempts = media.ProcessingAttempts;
-            if (attempts >= _options.Processing.MaxAttempts)
+            var willRetry = attempts < _options.Processing.MaxAttempts;
+            if (!willRetry)
             {
                 media.Status = MediaStatus.Failed;
                 media.NextAttemptAt = null;
@@ -277,6 +298,20 @@ public sealed class MediaProcessor(
             MediaMetrics.RecordProcessingFailed();
             MediaMetrics.RecordProcessingDuration(processingStopwatch.Elapsed, media.Purpose);
             if (attempt >= 2) MediaMetrics.RecordProcessingRetry();
+
+            // Metrics alone cannot answer "why is this upload not Ready?" — the stable
+            // error code, the attempt count and whether a retry is scheduled are what
+            // an operator needs, so they are logged with the exception.
+            _logger?.Log(
+                willRetry ? LogLevel.Warning : LogLevel.Error,
+                ex,
+                "Media processing failed for {MediaId} ({Purpose}): {ErrorCode} on attempt {Attempt}/{MaxAttempts}{RetryNote}.",
+                media.Id,
+                media.Purpose,
+                stableError,
+                attempts,
+                _options.Processing.MaxAttempts,
+                willRetry ? $" — retry scheduled at {media.NextAttemptAt:O}" : " — terminal, no further attempts");
             return false;
         }
     }
@@ -424,46 +459,23 @@ public sealed class MediaProcessingWorker(IServiceScopeFactory scopeFactory, IOp
         {
             try
             {
-                using var scope = _scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                var processor = scope.ServiceProvider.GetRequiredService<IMediaProcessor>();
-                var now = DateTime.UtcNow;
+                var candidates = await LoadCandidatesAsync(stoppingToken);
 
-                var pending = await db.Media
-                    .Where(x => (x.Status == MediaStatus.Uploaded || x.Status == MediaStatus.Processing) &&
-                                x.ProcessingAttempts < _options.Processing.MaxAttempts &&
-                                (x.ProcessingLeaseUntil == null || x.ProcessingLeaseUntil <= now) &&
-                                (x.NextAttemptAt == null || x.NextAttemptAt <= now))
-                    .OrderBy(x => x.NextAttemptAt ?? x.CreatedAt)
-                    .Take(_options.WorkerBatchSize)
-                    .ToListAsync(stoppingToken);
-
-                foreach (var media in pending)
+                if (candidates.Count > 0)
                 {
-                    var leaseToken = Guid.NewGuid().ToString("N");
-                    // Atomic claim: the WHERE predicate runs inside one UPDATE, so a
-                    // concurrent worker racing for this row gets 0 rows and moves on.
-                    var claimed = await MediaLeaseOperations.ClaimAsync(db, media.Id, now, leaseToken, _options, stoppingToken);
+                    // Bounded parallelism instead of a strict one-at-a-time drain. The
+                    // batch is claimed atomically per row, so concurrent jobs cannot
+                    // collide; each job takes its OWN DI scope because a DbContext is
+                    // not thread-safe. Before this, one slow encode (or one slow
+                    // database round trip) delayed every other queued upload behind it.
+                    var degree = _options.WorkerParallelism > 0
+                        ? Math.Min(_options.WorkerParallelism, candidates.Count)
+                        : Math.Max(1, Math.Min(candidates.Count, Environment.ProcessorCount));
 
-                    if (claimed == 0) continue;
-                    media.Status = MediaStatus.Processing;
-                    media.ProcessingAttempts++;
-                    media.ProcessingLeaseToken = leaseToken;
-                    media.ProcessingLeaseUntil = now.AddMinutes(_options.Processing.LeaseMinutes);
-                    media.UpdatedAt = now;
-                    MediaMetrics.RecordProcessingStarted();
-
-                    // MEASUREMENT: queue delay = completion (UploadedAt) → this claim. Both
-                    // timestamps are server-side, so this is pure waiting time and contains no
-                    // processing work. Attempts >= 2 are retries, not queue delay, and are
-                    // excluded so a backoff wait is never misreported as queue congestion.
-                    if (media.ProcessingAttempts == 1 && media.UploadedAt is DateTime uploadedAt && uploadedAt <= now)
-                        MediaMetrics.RecordQueueDelay(now - uploadedAt, media.Purpose);
-
-                    // Outcome counters and processing duration are recorded inside the
-                    // processor, which is the only place that knows the purpose and can time
-                    // the image work itself rather than the surrounding lease heartbeat.
-                    await ProcessWithLeaseHeartbeatAsync(media.Id, leaseToken, processor, stoppingToken);
+                    await Parallel.ForEachAsync(
+                        candidates,
+                        new ParallelOptions { MaxDegreeOfParallelism = degree, CancellationToken = stoppingToken },
+                        ProcessCandidateAsync);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -479,17 +491,88 @@ public sealed class MediaProcessingWorker(IServiceScopeFactory scopeFactory, IOp
         }
     }
 
+    /// <summary>Ids eligible for processing right now, oldest first.</summary>
+    private async Task<IReadOnlyList<Guid>> LoadCandidatesAsync(CancellationToken stoppingToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var now = DateTime.UtcNow;
+
+        return await db.Media
+            .Where(x => (x.Status == MediaStatus.Uploaded || x.Status == MediaStatus.Processing) &&
+                        x.ProcessingAttempts < _options.Processing.MaxAttempts &&
+                        (x.ProcessingLeaseUntil == null || x.ProcessingLeaseUntil <= now) &&
+                        (x.NextAttemptAt == null || x.NextAttemptAt <= now))
+            .OrderBy(x => x.NextAttemptAt ?? x.CreatedAt)
+            .Take(_options.WorkerBatchSize)
+            .Select(x => x.Id)
+            .ToListAsync(stoppingToken);
+    }
+
+    /// <summary>Claims one row and processes it inside its own scope.</summary>
+    private async ValueTask ProcessCandidateAsync(Guid mediaId, CancellationToken stoppingToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var processor = scope.ServiceProvider.GetRequiredService<IMediaProcessor>();
+
+        var media = await db.Media.FirstOrDefaultAsync(x => x.Id == mediaId, stoppingToken);
+        if (media is null) return;
+
+        var now = DateTime.UtcNow;
+        var leaseToken = Guid.NewGuid().ToString("N");
+        // Atomic claim: the WHERE predicate runs inside one UPDATE, so a
+        // concurrent worker racing for this row gets 0 rows and moves on.
+        var claimed = await MediaLeaseOperations.ClaimAsync(db, media.Id, now, leaseToken, _options, stoppingToken);
+
+        if (claimed == 0) return;
+        media.Status = MediaStatus.Processing;
+        media.ProcessingAttempts++;
+        media.ProcessingLeaseToken = leaseToken;
+        media.ProcessingLeaseUntil = now.AddMinutes(_options.Processing.LeaseMinutes);
+        media.UpdatedAt = now;
+        MediaMetrics.RecordProcessingStarted();
+
+        // MEASUREMENT: queue delay = completion (UploadedAt) → this claim. Both
+        // timestamps are server-side, so this is pure waiting time and contains no
+        // processing work. Attempts >= 2 are retries, not queue delay, and are
+        // excluded so a backoff wait is never misreported as queue congestion.
+        if (media.ProcessingAttempts == 1 && media.UploadedAt is DateTime uploadedAt && uploadedAt <= now)
+            MediaMetrics.RecordQueueDelay(now - uploadedAt, media.Purpose);
+
+        // Outcome counters and processing duration are recorded inside the
+        // processor, which is the only place that knows the purpose and can time
+        // the image work itself rather than the surrounding lease heartbeat.
+        await ProcessWithLeaseHeartbeatAsync(media.Id, leaseToken, processor, stoppingToken);
+    }
+
+    /// <summary>
+    /// Runs one processing attempt while keeping its lease alive.
+    ///
+    /// The wait is a RACE between the work and the heartbeat interval, never an
+    /// unconditional sleep. Sleeping first meant a job that finished in two seconds
+    /// still held the worker's cycle for the whole heartbeat (a minute by default),
+    /// so every upload queued behind it waited a minute before it was even claimed —
+    /// the single largest contributor to time-to-Ready under any load. Racing the
+    /// two keeps the lease renewed for genuinely long jobs without adding latency to
+    /// short ones.
+    /// </summary>
     private async Task<bool?> ProcessWithLeaseHeartbeatAsync(Guid mediaId, string leaseToken, IMediaProcessor processor, CancellationToken stoppingToken)
     {
         using var processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         var processing = processor.ProcessAsync(mediaId, processingCancellation.Token);
+        var heartbeat = TimeSpan.FromMinutes(_options.Processing.LeaseHeartbeatMinutes);
 
         try
         {
             while (!processing.IsCompleted)
             {
-                await Task.Delay(TimeSpan.FromMinutes(_options.Processing.LeaseHeartbeatMinutes), processingCancellation.Token);
-                if (processing.IsCompleted) break;
+                var beat = Task.Delay(heartbeat, processingCancellation.Token);
+                var finished = await Task.WhenAny(processing, beat);
+
+                // The work completed (or faulted) — stop waiting on the heartbeat and
+                // await it below, so a fault still reaches the caller.
+                if (finished == processing) break;
 
                 if (!await RenewLeaseAsync(mediaId, leaseToken, stoppingToken))
                 {
@@ -504,6 +587,7 @@ public sealed class MediaProcessingWorker(IServiceScopeFactory scopeFactory, IOp
         }
         finally
         {
+            // Also cancels any heartbeat delay still pending from the loop above.
             processingCancellation.Cancel();
         }
     }

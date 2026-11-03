@@ -82,6 +82,15 @@ public sealed class MediaController : ControllerBase
     [HttpPatch("business/gallery/order")]
     [RequireModule("gallery")]
     public Task<IActionResult> ReorderGallery([FromBody] ReorderGalleryMediaRequest request, CancellationToken cancellationToken) => HandleReorderGallery(request, cancellationToken);
+    /// <summary>Edit one gallery image's caption, publication state or position.</summary>
+    [HttpPatch("business/gallery/{mediaId:guid}")]
+    [RequireModule("gallery")]
+    public async Task<IActionResult> UpdateGalleryEntry(Guid mediaId, [FromBody] UpdateGalleryEntryRequest request, CancellationToken cancellationToken)
+    {
+        var userId = UserId();
+        if (userId == null) return Unauthorized();
+        return Map(await _media.UpdateGalleryEntryAsync(userId.Value, mediaId, request, cancellationToken));
+    }
     [HttpDelete("business/gallery/{mediaId:guid}")]
     [RequireModule("gallery")]
     public Task<IActionResult> DetachGallery(Guid mediaId, CancellationToken cancellationToken) => Detach("business-gallery", Guid.Empty, mediaId, cancellationToken);

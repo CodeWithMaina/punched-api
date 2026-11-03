@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using PunchedApi.Domain.Entities;
 
 namespace PunchedApi.Application.DTOs;
 
@@ -71,8 +72,76 @@ public class ServiceCatalogItemResponse
     [JsonPropertyName("imageVariants")]
     public IReadOnlyList<ServiceImageVariantResponse> ImageVariants { get; set; } = [];
 
+    /// <summary>
+    /// Every image attached to the service, ordered by display order — index 0
+    /// is the cover. The legacy <see cref="ImageMediaId"/>/<see cref="ImageStatus"/>/
+    /// <see cref="ImageVariants"/> fields keep describing that cover image so an
+    /// older client (the storefront) keeps working unchanged.
+    /// </summary>
+    [JsonPropertyName("images")]
+    public IReadOnlyList<ServiceImageResponse> Images { get; set; } = [];
+
+    /// <summary>
+    /// The owner-facing state: <c>active</c>, <c>paused</c> or <c>archived</c>.
+    /// Derived server-side from <c>IsActive</c> + <c>IsArchived</c> so a client
+    /// never has to combine two booleans to render a status pill.
+    /// </summary>
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = ServiceCatalogStatuses.Active;
+
+    /// <summary>True when the business has filed the service away.</summary>
+    [JsonPropertyName("isArchived")]
+    public bool IsArchived { get; set; }
+
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
+}
+
+/// <summary>
+/// One image attached to a service. <see cref="DisplayOrder"/> is the gallery
+/// order and <see cref="IsCover"/> marks the single image at order 0.
+/// </summary>
+public sealed class ServiceImageResponse
+{
+    /// <summary>The media row's id — what an image write sends back.</summary>
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    [JsonPropertyName("mediaId")]
+    public Guid MediaId { get; set; }
+
+    /// <summary>Cover-sized URL (the largest ready variant), or null while processing.</summary>
+    [JsonPropertyName("url")]
+    public string? Url { get; set; }
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = string.Empty;
+
+    [JsonPropertyName("width")]
+    public int? Width { get; set; }
+
+    [JsonPropertyName("height")]
+    public int? Height { get; set; }
+
+    [JsonPropertyName("displayOrder")]
+    public int DisplayOrder { get; set; }
+
+    /// <summary>True for the first image only: the service's cover.</summary>
+    [JsonPropertyName("isCover")]
+    public bool IsCover { get; set; }
+
+    [JsonPropertyName("variants")]
+    public IReadOnlyList<ServiceImageVariantResponse> Variants { get; set; } = [];
+}
+
+/// <summary>
+/// Replaces the ordered image set of one service. The array order IS the display
+/// order, so index 0 becomes the cover; an empty array removes every image.
+/// </summary>
+public sealed class SetServiceImagesRequest
+{
+    [JsonPropertyName("mediaIds")]
+    public List<Guid> MediaIds { get; set; } = [];
 }
 
 public sealed class ServiceImageVariantResponse
@@ -112,6 +181,51 @@ public class EligibleStaffResponse
     /// </summary>
     [JsonPropertyName("phoneNumber")]
     public string? PhoneNumber { get; set; }
+
+    /// <summary>
+    /// The business's publicly visible services this member is assigned to.
+    ///
+    /// Sent so the storefront can show "who does what" — and offer a specialist
+    /// for a chosen service — from the payload it already loads, instead of one
+    /// eligibility request per service. Only active, showcased services of this
+    /// business can appear here.
+    /// </summary>
+    [JsonPropertyName("serviceIds")]
+    public List<Guid> ServiceIds { get; set; } = new();
+
+    /// <summary>
+    /// The member's current business-assigned job title, or null when the
+    /// business has not set one.
+    ///
+    /// Purely descriptive: a position grants no permission and no service
+    /// eligibility (see <see cref="PunchedApi.Domain.Entities.StaffPosition"/>).
+    /// Only the label is exposed — never the position's id, ordering or
+    /// description.
+    /// </summary>
+    [JsonPropertyName("positionName")]
+    public string? PositionName { get; set; }
+
+    /// <summary>
+    /// The member's short storefront biography, when the business has written
+    /// one. This projection only ever contains members whose membership is
+    /// public, so anything here is already approved for publication.
+    /// </summary>
+    [JsonPropertyName("bio")]
+    public string? Bio { get; set; }
+
+    /// <summary>
+    /// What the member is known for, as free text ("Balayage, Curly cuts").
+    /// Null when the business has not stated any — the storefront then shows
+    /// nothing rather than a placeholder.
+    /// </summary>
+    [JsonPropertyName("specialities")]
+    public string? Specialities { get; set; }
+
+    /// <summary>
+    /// Whole years of professional experience, or null when not stated.
+    /// </summary>
+    [JsonPropertyName("yearsOfExperience")]
+    public int? YearsOfExperience { get; set; }
 }
 
 /// <summary>
@@ -165,6 +279,14 @@ public class UpdateServiceRequest
 
     [JsonPropertyName("isActive")]
     public bool? IsActive { get; set; }
+
+    /// <summary>
+    /// Partial update of the archive flag. Archiving also deactivates (a filed
+    /// service is never bookable); clearing it restores the service to active,
+    /// which is the same transition as <c>POST me/{id}/restore</c>.
+    /// </summary>
+    [JsonPropertyName("isArchived")]
+    public bool? IsArchived { get; set; }
 
     /// <summary>
     /// Partial update of the public-showcase flag. Null leaves it unchanged,

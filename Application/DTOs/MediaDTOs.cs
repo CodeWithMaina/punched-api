@@ -76,7 +76,28 @@ public sealed class BusinessMediaResponse
     [JsonPropertyName("role")] public string Role { get; set; } = "Gallery";
     [JsonPropertyName("sortOrder")] public int SortOrder { get; set; }
     [JsonPropertyName("featured")] public bool Featured { get; set; }
+    /// <summary>Owner-written caption, or null when none was written.</summary>
+    [JsonPropertyName("caption")] public string? Caption { get; set; }
+    /// <summary>False keeps the image attached but off the public gallery.</summary>
+    [JsonPropertyName("isVisible")] public bool IsVisible { get; set; } = true;
     public MediaResponse? Media { get; set; }
+}
+
+/// <summary>
+/// Owner edit of one gallery entry: caption, publication, and position. Every
+/// field is optional, so two screens editing different aspects of the same image
+/// cannot overwrite each other.
+/// </summary>
+public sealed class UpdateGalleryEntryRequest
+{
+    /// <summary>New caption; an empty string clears it.</summary>
+    [JsonPropertyName("caption")] public string? Caption { get; set; }
+
+    /// <summary>Publish or hide the image on the public gallery.</summary>
+    [JsonPropertyName("isVisible")] public bool? IsVisible { get; set; }
+
+    /// <summary>Move the image to this 0-based position; the others shift around it.</summary>
+    [JsonPropertyName("sortOrder")] public int? SortOrder { get; set; }
 }
 
 /// <summary>

@@ -209,6 +209,7 @@ namespace PunchedApi.Migrations
                         .HasColumnName("status");
 
                     b.Property<int>("Version")
+                        .IsConcurrencyToken()
                         .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
                         .HasDefaultValue(0)
@@ -1119,6 +1120,11 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("media_id");
 
+                    b.Property<string>("Caption")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("caption");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
@@ -1129,6 +1135,12 @@ namespace PunchedApi.Migrations
                     b.Property<bool>("IsFeatured")
                         .HasColumnType("boolean")
                         .HasColumnName("is_featured");
+
+                    b.Property<bool>("IsVisible")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_visible");
 
                     b.Property<string>("Role")
                         .IsRequired()
@@ -1169,6 +1181,11 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<string>("Bio")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("bio");
+
                     b.Property<Guid>("BusinessId")
                         .HasColumnType("uuid")
                         .HasColumnName("business_id");
@@ -1185,6 +1202,18 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("invited_by_user_id");
 
+                    b.Property<bool>("IsBookable")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_bookable");
+
+                    b.Property<bool>("IsPublic")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_public");
+
                     b.Property<DateTime>("JoinedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("joined_at");
@@ -1199,6 +1228,11 @@ namespace PunchedApi.Migrations
                         .HasColumnType("character varying(16)")
                         .HasColumnName("role");
 
+                    b.Property<string>("Specialities")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("specialities");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -1212,6 +1246,10 @@ namespace PunchedApi.Migrations
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
+
+                    b.Property<int?>("YearsOfExperience")
+                        .HasColumnType("integer")
+                        .HasColumnName("years_of_experience");
 
                     b.HasKey("Id");
 
@@ -1242,6 +1280,8 @@ namespace PunchedApi.Migrations
                             t.HasCheckConstraint("ck_business_memberships_role", "role IN ('Owner', 'Staff', 'Customer')");
 
                             t.HasCheckConstraint("ck_business_memberships_status", "status IN ('Active', 'Invited', 'Suspended', 'Left')");
+
+                            t.HasCheckConstraint("ck_business_memberships_years_experience", "\"years_of_experience\" IS NULL OR (\"years_of_experience\" >= 0 AND \"years_of_experience\" <= 80)");
                         });
                 });
 
@@ -5245,6 +5285,12 @@ namespace PunchedApi.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
+                    b.Property<bool>("IsArchived")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_archived");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(120)
@@ -5270,6 +5316,9 @@ namespace PunchedApi.Migrations
                         .HasDatabaseName("ix_services_business_category");
 
                     b.HasIndex("BusinessId", "IsActive");
+
+                    b.HasIndex("BusinessId", "IsActive", "IsArchived")
+                        .HasDatabaseName("ix_services_business_status");
 
                     b.ToTable("services", (string)null);
                 });
@@ -5361,6 +5410,70 @@ namespace PunchedApi.Migrations
                     b.ToTable("service_media", null, t =>
                         {
                             t.HasCheckConstraint("ck_service_media_order", "\"sort_order\" >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.StaffAvailability", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int?>("BreakEndMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("break_end_minute");
+
+                    b.Property<int?>("BreakStartMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("break_start_minute");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("DayOfWeek")
+                        .HasColumnType("integer")
+                        .HasColumnName("day_of_week");
+
+                    b.Property<int>("EndMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("end_minute");
+
+                    b.Property<bool>("IsWorking")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_working");
+
+                    b.Property<Guid>("StaffUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("staff_user_id");
+
+                    b.Property<int>("StartMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("start_minute");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId", "StaffUserId")
+                        .HasDatabaseName("ix_staff_availability_business_staff");
+
+                    b.HasIndex("StaffUserId", "DayOfWeek")
+                        .IsUnique()
+                        .HasDatabaseName("ux_staff_availability_staff_day");
+
+                    b.ToTable("staff_availability", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_staff_availability_day_of_week", "\"day_of_week\" >= 0 AND \"day_of_week\" <= 6");
+
+                            t.HasCheckConstraint("chk_staff_availability_minutes", "\"start_minute\" >= 0 AND \"start_minute\" <= 1439 AND \"end_minute\" >= 1 AND \"end_minute\" <= 1440 AND (\"is_working\" = false OR \"end_minute\" > \"start_minute\") AND (\"break_start_minute\" IS NULL OR (\"break_start_minute\" >= \"start_minute\" AND \"break_start_minute\" <= 1439)) AND (\"break_end_minute\" IS NULL OR (\"break_end_minute\" <= \"end_minute\" AND \"break_end_minute\" >= 1)) AND (\"break_start_minute\" IS NULL OR \"break_end_minute\" IS NULL OR \"break_end_minute\" > \"break_start_minute\")");
                         });
                 });
 
@@ -5628,6 +5741,14 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<int?>("BreakEndMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("break_end_minute");
+
+                    b.Property<int?>("BreakStartMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("break_start_minute");
+
                     b.Property<Guid>("BusinessId")
                         .HasColumnType("uuid")
                         .HasColumnName("business_id");
@@ -5644,9 +5765,18 @@ namespace PunchedApi.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("end_hour");
 
+                    b.Property<int?>("EndMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("end_minute");
+
                     b.Property<bool>("IsWorking")
                         .HasColumnType("boolean")
                         .HasColumnName("is_working");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("note");
 
                     b.Property<Guid>("StaffUserId")
                         .HasColumnType("uuid")
@@ -5655,6 +5785,10 @@ namespace PunchedApi.Migrations
                     b.Property<int>("StartHour")
                         .HasColumnType("integer")
                         .HasColumnName("start_hour");
+
+                    b.Property<int?>("StartMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("start_minute");
 
                     b.HasKey("Id");
 
@@ -5665,6 +5799,8 @@ namespace PunchedApi.Migrations
                     b.ToTable("staff_shifts", null, t =>
                         {
                             t.HasCheckConstraint("chk_staff_shift_end_hour", "\"end_hour\" >= 0 AND \"end_hour\" <= 23");
+
+                            t.HasCheckConstraint("chk_staff_shift_minutes", "(\"start_minute\" IS NULL OR (\"start_minute\" >= 0 AND \"start_minute\" <= 1439)) AND (\"end_minute\" IS NULL OR (\"end_minute\" >= 1 AND \"end_minute\" <= 1440)) AND (\"break_start_minute\" IS NULL OR (\"break_start_minute\" >= 0 AND \"break_start_minute\" <= 1439)) AND (\"break_end_minute\" IS NULL OR (\"break_end_minute\" >= 1 AND \"break_end_minute\" <= 1440))");
 
                             t.HasCheckConstraint("chk_staff_shift_start_hour", "\"start_hour\" >= 0 AND \"start_hour\" <= 23");
                         });
@@ -7543,6 +7679,21 @@ namespace PunchedApi.Migrations
                     b.Navigation("Media");
 
                     b.Navigation("ServiceCatalogItem");
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.StaffAvailability", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("StaffUserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.StaffDailyAnalytics", b =>

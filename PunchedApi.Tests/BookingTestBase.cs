@@ -69,8 +69,10 @@ internal static class BookingTestBase
             new Mock<IDomainEventPublisher>().Object,
             TestHelpers.CreateLogger<AppointmentService>());
 
-    public static AppointmentAvailabilityService CreateAvailabilityService(ApplicationDbContext context)
-        => new(context, TestHelpers.CreateLogger<AppointmentAvailabilityService>());
+    public static AppointmentAvailabilityService CreateAvailabilityService(
+        ApplicationDbContext context,
+        TimeProvider? timeProvider = null)
+        => new(context, TestHelpers.CreateLogger<AppointmentAvailabilityService>(), timeProvider);
 
     /// <summary>
     /// Builds a <see cref="ServiceCatalogService"/> over the test context.

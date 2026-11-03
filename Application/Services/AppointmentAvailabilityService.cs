@@ -39,13 +39,26 @@ public class AppointmentAvailabilityService
     private readonly ApplicationDbContext _context;
     private readonly ILogger<AppointmentAvailabilityService> _logger;
 
+    /// <summary>
+    /// The clock every availability decision reads. Injectable so a test can pin
+    /// "now" and assert lead time, the past-slot boundary and the booking window
+    /// without depending on the wall clock (which is what made the reschedule
+    /// tests pass in the morning and fail in the evening).
+    /// </summary>
+    private readonly TimeProvider _time;
+
     public AppointmentAvailabilityService(
         ApplicationDbContext context,
-        ILogger<AppointmentAvailabilityService> logger)
+        ILogger<AppointmentAvailabilityService> logger,
+        TimeProvider? timeProvider = null)
     {
         _context = context;
         _logger = logger;
+        _time = timeProvider ?? TimeProvider.System;
     }
+
+    /// <summary>Current UTC time, from the injected clock.</summary>
+    private DateTime UtcNow => _time.GetUtcNow().UtcDateTime;
 
     /// <summary>
     /// Legacy flat projection: only the bookable slots. Kept for existing consumers
@@ -93,7 +106,7 @@ public class AppointmentAvailabilityService
             return Fail("NOT_FOUND", "Business not found.");
 
         var tz = ResolveTimeZone(business.TimeZoneId);
-        var nowUtc = DateTime.UtcNow;
+        var nowUtc = UtcNow;
 
         // Clamp the window: never before today (business-local), never wider than a month.
         var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(nowUtc, tz));
@@ -152,7 +165,7 @@ public class AppointmentAvailabilityService
             return ApiResponse<AvailabilityCalendarResponse>.Ok(response);
         }
 
-        // Preload shifts + busy time for the whole window in two queries.
+        // Preload rostered days + the recurring week for the whole window.
         var staffIds = eligible.Select(u => u.Id).ToList();
 
         var shifts = await _context.StaffShifts.AsNoTracking()
@@ -160,22 +173,29 @@ public class AppointmentAvailabilityService
                 && s.Date >= startDate && s.Date <= endDate)
             .ToListAsync();
 
-        var windowsByStaffDate = shifts
+        var weekly = await _context.StaffAvailability.AsNoTracking()
+            .Where(a => a.BusinessId == businessId && staffIds.Contains(a.StaffUserId))
+            .ToListAsync();
+
+        var shiftsByStaffDate = shifts
             .GroupBy(s => (s.StaffUserId, s.Date))
-            .ToDictionary(
-                g => g.Key,
-                g => g.Where(s => s.IsWorking && s.EndHour > s.StartHour)
-                      .Select(s => (Start: s.StartHour * 60, End: s.EndHour * 60))
-                      .OrderBy(w => w.Start)
-                      .ToList());
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var weeklyByStaff = weekly
+            .GroupBy(a => a.StaffUserId)
+            .ToDictionary(g => g.Key, g => g.ToDictionary(a => a.DayOfWeek));
 
         var rangeStartUtc = ToUtc(startDate.ToDateTime(TimeOnly.MinValue), tz);
         var rangeEndUtc = ToUtc(endDate.AddDays(1).ToDateTime(TimeOnly.MinValue), tz);
 
+        // Only statuses that actually hold the staff member's time are busy; a
+        // cancelled, completed or no-show appointment has released its interval.
+        var reservingStatuses = AppointmentReservations.ReservingStatuses.ToArray();
+
         var busyRows = await _context.Appointments.AsNoTracking()
             .Where(a => a.BusinessId == businessId
                 && a.StaffUserId != null && staffIds.Contains(a.StaffUserId.Value)
-                && a.Status != "cancelled"
+                && reservingStatuses.Contains(a.Status)
                 && a.ScheduledAt < rangeEndUtc && a.EndAt > rangeStartUtc)
             .Select(a => new { StaffUserId = a.StaffUserId!.Value, a.ScheduledAt, a.EndAt })
             .ToListAsync();
@@ -186,6 +206,20 @@ public class AppointmentAvailabilityService
 
         var defaultWindow = (Start: business.BookingOpenHour * 60, End: business.BookingCloseHour * 60);
         var earliestBookableUtc = nowUtc.AddMinutes(leadMinutes);
+
+        // Resolve every (staff, date) window once: a dated row for the date wins,
+        // else the recurring weekday, else the business's own booking window.
+        var windowsByStaffDate = new Dictionary<(Guid, DateOnly), List<(int Start, int End)>>();
+        for (var date = startDate; date <= endDate; date = date.AddDays(1))
+        {
+            foreach (var staffId in staffIds)
+            {
+                shiftsByStaffDate.TryGetValue((staffId, date), out var rostered);
+                weeklyByStaff.TryGetValue(staffId, out var pattern);
+                windowsByStaffDate[(staffId, date)] =
+                    ResolveWindows(date, rostered, pattern, defaultWindow);
+            }
+        }
 
         for (var date = startDate; date <= endDate; date = date.AddDays(1))
         {
@@ -230,7 +264,7 @@ public class AppointmentAvailabilityService
         var startUtc = DateTime.SpecifyKind(scheduledAtUtc, DateTimeKind.Utc);
         var endUtc = startUtc.AddMinutes(totalMinutes);
 
-        if (enforceLeadTime && startUtc < DateTime.UtcNow.AddMinutes(Math.Max(0, business.BookingLeadTimeMinutes)))
+        if (enforceLeadTime && startUtc < UtcNow.AddMinutes(Math.Max(0, business.BookingLeadTimeMinutes)))
             return SlotResolution.Deny("SLOT_UNAVAILABLE", "That time has already passed or is too soon to book.");
 
         var tz = ResolveTimeZone(business.TimeZoneId);
@@ -256,13 +290,23 @@ public class AppointmentAvailabilityService
             .Where(s => s.BusinessId == businessId && staffIds.Contains(s.StaffUserId) && s.Date == localDate)
             .ToListAsync();
 
+        var weekly = await _context.StaffAvailability.AsNoTracking()
+            .Where(a => a.BusinessId == businessId && staffIds.Contains(a.StaffUserId))
+            .ToListAsync();
+
+        var weeklyByStaff = weekly
+            .GroupBy(a => a.StaffUserId)
+            .ToDictionary(g => g.Key, g => g.ToDictionary(a => a.DayOfWeek));
+
         var dayStartUtc = ToUtc(localDate.ToDateTime(TimeOnly.MinValue), tz);
         var dayEndUtc = ToUtc(localDate.AddDays(1).ToDateTime(TimeOnly.MinValue), tz);
+
+        var reservingStatuses = AppointmentReservations.ReservingStatuses.ToArray();
 
         var dayBusy = await _context.Appointments.AsNoTracking()
             .Where(a => a.BusinessId == businessId
                 && a.StaffUserId != null && staffIds.Contains(a.StaffUserId.Value)
-                && a.Status != "cancelled"
+                && reservingStatuses.Contains(a.Status)
                 && (excludeAppointmentId == null || a.Id != excludeAppointmentId)
                 && a.ScheduledAt < dayEndUtc && a.EndAt > dayStartUtc)
             .Select(a => new { StaffUserId = a.StaffUserId!.Value, a.ScheduledAt, a.EndAt })
@@ -277,7 +321,12 @@ public class AppointmentAvailabilityService
 
         foreach (var staff in eligible)
         {
-            var windows = ResolveShiftWindows(dayShifts.Where(s => s.StaffUserId == staff.Id).ToList(), defaultWindow);
+            weeklyByStaff.TryGetValue(staff.Id, out var pattern);
+            var windows = ResolveWindows(
+                localDate,
+                dayShifts.Where(s => s.StaffUserId == staff.Id).ToList(),
+                pattern,
+                defaultWindow);
             if (!windows.Any(w => startMinute >= w.Start && startMinute + totalMinutes <= w.End))
             {
                 sawOffDuty = true;
@@ -285,7 +334,7 @@ public class AppointmentAvailabilityService
             }
 
             var busy = dayBusy.Where(b => b.StaffUserId == staff.Id).ToList();
-            if (busy.Any(b => b.ScheduledAt < endUtc && b.EndAt > startUtc))
+            if (busy.Any(b => AppointmentReservations.Overlaps(b.ScheduledAt, b.EndAt, startUtc, endUtc)))
             {
                 sawBooked = true;
                 continue;
@@ -301,7 +350,8 @@ public class AppointmentAvailabilityService
         if (bestStaff != null)
             return SlotResolution.Allow(bestStaff);
         if (sawBooked)
-            return SlotResolution.Deny("OVERBOOKING", "That slot has just been taken. Please pick another time.");
+            return SlotResolution.Deny(
+                AppointmentConflicts.StaffTimeUnavailable, AppointmentConflicts.StaffTimeUnavailableMessage);
         if (sawOffDuty)
             return SlotResolution.Deny("SLOT_UNAVAILABLE", "Nobody is working at that time. Please pick another slot.");
 
@@ -381,7 +431,7 @@ public class AppointmentAvailabilityService
                 var onDuty = windows[staff.Id].Any(w => minute >= w.Start && minute + totalMinutes <= w.End);
                 if (!onDuty) continue;
 
-                if (dayBusy[staff.Id].Any(b => b.Start < endUtc && b.End > startUtc))
+                if (dayBusy[staff.Id].Any(b => AppointmentReservations.Overlaps(b.Start, b.End, startUtc, endUtc)))
                 {
                     blocked = true;
                     continue;
@@ -571,27 +621,83 @@ public class AppointmentAvailabilityService
                 m.UserId == u.Id &&
                 m.BusinessId == businessId &&
                 m.Role == BusinessMembershipRole.Staff &&
-                m.Status == BusinessMembershipStatus.Active))
+                m.Status == BusinessMembershipStatus.Active &&
+                m.IsBookable))
             .OrderBy(u => u.FullName)
             .ToListAsync();
     }
 
     /// <summary>
-    /// A staff member's working windows for one date: rostered shifts when the day
-    /// has any shift row, otherwise the business default window. A date rostered
-    /// entirely as not-working yields no windows (explicit day off).
+    /// A staff member's working windows for one date, in minutes from local
+    /// midnight.
+    ///
+    /// <para>Resolution order is deliberate and must stay in this order:</para>
+    /// <list type="number">
+    /// <item>any DATED shift rows for the date — an override or a day off wins;</item>
+    /// <item>otherwise the RECURRING weekday pattern;</item>
+    /// <item>otherwise the business's own booking window, which is how the system
+    /// behaved before staff availability existed.</item>
+    /// </list>
+    ///
+    /// <para>A configured break splits the window in two, so a booking can never
+    /// be placed across it.</para>
     /// </summary>
-    private static List<(int Start, int End)> ResolveShiftWindows(
-        List<StaffShift> rostered, (int Start, int End) defaultWindow)
+    private static List<(int Start, int End)> ResolveWindows(
+        DateOnly date,
+        List<StaffShift>? rostered,
+        Dictionary<int, StaffAvailability>? weekly,
+        (int Start, int End) defaultWindow)
     {
-        if (rostered.Count == 0)
-            return new List<(int, int)> { defaultWindow };
+        List<(bool Working, int Start, int End, int? BreakStart, int? BreakEnd)> source;
 
-        return rostered
-            .Where(s => s.IsWorking && s.EndHour > s.StartHour)
-            .Select(s => (Start: s.StartHour * 60, End: s.EndHour * 60))
-            .OrderBy(w => w.Start)
-            .ToList();
+        if (rostered is { Count: > 0 })
+        {
+            source = rostered
+                .Select(s => (
+                    s.IsWorking,
+                    s.StartMinute ?? s.StartHour * 60,
+                    s.EndMinute ?? s.EndHour * 60,
+                    s.BreakStartMinute,
+                    s.BreakEndMinute))
+                .ToList();
+        }
+        else if (weekly != null && weekly.TryGetValue((int)date.DayOfWeek, out var pattern))
+        {
+            source = new List<(bool, int, int, int?, int?)>
+            {
+                (pattern.IsWorking, pattern.StartMinute, pattern.EndMinute,
+                    pattern.BreakStartMinute, pattern.BreakEndMinute)
+            };
+        }
+        else
+        {
+            source = new List<(bool, int, int, int?, int?)>
+            {
+                (true, defaultWindow.Start, defaultWindow.End, null, null)
+            };
+        }
+
+        var windows = new List<(int Start, int End)>();
+
+        foreach (var (working, start, end, breakStart, breakEnd) in source)
+        {
+            if (!working || end <= start) continue;
+
+            var hasBreak = breakStart.HasValue && breakEnd.HasValue
+                && breakStart.Value >= start && breakEnd.Value <= end
+                && breakEnd.Value > breakStart.Value;
+
+            if (!hasBreak)
+            {
+                windows.Add((start, end));
+                continue;
+            }
+
+            if (breakStart!.Value > start) windows.Add((start, breakStart.Value));
+            if (breakEnd!.Value < end) windows.Add((breakEnd.Value, end));
+        }
+
+        return windows.OrderBy(w => w.Start).ToList();
     }
 
     private static string DayPartOf(int hour) =>

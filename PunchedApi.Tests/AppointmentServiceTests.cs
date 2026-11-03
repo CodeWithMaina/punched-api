@@ -293,7 +293,7 @@ public class AppointmentServiceTests
     }
 
     [Fact]
-    public async Task CreateAppointmentAsync_OverlappingSlot_ReturnsOverbooking_TouchingSucceeds()
+    public async Task CreateAppointmentAsync_OverlappingSlot_ReturnsStaffTimeUnavailable_TouchingSucceeds()
     {
         using var connection = BookingTestBase.CreateConnection();
         var env = await CreateEnvAsync(connection);
@@ -312,7 +312,7 @@ public class AppointmentServiceTests
         };
         var overlapResult = await env.Service.CreateAppointmentAsync(env.Customer.Id, "Customer", overlap);
         Assert.False(overlapResult.Success);
-        Assert.Equal("OVERBOOKING", overlapResult.Error?.Code);
+        Assert.Equal(AppointmentConflicts.StaffTimeUnavailable, overlapResult.Error?.Code);
 
         var touching = new CreateAppointmentRequest
         {
@@ -326,7 +326,7 @@ public class AppointmentServiceTests
     }
 
     [Fact]
-    public async Task RescheduleAsync_UpdatesTimesReplacesResources_OverlapWithOtherReturnsOverbooking()
+    public async Task RescheduleAsync_UpdatesTimesReplacesResources_OverlapWithOtherReturnsStaffTimeUnavailable()
     {
         using var connection = BookingTestBase.CreateConnection();
         var env = await CreateEnvAsync(connection);
@@ -360,11 +360,11 @@ public class AppointmentServiceTests
         Assert.Single(replaceResult.Data!.Services);
         Assert.Equal(env.S2.Name, replaceResult.Data!.Services[0].Name);
 
-        // Overlap with a different appointment B [Ten+4h, Ten+5h) → OVERBOOKING (self excluded).
+        // Overlap with a different appointment B [Ten+4h, Ten+5h) → conflict (self excluded).
         var overlap = new RescheduleAppointmentRequest { ScheduledAt = Ten.AddHours(4).AddMinutes(30) };
         var overlapResult = await env.Service.RescheduleAsync(env.Owner.Id, "Business", a.Id, overlap);
         Assert.False(overlapResult.Success);
-        Assert.Equal("OVERBOOKING", overlapResult.Error?.Code);
+        Assert.Equal(AppointmentConflicts.StaffTimeUnavailable, overlapResult.Error?.Code);
     }
 [Fact]
     public async Task GetAppointmentAsync_Customer_ForOtherCustomersAppointment_ReturnsForbidden()

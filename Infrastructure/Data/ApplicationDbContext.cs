@@ -38,6 +38,12 @@ public class ApplicationDbContext : DbContext
     public DbSet<BusinessDailyAnalytics> BusinessDailyAnalytics => Set<BusinessDailyAnalytics>();
     public DbSet<StaffDailyAnalytics> StaffDailyAnalytics => Set<StaffDailyAnalytics>();
     public DbSet<StaffShift> StaffShifts => Set<StaffShift>();
+
+    /// <summary>
+    /// The recurring working week per member (one row per weekday). Dated rows in
+    /// <see cref="StaffShifts"/> override it for the date they cover.
+    /// </summary>
+    public DbSet<StaffAvailability> StaffAvailability => Set<StaffAvailability>();
     public DbSet<NotificationLog> NotificationLogs => Set<NotificationLog>();
     public DbSet<NotificationSuppression> NotificationSuppressions => Set<NotificationSuppression>();
 

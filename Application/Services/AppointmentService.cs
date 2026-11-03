@@ -39,6 +39,14 @@ public class AppointmentService : IAppointmentService
     /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
     private readonly ITenantContext? _tenant;
 
+    /// <summary>
+    /// Clock for the gates that decide whether a booking is allowed (lead time, "the
+    /// new time must be in the future", proposal expiry). Injectable so those rules
+    /// can be tested deterministically; audit timestamps and job scheduling keep
+    /// using the real wall clock.
+    /// </summary>
+    private readonly TimeProvider _time;
+
     public AppointmentService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
@@ -49,7 +57,8 @@ public class AppointmentService : IAppointmentService
         IDomainEventPublisher domainEventPublisher,
         ILogger<AppointmentService> logger,
         ITenantContext? tenant = null,
-        ICommissionService? commissions = null)
+        ICommissionService? commissions = null,
+        TimeProvider? timeProvider = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
@@ -61,7 +70,11 @@ public class AppointmentService : IAppointmentService
         _logger = logger;
         _tenant = tenant;
         _commissions = commissions;
+        _time = timeProvider ?? TimeProvider.System;
     }
+
+    /// <summary>Current UTC time, from the injected clock (booking decisions only).</summary>
+    private DateTime UtcNow => _time.GetUtcNow().UtcDateTime;
 
     /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
     private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
@@ -348,75 +361,94 @@ public class AppointmentService : IAppointmentService
 
         var effectiveStaffId = resolution.StaffUserId;
         var endAt = scheduledAt.AddMinutes(totalMinutes);
+        var reservingStatuses = AppointmentReservations.ReservingStatuses.ToArray();
 
-        await using var transaction = await _context.Database.BeginTransactionAsync();
-        try
+        await using (var transaction = await _context.Database.BeginTransactionAsync())
         {
-            if (effectiveStaffId.HasValue)
+            try
             {
-                var overlaps = await _context.Appointments
-                    .Where(a => a.BusinessId == appointment.BusinessId && a.StaffUserId == effectiveStaffId.Value
-                        && a.Status != "cancelled"
-                        && a.ScheduledAt < endAt && a.EndAt > scheduledAt && a.Id != appointmentId)
-                    .AnyAsync();
-                if (overlaps)
-                {
-                    await transaction.RollbackAsync();
-                    return ApiResponse<AppointmentResponse>.Fail("OVERBOOKING", "The requested slot is already booked.");
-                }
-            }
+                // Same serialisation as a fresh booking: a reschedule competes for the
+                // new staff member's interval with every other booking request.
+                await StaffTimeLock.AcquireAsync(_context, appointment.BusinessId, effectiveStaffId);
 
-            appointment.ScheduledAt = scheduledAt;
-            appointment.EndAt = endAt;
-            appointment.StaffUserId = effectiveStaffId;
-
-            if (request.ServiceIds != null && request.ServiceIds.Length > 0)
-            {
-                _context.AppointmentResources.RemoveRange(appointment.Resources);
-                var sortOrder = 0;
-                var newResources = new List<AppointmentResource>();
-                foreach (var svc in services)
+                if (effectiveStaffId.HasValue)
                 {
-                    newResources.Add(new AppointmentResource
+                    // The appointment being moved is excluded from its own check, so a
+                    // reschedule never conflicts with the interval it is leaving.
+                    var overlaps = await _context.Appointments
+                        .Where(a => a.BusinessId == appointment.BusinessId && a.StaffUserId == effectiveStaffId.Value
+                            && reservingStatuses.Contains(a.Status)
+                            && a.ScheduledAt < endAt && a.EndAt > scheduledAt && a.Id != appointmentId)
+                        .AnyAsync();
+                    if (overlaps)
                     {
-                        Id = Guid.NewGuid(),
-                        AppointmentId = appointment.Id,
-                        ServiceCatalogItemId = svc.Id,
-                        Name = svc.Name,
-                        DurationMinutes = svc.DurationMinutes,
-                        Price = svc.Price ?? 0,
-                        SortOrder = sortOrder++,
-                        CreatedAt = DateTime.UtcNow
-                    });
+                        await RollbackQuietlyAsync(transaction);
+                        return ApiResponse<AppointmentResponse>.Fail(
+                            AppointmentConflicts.StaffTimeUnavailable,
+                            AppointmentConflicts.StaffTimeUnavailableMessage);
+                    }
                 }
 
-                // Replace the collection reference wholesale (instead of mutating in place) and
-                // add the snapshots explicitly so EF tracks them as Added rather than Modified.
-                appointment.Resources = newResources;
-                _context.AppointmentResources.AddRange(newResources);
+                appointment.ScheduledAt = scheduledAt;
+                appointment.EndAt = endAt;
+                appointment.StaffUserId = effectiveStaffId;
+                appointment.Version++;
+
+                if (request.ServiceIds != null && request.ServiceIds.Length > 0)
+                {
+                    _context.AppointmentResources.RemoveRange(appointment.Resources);
+                    var sortOrder = 0;
+                    var newResources = new List<AppointmentResource>();
+                    foreach (var svc in services)
+                    {
+                        newResources.Add(new AppointmentResource
+                        {
+                            Id = Guid.NewGuid(),
+                            AppointmentId = appointment.Id,
+                            ServiceCatalogItemId = svc.Id,
+                            Name = svc.Name,
+                            DurationMinutes = svc.DurationMinutes,
+                            Price = svc.Price ?? 0,
+                            SortOrder = sortOrder++,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    }
+
+                    // Replace the collection reference wholesale (instead of mutating in place) and
+                    // add the snapshots explicitly so EF tracks them as Added rather than Modified.
+                    appointment.Resources = newResources;
+                    _context.AppointmentResources.AddRange(newResources);
+                }
+
+                _unitOfWork.Appointments.Update(appointment);
+                // Phase 2: the rewritten reminder ladder + rescheduled event join the same
+                // transaction as the time change.
+                await RewriteReminderJobsAsync(appointment, _context, default);
+                await PublishAppointmentRescheduledAsync(appointment, default);
+                await _unitOfWork.SaveChangesAsync();
+                await transaction.CommitAsync();
             }
-
-            _unitOfWork.Appointments.Update(appointment);
-            // Phase 2: the rewritten reminder ladder + rescheduled event join the same
-            // transaction as the time change.
-            await RewriteReminderJobsAsync(appointment, _context, default);
-            await PublishAppointmentRescheduledAsync(appointment, default);
-            await _unitOfWork.SaveChangesAsync();
-            await transaction.CommitAsync();
-        }
-        catch (Npgsql.PostgresException pg) when (pg.SqlState == Npgsql.PostgresErrorCodes.ExclusionViolation)
-        {
-            // appointments_no_staff_overlap exclusion constraint fired — the slot was
-            // taken between the availability check and this save.
-            await transaction.RollbackAsync();
-            return ApiResponse<AppointmentResponse>.Fail("OVERBOOKING", "The requested slot is already booked.");
-        }
-        catch
-        {
-            await transaction.RollbackAsync();
-            return ApiResponse<AppointmentResponse>.Fail("RESCHEDULE_FAILED", "Failed to reschedule appointment.");
+            catch (Exception ex) when (AppointmentConflicts.IsSlotConflict(ex))
+            {
+                // The exclusion constraint backstop fired — the new interval was taken
+                // between the availability check and this save. The original booking is
+                // preserved because the whole move is one transaction.
+                AppointmentConflicts.LogConflict(_logger, ex, appointment.BusinessId, effectiveStaffId);
+                await RollbackQuietlyAsync(transaction);
+                return ApiResponse<AppointmentResponse>.Fail(
+                    AppointmentConflicts.StaffTimeUnavailable,
+                    AppointmentConflicts.StaffTimeUnavailableMessage);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to reschedule appointment {AppointmentId}.", appointmentId);
+                await RollbackQuietlyAsync(transaction);
+                return ApiResponse<AppointmentResponse>.Fail("RESCHEDULE_FAILED", "Failed to reschedule appointment.");
+            }
         }
 
+        // Outside the transaction: the move is committed, so shaping the response can
+        // no longer turn a successful reschedule into a reported failure.
         var updated = await LoadAsync(appointmentId);
         return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(updated!));
     }
@@ -433,7 +465,7 @@ public class AppointmentService : IAppointmentService
     private async Task<ApiResponse<AppointmentResponse>> CreateRescheduleRequestAsync(
         Guid customerId, Appointment appointment, RescheduleAppointmentRequest request)
     {
-        if (request.ScheduledAt <= DateTime.UtcNow)
+        if (request.ScheduledAt <= UtcNow)
             return ApiResponse<AppointmentResponse>.Fail("VALIDATION_ERROR", "The new time must be in the future.");
 
         // Only one open proposal per appointment.
@@ -567,7 +599,7 @@ public class AppointmentService : IAppointmentService
             return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "No pending reschedule request for this appointment.");
 
         // A proposal that outlived its window is retired, not applied.
-        if (HasExpired(rescheduleRequest, DateTime.UtcNow))
+        if (HasExpired(rescheduleRequest, UtcNow))
         {
             rescheduleRequest.Status = WireStatus(RescheduleRequestStatus.Expired);
             rescheduleRequest.ResolvedAt = DateTime.UtcNow;
@@ -596,6 +628,7 @@ public class AppointmentService : IAppointmentService
         appointment.ScheduledAt = rescheduleRequest.ProposedScheduledAt;
         appointment.EndAt = rescheduleRequest.ProposedEndAt;
         appointment.StaffUserId = recheck.StaffUserId;
+        appointment.Version++;
 
         if (snapshot.Count > 0)
         {
@@ -655,8 +688,59 @@ public class AppointmentService : IAppointmentService
             },
             $"appt:{rescheduleRequest.Id}:reschedule-approved"));
 
-        await _unitOfWork.SaveChangesAsync();
+        // The proposal is applied inside a transaction under the staff member's
+        // booking lock, exactly like a direct reschedule: approving is a write that
+        // competes for the same interval, and the old interval is only released when
+        // the new one commits (both live in one row).
+        await using (var transaction = await _context.Database.BeginTransactionAsync())
+        {
+            try
+            {
+                await StaffTimeLock.AcquireAsync(_context, appointment.BusinessId, appointment.StaffUserId);
 
+                var reservingStatuses = AppointmentReservations.ReservingStatuses.ToArray();
+                var approvedStart = appointment.ScheduledAt;
+                var approvedEnd = appointment.EndAt;
+
+                if (appointment.StaffUserId.HasValue)
+                {
+                    var overlaps = await _context.Appointments
+                        .Where(a => a.BusinessId == appointment.BusinessId
+                            && a.StaffUserId == appointment.StaffUserId.Value
+                            && reservingStatuses.Contains(a.Status)
+                            && a.ScheduledAt < approvedEnd && a.EndAt > approvedStart
+                            && a.Id != appointment.Id)
+                        .AnyAsync();
+                    if (overlaps)
+                    {
+                        await RollbackQuietlyAsync(transaction);
+                        return ApiResponse<AppointmentResponse>.Fail(
+                            AppointmentConflicts.StaffTimeUnavailable,
+                            AppointmentConflicts.StaffTimeUnavailableMessage);
+                    }
+                }
+
+                await _unitOfWork.SaveChangesAsync();
+                await transaction.CommitAsync();
+            }
+            catch (Exception ex) when (AppointmentConflicts.IsSlotConflict(ex))
+            {
+                AppointmentConflicts.LogConflict(_logger, ex, appointment.BusinessId, appointment.StaffUserId);
+                await RollbackQuietlyAsync(transaction);
+                return ApiResponse<AppointmentResponse>.Fail(
+                    AppointmentConflicts.StaffTimeUnavailable,
+                    AppointmentConflicts.StaffTimeUnavailableMessage);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to apply the approved reschedule for appointment {AppointmentId}.", appointmentId);
+                await RollbackQuietlyAsync(transaction);
+                return ApiResponse<AppointmentResponse>.Fail(
+                    "RESCHEDULE_FAILED", "Failed to apply the reschedule request.");
+            }
+        }
+
+        // Built after the commit: the appointment now carries the approved interval.
         var updated = await LoadAsync(appointmentId);
         return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(updated!));
     }
@@ -686,7 +770,7 @@ public class AppointmentService : IAppointmentService
         if (rescheduleRequest == null)
             return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "No pending reschedule request for this appointment.");
 
-        if (HasExpired(rescheduleRequest, DateTime.UtcNow))
+        if (HasExpired(rescheduleRequest, UtcNow))
         {
             rescheduleRequest.Status = WireStatus(RescheduleRequestStatus.Expired);
             rescheduleRequest.ResolvedAt = DateTime.UtcNow;
@@ -804,7 +888,7 @@ public class AppointmentService : IAppointmentService
     /// </summary>
     public async Task<int> ExpireStaleRescheduleRequestsAsync(CancellationToken cancellationToken = default)
     {
-        var now = DateTime.UtcNow;
+        var now = UtcNow;
         var pendingWire = WireStatus(RescheduleRequestStatus.Pending);
         var expiredWire = WireStatus(RescheduleRequestStatus.Expired);
 
@@ -1535,34 +1619,50 @@ public class AppointmentService : IAppointmentService
         Guid businessId, Guid customerId, Guid? staffUserId, DateTime scheduledAt, DateTime endAt,
         List<ServiceCatalogItem> services, string? note, Guid changedByUserId, Guid excludeId)
     {
-        await using var transaction = await _context.Database.BeginTransactionAsync();
-        try
-        {
-            if (staffUserId.HasValue)
-            {
-                var overlaps = await _context.Appointments
-                    .Where(a => a.BusinessId == businessId && a.StaffUserId == staffUserId.Value
-                        && a.Status != "cancelled"
-                        && a.ScheduledAt < endAt && a.EndAt > scheduledAt && a.Id != excludeId)
-                    .AnyAsync();
-                if (overlaps)
-                {
-                    await transaction.RollbackAsync();
-                    return ApiResponse<AppointmentResponse>.Fail("OVERBOOKING", "The requested slot is already booked.");
-                }
-            }
+        var reservingStatuses = AppointmentReservations.ReservingStatuses.ToArray();
+        Guid appointmentId;
 
-            var appointment = new Appointment
+        await using (var transaction = await _context.Database.BeginTransactionAsync())
+        {
+            try
             {
-                Id = Guid.NewGuid(),
-                BusinessId = businessId,
-                CustomerId = customerId,
-                StaffUserId = staffUserId,
-                ScheduledAt = scheduledAt,
-                EndAt = endAt,
-                Status = "booked",
-                CreatedAt = DateTime.UtcNow
-            };
+                // Serialise bookings for this staff member BEFORE re-checking, so two
+                // simultaneous requests cannot both pass the check. The loser waits
+                // here for the winner's commit and then sees the new row below.
+                await StaffTimeLock.AcquireAsync(_context, businessId, staffUserId);
+
+                if (staffUserId.HasValue)
+                {
+                    // Revalidated inside the transaction and under the lock. The
+                    // half-open interval test (existingStart < requestedEnd &&
+                    // existingEnd > requestedStart) is the same rule the database
+                    // exclusion constraint enforces, so back-to-back bookings stay
+                    // legal while every genuine overlap is refused.
+                    var overlaps = await _context.Appointments
+                        .Where(a => a.BusinessId == businessId && a.StaffUserId == staffUserId.Value
+                            && reservingStatuses.Contains(a.Status)
+                            && a.ScheduledAt < endAt && a.EndAt > scheduledAt && a.Id != excludeId)
+                        .AnyAsync();
+                    if (overlaps)
+                    {
+                        await RollbackQuietlyAsync(transaction);
+                        return ApiResponse<AppointmentResponse>.Fail(
+                            AppointmentConflicts.StaffTimeUnavailable,
+                            AppointmentConflicts.StaffTimeUnavailableMessage);
+                    }
+                }
+
+                var appointment = new Appointment
+                {
+                    Id = Guid.NewGuid(),
+                    BusinessId = businessId,
+                    CustomerId = customerId,
+                    StaffUserId = staffUserId,
+                    ScheduledAt = scheduledAt,
+                    EndAt = endAt,
+                    Status = AppointmentStatuses.Booked,
+                    CreatedAt = DateTime.UtcNow
+                };
 
             var sortOrder = 0;
             foreach (var svc in services)
@@ -1638,21 +1738,49 @@ public class AppointmentService : IAppointmentService
                 appointment.CustomerId, appointment.BusinessId, _context, default);
 
             await _unitOfWork.SaveChangesAsync();
-            await transaction.CommitAsync();
+                await transaction.CommitAsync();
 
-            return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync((await LoadAsync(appointment.Id))!));
+                appointmentId = appointment.Id;
+            }
+            catch (Exception ex) when (AppointmentConflicts.IsSlotConflict(ex))
+            {
+                // The exclusion-constraint backstop fired: the interval was taken
+                // between this request's check and its insert.
+                AppointmentConflicts.LogConflict(_logger, ex, businessId, staffUserId);
+                await RollbackQuietlyAsync(transaction);
+                return ApiResponse<AppointmentResponse>.Fail(
+                    AppointmentConflicts.StaffTimeUnavailable,
+                    AppointmentConflicts.StaffTimeUnavailableMessage);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to create an appointment for business {BusinessId}.", businessId);
+                await RollbackQuietlyAsync(transaction);
+                return ApiResponse<AppointmentResponse>.Fail("BOOKING_FAILED", "Failed to create appointment.");
+            }
         }
-        catch (Npgsql.PostgresException pg) when (pg.SqlState == Npgsql.PostgresErrorCodes.ExclusionViolation)
+
+        // Built AFTER the transaction closed on purpose: a failure while shaping the
+        // response can no longer be reported as a booking failure, because the
+        // booking is already committed.
+        var committed = await LoadAsync(appointmentId);
+        return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(committed!));
+    }
+
+    /// <summary>
+    /// Rolls back without masking the original failure. A transaction that already
+    /// committed (or already rolled back) reports "completed" rather than throwing,
+    /// and that must never replace the real error the caller is about to be told.
+    /// </summary>
+    private static async Task RollbackQuietlyAsync(Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction)
+    {
+        try
         {
-            // appointments_no_staff_overlap exclusion constraint fired — the slot was
-            // taken between the availability check and this save.
             await transaction.RollbackAsync();
-            return ApiResponse<AppointmentResponse>.Fail("OVERBOOKING", "The requested slot is already booked.");
         }
-        catch
+        catch (InvalidOperationException)
         {
-            await transaction.RollbackAsync();
-            return ApiResponse<AppointmentResponse>.Fail("BOOKING_FAILED", "Failed to create appointment.");
+            // Nothing to undo — the transaction had already finished.
         }
     }
 

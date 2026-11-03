@@ -86,20 +86,28 @@ internal static class BusinessOperationsTestBase
     /// <summary>
     /// An <see cref="AppointmentService"/> wired to a real commission ledger, so
     /// completion actually accrues.
+    ///
+    /// <para><paramref name="timeProvider"/> pins the clock the booking rules read
+    /// (lead time, "must be in the future", proposal expiry), so a test can assert
+    /// them without depending on when the suite runs.</para>
     /// </summary>
     public static AppointmentService CreateAppointmentService(
-        ApplicationDbContext context, ICommissionService? commissions = null) =>
+        ApplicationDbContext context,
+        ICommissionService? commissions = null,
+        TimeProvider? timeProvider = null) =>
         new(
             new UnitOfWork(context),
             context,
-            new AppointmentAvailabilityService(context, TestHelpers.CreateLogger<AppointmentAvailabilityService>()),
+            new AppointmentAvailabilityService(
+                context, TestHelpers.CreateLogger<AppointmentAvailabilityService>(), timeProvider),
             BookingTestBase.CreateMapper(),
             new PermissionService(CreatePermissionService(context)),
             BookingTestBase.CreateNotificationService(context),
             new Mock<IDomainEventPublisher>().Object,
             TestHelpers.CreateLogger<AppointmentService>(),
             tenant: null,
-            commissions: commissions ?? CreateCommissionService(context));
+            commissions: commissions ?? CreateCommissionService(context),
+            timeProvider: timeProvider);
 
     /// <summary>Provisions the platform default roles for a business.</summary>
     public static Task ProvisionAsync(ApplicationDbContext context, Guid businessId) =>

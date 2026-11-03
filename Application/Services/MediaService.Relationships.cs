@@ -113,7 +113,73 @@ public sealed partial class MediaService
         else { row.SortOrder = sortOrder ?? row.SortOrder; row.IsFeatured = featured; }
         await _db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return ApiResponse<BusinessMediaResponse>.Ok(new BusinessMediaResponse { BusinessId = businessId.Value, MediaId = mediaId, Role = "Gallery", SortOrder = row.SortOrder, Featured = row.IsFeatured, Media = Map(media.Data) });
+        return ApiResponse<BusinessMediaResponse>.Ok(new BusinessMediaResponse { BusinessId = businessId.Value, MediaId = mediaId, Role = "Gallery", SortOrder = row.SortOrder, Featured = row.IsFeatured, Caption = row.Caption, IsVisible = row.IsVisible, Media = Map(media.Data) });
+    }
+
+    /// <summary>
+    /// Edit one gallery entry in place: its caption, whether it is published, and
+    /// where it sits in the order.
+    ///
+    /// <para>Authorization reuses the same rule as attaching
+    /// (<see cref="RequireOwnedBusinessMediaAsync"/>): the caller must be the
+    /// owner — or a staff member whose role carries the settings permission — of
+    /// the business that owns the media. An image belonging to another business
+    /// is therefore a 404, never an edit.</para>
+    ///
+    /// <para>An omitted field is left untouched, so hiding an image cannot wipe
+    /// its caption and rewriting a caption cannot un-hide it.</para>
+    /// </summary>
+    public async Task<ApiResponse<BusinessMediaResponse>> UpdateGalleryEntryAsync(
+        Guid userId, Guid mediaId, UpdateGalleryEntryRequest request, CancellationToken cancellationToken)
+    {
+        var media = await RequireOwnedBusinessMediaAsync(userId, mediaId, MediaPurposes.BusinessGallery, cancellationToken);
+        if (!media.Success) return Fail<BusinessMediaResponse>(media.Error!.Code, media.Error.Message);
+        if (media.Data!.BusinessId is not Guid businessId)
+            return Fail<BusinessMediaResponse>("MEDIA_NOT_FOUND", "That image is not in the gallery.");
+
+        var row = await _db.BusinessMedia.FirstOrDefaultAsync(
+            x => x.BusinessId == businessId && x.MediaId == mediaId, cancellationToken);
+        if (row == null)
+            return Fail<BusinessMediaResponse>("MEDIA_NOT_FOUND", "That image is not in the gallery.");
+
+        if (request.Caption != null)
+        {
+            var caption = request.Caption.Trim();
+            if (caption.Length > 200)
+                return Fail<BusinessMediaResponse>("VALIDATION_ERROR", "A caption must be 200 characters or fewer.");
+            row.Caption = caption.Length == 0 ? null : caption;
+        }
+
+        if (request.IsVisible.HasValue) row.IsVisible = request.IsVisible.Value;
+
+        // Reordering rewrites the whole dense sequence around the requested
+        // position, so two images can never share an order and the grid has a
+        // stable, gap-free sort.
+        if (request.SortOrder is int requested)
+        {
+            var siblings = await _db.BusinessMedia
+                .Where(x => x.BusinessId == businessId)
+                .OrderBy(x => x.SortOrder).ThenBy(x => x.CreatedAt)
+                .ToListAsync(cancellationToken);
+
+            var ordered = siblings.Where(x => x.MediaId != mediaId).ToList();
+            ordered.Insert(Math.Clamp(requested, 0, ordered.Count), row);
+            for (var index = 0; index < ordered.Count; index++) ordered[index].SortOrder = index;
+        }
+
+        await _db.SaveChangesAsync(cancellationToken);
+
+        return ApiResponse<BusinessMediaResponse>.Ok(new BusinessMediaResponse
+        {
+            BusinessId = row.BusinessId,
+            MediaId = row.MediaId,
+            Role = row.Role,
+            SortOrder = row.SortOrder,
+            Featured = row.IsFeatured,
+            Caption = row.Caption,
+            IsVisible = row.IsVisible,
+            Media = Map(media.Data)
+        });
     }
 
     /// <summary>
@@ -170,6 +236,8 @@ public sealed partial class MediaService
             Role = item.relationship.Role,
             SortOrder = item.relationship.SortOrder,
             Featured = item.relationship.IsFeatured,
+            Caption = item.relationship.Caption,
+            IsVisible = item.relationship.IsVisible,
             Media = Map(item.media)
         }).ToList());
     }
@@ -224,20 +292,40 @@ public sealed partial class MediaService
         if (!media.Success) return Fail<ServiceMediaResponse>(media.Error!.Code, media.Error.Message);
         var service = await _db.ServiceCatalogItems.FirstOrDefaultAsync(x => x.Id == serviceId && x.BusinessId == media.Data!.BusinessId, cancellationToken);
         if (service == null) return Fail<ServiceMediaResponse>("TARGET_NOT_FOUND", "The service target is not available.");
-        if (media.Data!.Status is not (MediaStatus.Uploaded or MediaStatus.Processing or MediaStatus.Ready))
+        if (!MediaPolicy.IsServiceImageAttachable(service.BusinessId, media.Data))
             return Fail<ServiceMediaResponse>("MEDIA_NOT_ATTACHABLE", "The upload must complete before it can be attached.");
-        var row = await _db.ServiceMedia.FirstOrDefaultAsync(x => x.ServiceCatalogItemId == serviceId && x.MediaId == mediaId, cancellationToken);
+
+        var rows = await _db.ServiceMedia
+            .Where(x => x.ServiceCatalogItemId == serviceId)
+            .ToListAsync(cancellationToken);
+        var row = rows.FirstOrDefault(x => x.MediaId == mediaId);
+
         if (row == null)
         {
-            var previousPrimary = await _db.ServiceMedia
-                .Where(x => x.ServiceCatalogItemId == serviceId && x.Role == "Primary")
-                .ToListAsync(cancellationToken);
-            _db.ServiceMedia.RemoveRange(previousPrimary);
-            _db.ServiceMedia.Add(row = new ServiceMedia { ServiceCatalogItemId = serviceId, MediaId = mediaId, SortOrder = sortOrder });
+            // A service carries up to MaxServiceImages photos. Enforced here as
+            // well as on the ordered image-set write, so neither path can be used
+            // to push a service past the ceiling.
+            if (!MediaPolicy.HasServiceImageCapacity(rows.Count, _options.MaxServiceImages))
+                return Fail<ServiceMediaResponse>("MEDIA_QUOTA_EXCEEDED", $"A service can have at most {_options.MaxServiceImages} images.");
+
+            row = new ServiceMedia { ServiceCatalogItemId = serviceId, MediaId = mediaId, CreatedAt = DateTime.UtcNow };
+            _db.ServiceMedia.Add(row);
+            rows.Add(row);
         }
-        else row.SortOrder = sortOrder;
+
+        // The requested slot is honoured (clamped into range) and every other
+        // image shifts around it, so display orders stay dense and the row at
+        // order 0 — the cover — is the only one flagged Primary.
+        var ordered = rows.OrderBy(x => x.SortOrder).ThenBy(x => x.CreatedAt).Where(x => x != row).ToList();
+        ordered.Insert(Math.Clamp(sortOrder, 0, ordered.Count), row);
+        for (var index = 0; index < ordered.Count; index++)
+        {
+            ordered[index].SortOrder = index;
+            ordered[index].Role = index == 0 ? "Primary" : "Gallery";
+        }
+
         await _db.SaveChangesAsync(cancellationToken);
-        return ApiResponse<ServiceMediaResponse>.Ok(new ServiceMediaResponse { ServiceId = serviceId, MediaId = mediaId, SortOrder = row.SortOrder, Media = Map(media.Data) });
+        return ApiResponse<ServiceMediaResponse>.Ok(new ServiceMediaResponse { ServiceId = serviceId, MediaId = mediaId, SortOrder = row.SortOrder, Media = Map(media.Data!) });
     }
 
     public async Task<ApiResponse<LoyaltyProgramMediaResponse>> AttachProgramAsync(Guid userId, Guid programId, Guid mediaId, int sortOrder, CancellationToken cancellationToken)

@@ -15,6 +15,12 @@ public sealed class BusinessMediaConfiguration : IEntityTypeConfiguration<Busine
         b.Property(x => x.Role).HasColumnName("role").HasMaxLength(20).HasDefaultValue("Gallery");
         b.Property(x => x.SortOrder).HasColumnName("sort_order");
         b.Property(x => x.IsFeatured).HasColumnName("is_featured");
+        // Captions are owner-authored display text, capped so a caption cannot
+        // become a paragraph the storefront has to lay out.
+        b.Property(x => x.Caption).HasColumnName("caption").HasMaxLength(200);
+        // Published-by-default: every row that existed before this column was
+        // added was already public, so the default keeps them public.
+        b.Property(x => x.IsVisible).HasColumnName("is_visible").HasDefaultValue(true);
         b.Property(x => x.CreatedAt).HasColumnName("created_at");
         b.HasIndex(x => new { x.BusinessId, x.SortOrder, x.CreatedAt }).HasDatabaseName("ix_business_media_order");
         b.HasOne(x => x.Business).WithMany().HasForeignKey(x => x.BusinessId).OnDelete(DeleteBehavior.Restrict);

@@ -137,7 +137,15 @@ public interface IUnitOfWork : IDisposable
     /// <summary>Repository for PaymentCallback entities.</summary>
     IRepository<PaymentCallback> PaymentCallbacks { get; }
     /// <summary>Repository for BusinessPaymentConfig entities.</summary>
+    /// <summary>Repository for BusinessPaymentConfig entities (one per business).</summary>
     IRepository<BusinessPaymentConfig> BusinessPaymentConfigs { get; }
+
+    /// <summary>
+    /// Repository for StaffPositionHistory entities — the append-only record of
+    /// who held which job title. The latest row for a member is their current
+    /// title.
+    /// </summary>
+    IRepository<StaffPositionHistory> StaffPositionHistory { get; }
     /// <summary>
     /// Commits all pending changes to the database.
     /// </summary>

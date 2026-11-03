@@ -166,13 +166,22 @@ public class AppointmentController : ControllerBase
     /// <summary>
     /// Maps an ApiResponse failure to the HTTP status dictated by backend.md §9.
     /// Success always returns 200 (Ok) via the callers.
+    ///
+    /// <para>The 409 family is the "your request was well-formed but the state no
+    /// longer allows it" group: a staff interval that is now taken
+    /// (<c>STAFF_TIME_UNAVAILABLE</c>), a slot that is not bookable at all
+    /// (<c>SLOT_UNAVAILABLE</c>), an appointment changed underneath the caller
+    /// (<c>CONCURRENT_MODIFICATION</c>) and an impossible lifecycle move. The older
+    /// <c>OVERBOOKING</c> code stays mapped so an existing client keeps reading it
+    /// as a conflict.</para>
     /// </summary>
     private IActionResult MapFailure<T>(ApiResponse<T> result)
         => result.Error?.Code switch
         {
             "NOT_FOUND" or "SERVICE_NOT_FOUND" or "STAFF_NOT_FOUND" or "CUSTOMER_NOT_FOUND" => NotFound(result),
             "FORBIDDEN" => StatusCode(StatusCodes.Status403Forbidden, result),
-            "OVERBOOKING" or "SLOT_UNAVAILABLE" or "INVALID_STATUS_TRANSITION" => Conflict(result),
+            "STAFF_TIME_UNAVAILABLE" or "OVERBOOKING" or "SLOT_UNAVAILABLE"
+                or "CONCURRENT_MODIFICATION" or "INVALID_STATUS_TRANSITION" => Conflict(result),
             _ => BadRequest(result)   // STAFF_NOT_AVAILABLE, VALIDATION_ERROR, BUSINESS_NOT_FOUND, fallback
         };
 

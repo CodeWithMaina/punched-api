@@ -2,6 +2,10 @@
 bin/
 obj/
 
+# Local runtime storage (card assets + uploaded media for the filesystem
+# media provider). Never committed: it holds user uploads.
+App_Data/
+
 # .NET
 *.dll
 *.exe
@@ -78,6 +82,10 @@ appsettings.*.json.user
 
 # Local development credentials
 credentials.md
+
+# Ad-hoc local verification scripts that embed seeded dev credentials
+scripts/media-upload-benchmark.ps1
+scripts/media-upload-e2e.ps1
 
 # Transient EF/SQLite probe output
 phase*.sql

@@ -77,6 +77,39 @@ public class ServiceCatalogQueryRequest
     [JsonPropertyName("uncategorized")] public bool Uncategorized { get; set; }
 
     [JsonPropertyName("isActive")] public bool? IsActive { get; set; }
+
+    /// <summary>
+    /// Owner-facing status filter: <c>active</c>, <c>paused</c>, <c>archived</c>,
+    /// or <c>all</c>/null for every service. Resolved through
+    /// <c>ServiceCatalogStatuses</c>, so an unknown value is ignored rather than
+    /// silently returning an empty list.
+    /// </summary>
+    [JsonPropertyName("status")] public string? Status { get; set; }
+
+    /// <summary>Inclusive lower bound on the service price.</summary>
+    [JsonPropertyName("minPrice")] public decimal? MinPrice { get; set; }
+
+    /// <summary>Inclusive upper bound on the service price.</summary>
+    [JsonPropertyName("maxPrice")] public decimal? MaxPrice { get; set; }
+
+    /// <summary>Inclusive lower bound on the duration, in minutes.</summary>
+    [JsonPropertyName("minDuration")] public int? MinDuration { get; set; }
+
+    /// <summary>Inclusive upper bound on the duration, in minutes.</summary>
+    [JsonPropertyName("maxDuration")] public int? MaxDuration { get; set; }
+
+    /// <summary>
+    /// Storefront visibility. Null means "either"; true matches services
+    /// advertised on the storefront, false the hidden ones.
+    /// </summary>
+    [JsonPropertyName("showcase")] public bool? Showcase { get; set; }
+
+    /// <summary>
+    /// When true, only services that have at least one attached image are
+    /// returned. Used by the "has photos" refinement.
+    /// </summary>
+    [JsonPropertyName("hasImages")] public bool? HasImages { get; set; }
+
     [JsonPropertyName("search")] public string? Search { get; set; }
     [JsonPropertyName("sortBy")] public string? SortBy { get; set; }
     [JsonPropertyName("sortDirection")] public string? SortDirection { get; set; }

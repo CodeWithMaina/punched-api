@@ -20,7 +20,12 @@ public class AppointmentConfiguration : IEntityTypeConfiguration<Appointment>
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(20);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
         builder.Property(x => x.ReminderOptOut).HasColumnName("reminder_opt_out").HasDefaultValue(false);
-        builder.Property(x => x.Version).HasColumnName("version").HasDefaultValue(0);
+        builder.Property(x => x.Version).HasColumnName("version").HasDefaultValue(0)
+            // Enforced optimistic concurrency (not just a documented intention): the
+            // token joins every UPDATE's WHERE clause, so two concurrent writes to the
+            // same appointment cannot both win — the loser gets a concurrency conflict
+            // instead of a duplicate history row, notification or commission.
+            .IsConcurrencyToken();
 
         builder.HasOne<Business>()
             .WithMany()
@@ -95,6 +100,7 @@ public class ServiceCatalogItemConfiguration : IEntityTypeConfiguration<ServiceC
         builder.Property(x => x.Showcase).HasColumnName("showcase").HasDefaultValue(true);
         builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(500);
         builder.Property(x => x.CategoryId).HasColumnName("category_id");
+        builder.Property(x => x.IsArchived).HasColumnName("is_archived").HasDefaultValue(false);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
 
         builder.HasOne<Business>()
@@ -111,6 +117,8 @@ public class ServiceCatalogItemConfiguration : IEntityTypeConfiguration<ServiceC
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasIndex(x => new { x.BusinessId, x.IsActive });
+        builder.HasIndex(x => new { x.BusinessId, x.IsActive, x.IsArchived })
+            .HasDatabaseName("ix_services_business_status");
         builder.HasIndex(x => new { x.BusinessId, x.CategoryId })
             .HasDatabaseName("ix_services_business_category");
     }

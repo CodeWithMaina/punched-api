@@ -176,6 +176,24 @@ try
     builder.Services.AddScoped<BusinessService>();
     builder.Services.AddScoped<ILandingPageService, LandingPageService>();
 
+    // Storefront enquiries (POST /v1/businesses/{id}/enquiries): recorded against
+    // the business and delivered to its owner through the notification pipeline.
+    builder.Services.AddScoped<IStorefrontEnquiryService, StorefrontEnquiryService>();
+
+    // Public storefront reads (GET /v1/businesses/{id}/gallery | opening-hours |
+    // search). Anonymous and tenant-narrowed; the module entitlement gate is
+    // applied inside each service because an anonymous caller has no token for
+    // [RequireModule] to resolve.
+    builder.Services.AddScoped<IStorefrontGalleryService, StorefrontGalleryService>();
+    builder.Services.AddScoped<IStorefrontHoursService, StorefrontHoursService>();
+    builder.Services.AddScoped<IStorefrontSearchService, StorefrontSearchService>();
+
+    // Guest booking (POST /v1/businesses/{id}/guest-booking/{start,verify}): a
+    // visitor proves control of an inbox with a one-time code and receives a
+    // short-lived customer token, so the booking itself goes through the ordinary
+    // customer appointment API rather than a parallel path.
+    builder.Services.AddScoped<IGuestBookingService, GuestBookingService>();
+
     // Business subdomain URLs (java-house.punched.app): slug generation,
     // validation, and the one-time-per-boot legacy backfill.
     builder.Services.AddScoped<IBusinessSlugGenerator, BusinessSlugGenerator>();
@@ -208,14 +226,65 @@ try
     builder.Services.Configure<CardAssetSettings>(
         builder.Configuration.GetSection(CardAssetSettings.SectionName));
 
-    // Centralized media: production always uses R2; the in-memory store is test-only.
+    // Centralized media. Two providers behind one IObjectStore abstraction:
+    //   • r2    — Cloudflare R2, the production object store (presigned PUT + CDN).
+    //   • local — the filesystem store, so the whole upload → process → deliver
+    //             pipeline runs in development and CI without cloud credentials.
+    // Only the selected provider is registered, so a misconfigured R2 environment
+    // can never be accidentally exercised by a local run (and vice versa).
     builder.Services.Configure<MediaStorageOptions>(
         builder.Configuration.GetSection(MediaStorageOptions.SectionName));
     builder.Services.AddSingleton<IMediaKeyFactory, MediaKeyFactory>();
     builder.Services.AddSingleton<IMediaUrlFactory, MediaUrlFactory>();
     builder.Services.AddSingleton<IMediaValidator, MediaValidator>();
     builder.Services.AddScoped<IMediaProcessor, MediaProcessor>();
-    builder.Services.AddScoped<IObjectStore, R2ObjectStore>();
+    builder.Services.AddSingleton<ILocalMediaUrlSigner, LocalMediaUrlSigner>();
+
+    var mediaProvider = builder.Configuration
+        .GetSection(MediaStorageOptions.SectionName)
+        .GetValue<string>(nameof(MediaStorageOptions.Provider)) ?? MediaStorageOptions.ProviderR2;
+
+    if (string.Equals(mediaProvider, MediaStorageOptions.ProviderLocal, StringComparison.OrdinalIgnoreCase))
+    {
+        builder.Services.AddSingleton<LocalObjectStore>();
+        builder.Services.AddSingleton<IObjectStore>(sp => sp.GetRequiredService<LocalObjectStore>());
+        builder.Services.AddSingleton<ILocalMediaStore>(sp => sp.GetRequiredService<LocalObjectStore>());
+    }
+    else
+    {
+        builder.Services.AddScoped<IObjectStore, R2ObjectStore>();
+    }
+
+    // The filesystem store is a development/CI affordance: objects live on the
+    // instance's own disk, which is ephemeral and not shared between replicas, so
+    // it must never back a deployed environment. Refusing it here (rather than
+    // letting a stray configuration value win) is what makes "no silent local
+    // fallback in production" a guarantee instead of a convention.
+    if (string.Equals(mediaProvider, MediaStorageOptions.ProviderLocal, StringComparison.OrdinalIgnoreCase)
+        && !builder.Environment.IsDevelopment()
+        && !builder.Environment.IsEnvironment("Testing"))
+    {
+        throw new InvalidOperationException(
+            $"MediaStorage:Provider is 'local' but the environment is '{builder.Environment.EnvironmentName}'. " +
+            "The filesystem store is for local development and CI only. Set MediaStorage__Provider=r2 and inject the R2 credentials for a deployed environment.");
+    }
+
+    // Fail fast on a misconfigured object store. R2ObjectStore validates its own
+    // options, but it is resolved lazily (and scoped), so without this check a
+    // deployment with missing or placeholder R2 settings would boot "healthy" and
+    // only fail on the first upload. requireR2: true is correct for both
+    // providers — Validate() checks the local provider's own requirements and
+    // returns before the R2 rules are reached.
+    var mediaStorageOptions = new MediaStorageOptions();
+    builder.Configuration.GetSection(MediaStorageOptions.SectionName).Bind(mediaStorageOptions);
+    try
+    {
+        mediaStorageOptions.Validate(requireR2: true);
+    }
+    catch (InvalidOperationException ex)
+    {
+        throw new InvalidOperationException($"Invalid MediaStorage configuration: {ex.Message}", ex);
+    }
 
     // WORKERS_ENABLED (Phase 1.5): one flag selects the API-only vs API+worker
     // role. The env var WORKERS_ENABLED=false outranks appsettings.json; the
@@ -245,6 +314,8 @@ try
         builder.Configuration.GetSection(NotificationWorkerOptions.SectionName));
     builder.Services.Configure<SmsSettings>(builder.Configuration.GetSection(SmsSettings.SectionName));
     builder.Services.Configure<VapidSettings>(builder.Configuration.GetSection(VapidSettings.SectionName));
+    // Platform support channels surfaced to the Settings → Support section.
+    builder.Services.Configure<SupportSettings>(builder.Configuration.GetSection(SupportSettings.SectionName));
     builder.Services.AddScoped<NotificationOutboxStore>();
     builder.Services.AddScoped<ITemplateRenderer, TemplateRenderer>();
     // Win-back cycles: cycle math is pure; the scanner/cooldown are scoped over
@@ -348,6 +419,11 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     // re-checks business-scoped permissions inside the service.
     builder.Services.AddScoped<IServiceCategoryService, ServiceCategoryService>();
     builder.Services.AddScoped<IStaffPositionService, StaffPositionService>();
+
+// Staff management: one member's profile, services, working week and state.
+// Separate from BusinessService so the staff console's per-member surface has a
+// single owner and cannot drift from the staff list it sits beside.
+builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
     builder.Services.AddScoped<IBusinessRoleService, BusinessRoleService>();
     // Commission configuration resolution (specificity-ranked: staff+service >
     // service > staff > business default) and the ledger service itself.
@@ -527,13 +603,20 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
                 }));
 
         // Media upload grants: 30 per hour per authenticated user and IP.
+        // Media upload intents: 200 per hour per (IP + user). The ceiling is a
+        // burst guard, not a product quota: onboarding legitimately needs ~100
+        // intents (a 30-image gallery, three photos per service, logo and cover)
+        // plus retries, and the previous 30/hour rejected a real owner mid-setup
+        // with a 429 that the uploader can only render as "failed". Abuse stays
+        // bounded by the per-purpose byte limits, the gallery/service image caps
+        // and the fact that every intent is authenticated.
         options.AddPolicy("media-upload", httpContext =>
         {
             var userId = httpContext.User?.FindFirst("userId")?.Value ?? "anon";
             var key = $"{httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown"}:{userId}";
             return RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = RateLimit("media-upload", 30), Window = TimeSpan.FromHours(1), QueueLimit = 0
+                PermitLimit = RateLimit("media-upload", 200), Window = TimeSpan.FromHours(1), QueueLimit = 0
             });
         });
 
@@ -625,6 +708,72 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
                 _ => new FixedWindowRateLimiterOptions
                 {
                     PermitLimit = RateLimit("template-overrides", 60),
+                    Window = TimeSpan.FromHours(1),
+                    QueueLimit = 0
+                });
+        });
+
+        // Storefront enquiries: 10 per hour per IP. This is the only anonymous
+        // write on a public business page, so it is bounded on its own rather than
+        // sharing the general bucket — a contact form is exactly the surface a
+        // script would otherwise use to flood an owner's inbox.
+        options.AddPolicy("storefront-enquiry", httpContext =>
+        {
+            var partitionKey = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey,
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = RateLimit("storefront-enquiry", 10),
+                    Window = TimeSpan.FromHours(1),
+                    QueueLimit = 0
+                });
+        });
+
+        // Storefront search: 120 per hour per IP. Search is the heaviest anonymous
+        // read on a public page (it scans the business's catalogue and roster), so
+        // it gets its own, tighter budget than the general bucket rather than
+        // letting a crawler issue it freely.
+        options.AddPolicy("storefront-search", httpContext =>
+        {
+            var partitionKey = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey,
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = RateLimit("storefront-search", 120),
+                    Window = TimeSpan.FromHours(1),
+                    QueueLimit = 0
+                });
+        });
+
+        // Guest booking: the two anonymous steps of the account-free booking
+        // flow. Partitioned per IP because the identity being protected is in the
+        // request body; the per-identity limits (resend cooldown, code expiry,
+        // attempt ceiling) are enforced on the row itself.
+        options.AddPolicy("guest-booking-start", httpContext =>
+        {
+            var partitionKey = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey,
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = RateLimit("guest-booking-start", 10),
+                    Window = TimeSpan.FromHours(1),
+                    QueueLimit = 0
+                });
+        });
+
+        // Verifying is allowed more attempts than starting (a mistyped digit is
+        // normal) but is still bounded, and the code itself caps wrong guesses.
+        options.AddPolicy("guest-booking-verify", httpContext =>
+        {
+            var partitionKey = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey,
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = RateLimit("guest-booking-verify", 30),
                     Window = TimeSpan.FromHours(1),
                     QueueLimit = 0
                 });

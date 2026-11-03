@@ -46,6 +46,15 @@ public class AuthorizationPostureTests
         // landing page). Output-cached per slug; the single call that renders a
         // tenant storefront, so it must stay anonymous like the reads above.
         "Business|GET|by-slug/{slug}/bootstrap",
+        // Public storefront enquiry (the contact form on a business's own page).
+        // Anonymous because a visitor asking a question has no account and is not
+        // asked to create one. It is a WRITE, so it is bounded on its own
+        // (`storefront-enquiry`: 10/hour/IP) rather than sharing the general
+        // bucket, and it can only ever reach a business the caller could already
+        // read — the id resolves against active businesses, and an unknown one is
+        // indistinguishable from a missing one. The service creates no customer
+        // and sends the visitor nothing; the enquiry lands in the owner's console.
+        "Business|POST|{businessId:guid}/enquiries",
         "Business|GET|{businessId:guid}/availability",
         "Business|GET|{businessId:guid}/availability/calendar",
         "LoyaltyCard|GET|program/{businessId:guid}",
@@ -57,6 +66,25 @@ public class AuthorizationPostureTests
         "Review|GET|businesses/{businessId:guid}/reviews",
         "Review|GET|businesses/{businessId:guid}/reviews/summary",
         "ServiceCatalog|GET|{businessId:guid}",
+        // Public storefront gallery, opening hours and search. All three are
+        // read-only, anonymous, tenant-narrowed reads of ONE business the caller
+        // could already read (its id resolves against active businesses), and
+        // each applies its module entitlement gate inside the service because an
+        // anonymous caller has no token for [RequireModule] to resolve. Search is
+        // the heaviest of the three, so it carries its own tighter budget
+        // (`storefront-search`: 120/hour/IP).
+        "Storefront|GET|{businessId:guid}/gallery",
+        "Storefront|GET|{businessId:guid}/opening-hours",
+        "Storefront|GET|{businessId:guid}/search",
+        // Guest booking: the two anonymous steps of the account-free flow. The
+        // first sends a one-time code to an address the caller supplies; the
+        // second exchanges that code for a short-lived CUSTOMER token. Neither
+        // creates an appointment or reads any customer's data: the booking itself
+        // goes through POST /v1/appointments, which still requires the Customer
+        // role. Both are rate-limited per IP, and the code has its own resend
+        // cooldown, expiry and attempt ceiling.
+        "GuestBooking|POST|{businessId:guid}/guest-booking/start",
+        "GuestBooking|POST|{businessId:guid}/guest-booking/verify",
         // Public storefront catalogue grouped by ACTIVE category. Same
         // visibility rules as the flat public list above (active + showcased
         // services only) plus the serviceCatalog entitlement check performed
@@ -80,6 +108,18 @@ public class AuthorizationPostureTests
         // Marketing unsubscribe (encrypted-token-gated, RFC 8058 one-click POST)
         "Unsubscribe|GET|",
         "Unsubscribe|POST|",
+        // Filesystem media provider (development/CI only). Both routes are inert
+        // unless MediaStorage:Provider is 'local' — the store is injected as an
+        // IEnumerable, so a production (R2) deployment answers 404 here.
+        //   • the upload route accepts only a key + content-type + expiry triple
+        //     signed with an HMAC and compared in constant time, so it is scoped
+        //     exactly like a presigned URL and needs no bearer token (and accepts
+        //     none): a forged or expired grant is a 403;
+        //   • delivery resolves only keys under the public `delivery/` prefix, so
+        //     a customer's private source upload is unreachable even if its key
+        //     were known.
+        "MediaLocalStore|PUT|v1/media/local/upload/{token}",
+        "MediaLocalStore|GET|v1/media/delivery/{**key}",
     };
 
     private sealed record ActionInfo(

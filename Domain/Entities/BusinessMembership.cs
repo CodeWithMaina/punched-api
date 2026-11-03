@@ -84,6 +84,46 @@ public class BusinessMembership : BaseEntity
     /// </summary>
     public Guid? PositionId { get; set; }
 
+    /// <summary>
+    /// Short staff-authored biography shown on the storefront profile. Belongs to
+    /// the MEMBERSHIP, not the identity: the same person describes themselves
+    /// differently at each business they work for.
+    /// </summary>
+    [MaxLength(300)]
+    public string? Bio { get; set; }
+
+    /// <summary>
+    /// What the member is known for at this business — free text, comma-separated
+    /// ("Balayage, Curly cuts, Bridal hair"). Business-scoped like
+    /// <see cref="Bio"/>, and exposed publicly only when <see cref="IsPublic"/>
+    /// is true. Null means "not stated", which the storefront renders as nothing
+    /// rather than inventing specialities.
+    /// </summary>
+    [MaxLength(300)]
+    public string? Specialities { get; set; }
+
+    /// <summary>
+    /// Whole years of professional experience, as the business states it. Null
+    /// means "not stated" — the storefront shows no number rather than a
+    /// fabricated one.
+    /// </summary>
+    [Range(0, 80)]
+    public int? YearsOfExperience { get; set; }
+
+    /// <summary>
+    /// Whether this member is listed publicly on the business storefront. Only
+    /// meaningful for <see cref="BusinessMembershipRole.Staff"/>; it narrows what
+    /// customers see, and never grants or removes access.
+    /// </summary>
+    public bool IsPublic { get; set; } = true;
+
+    /// <summary>
+    /// Whether customers may pick this member as the provider when booking.
+    /// Enforced server-side by the booking and availability paths, so a member
+    /// switched off here stops being offered without losing any history.
+    /// </summary>
+    public bool IsBookable { get; set; } = true;
+
     [Required]
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 

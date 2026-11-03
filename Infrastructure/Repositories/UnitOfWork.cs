@@ -61,6 +61,7 @@ public class UnitOfWork : IUnitOfWork
     private IRepository<PaymentAttempt>? _paymentAttempts;
     private IRepository<PaymentCallback>? _paymentCallbacks;
     private IRepository<BusinessPaymentConfig>? _businessPaymentConfigs;
+    private IRepository<StaffPositionHistory>? _staffPositionHistory;
 
     public UnitOfWork(ApplicationDbContext context)
     {
@@ -229,6 +230,14 @@ public class UnitOfWork : IUnitOfWork
     /// <inheritdoc />
     public IRepository<BusinessPaymentConfig> BusinessPaymentConfigs =>
         _businessPaymentConfigs ??= new Repository<BusinessPaymentConfig>(_context);
+
+    /// <summary>
+    /// Repository for StaffPositionHistory entities — the append-only record of
+    /// who held which job title. The latest row for a member is their current
+    /// title, which is why the storefront's roster reads it directly.
+    /// </summary>
+    public IRepository<StaffPositionHistory> StaffPositionHistory =>
+        _staffPositionHistory ??= new Repository<StaffPositionHistory>(_context);
 
     /// <inheritdoc />
     public IRepository<NotificationPreference> NotificationPreferences =>

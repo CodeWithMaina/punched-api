@@ -26,6 +26,7 @@ public partial class BusinessController : ControllerBase
     private readonly INotificationsService _notificationsService;
     private readonly IAppointmentService _appointmentService;
     private readonly IAttendanceLocationService _attendanceLocationService;
+    private readonly IStorefrontEnquiryService _enquiries;
     private readonly ILogger<BusinessController> _logger;
 
     public BusinessController(
@@ -34,6 +35,7 @@ public partial class BusinessController : ControllerBase
         INotificationsService notificationsService,
         IAppointmentService appointmentService,
         IAttendanceLocationService attendanceLocationService,
+        IStorefrontEnquiryService enquiries,
         ILogger<BusinessController> logger)
     {
         _businessService = businessService;
@@ -41,6 +43,7 @@ public partial class BusinessController : ControllerBase
         _notificationsService = notificationsService;
         _appointmentService = appointmentService;
         _attendanceLocationService = attendanceLocationService;
+        _enquiries = enquiries;
         _logger = logger;
     }
 
@@ -243,6 +246,36 @@ public partial class BusinessController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// Public: send an enquiry from a business's storefront.
+    ///
+    /// Anonymous by design — a visitor is not asked to create an account to ask a
+    /// question. The enquiry is recorded against the resolved business and
+    /// delivered to its owner through the notification pipeline; the response
+    /// carries the platform's own reference, which is what the visitor quotes.
+    ///
+    /// Nothing here can be used to reach a business the caller was not already
+    /// able to read: the id is resolved against active businesses, and an unknown
+    /// one is indistinguishable from a missing one. Rate-limited per IP because
+    /// this is the only anonymous write on the storefront.
+    /// </summary>
+    [HttpPost("{businessId:guid}/enquiries")]
+    [AllowAnonymous]
+    [EnableRateLimiting("storefront-enquiry")]
+    [ProducesResponseType(typeof(ApiResponse<StorefrontEnquiryResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> SubmitStorefrontEnquiry(
+        Guid businessId,
+        [FromBody] CreateStorefrontEnquiryRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _enquiries.SubmitAsync(businessId, request, cancellationToken);
+        if (!result.Success)
+            return result.Error?.Code == "NOT_FOUND" ? NotFound(result) : BadRequest(result);
+        return Ok(result);
+    }
+
 
 
 
@@ -321,6 +354,9 @@ public partial class BusinessController : ControllerBase
             "NOT_FOUND" or "SERVICE_NOT_FOUND" or "STAFF_NOT_FOUND" or "CUSTOMER_NOT_FOUND" => NotFound(result),
             "FORBIDDEN" or "MODULE_DISABLED" => StatusCode(StatusCodes.Status403Forbidden, result),
             "OVERBOOKING" or "SLOT_UNAVAILABLE" or "INVALID_STATUS_TRANSITION" or
+            // Staff time blocking: the owner books on behalf of a customer through this
+            // controller, so the same conflict contract as the customer routes applies.
+            "STAFF_TIME_UNAVAILABLE" or "CONCURRENT_MODIFICATION" or "RESCHEDULE_EXPIRED" or
             // Slug change lost the unique-index race (another owner claimed it).
             "SLUG_TAKEN" => Conflict(result),
             // Attendance owner surface (§9.6): state/availability conflicts map to 409 so the

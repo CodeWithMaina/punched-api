@@ -119,9 +119,18 @@ public sealed partial class MediaService : IMediaService
             return (false, "FORBIDDEN", "Business media management is not authorized.", null, null);
         if (_businessContext.GetRole() == "Staff" || !_permissions.HasPermission("Business", RequiredPermission(purpose)))
             return (false, "FORBIDDEN", "The current role cannot manage this media purpose.", null, null);
-        if (purpose == MediaPurposes.ServiceImage && (!request.TargetId.HasValue || !await _db.ServiceCatalogItems.AnyAsync(x => x.Id == request.TargetId && x.BusinessId == businessId, cancellationToken)))
+        // A service or program image is uploaded BEFORE the entity exists when one
+        // is being created (the editor collects photos first, then saves), so the
+        // target is optional here. When it IS supplied it must belong to the
+        // caller's business. Ownership is re-checked where the media actually
+        // becomes visible — AttachServiceAsync and the ordered image-set write both
+        // require media.BusinessId to match the target's business — so relaxing
+        // this cannot leak media across tenants.
+        if (purpose == MediaPurposes.ServiceImage && request.TargetId.HasValue
+            && !await _db.ServiceCatalogItems.AnyAsync(x => x.Id == request.TargetId && x.BusinessId == businessId, cancellationToken))
             return (false, "TARGET_NOT_FOUND", "The service target is not available.", null, null);
-        if (purpose == MediaPurposes.LoyaltyProgramImage && (!request.TargetId.HasValue || !await _db.LoyaltyPrograms.AnyAsync(x => x.Id == request.TargetId && x.BusinessId == businessId, cancellationToken)))
+        if (purpose == MediaPurposes.LoyaltyProgramImage && request.TargetId.HasValue
+            && !await _db.LoyaltyPrograms.AnyAsync(x => x.Id == request.TargetId && x.BusinessId == businessId, cancellationToken))
             return (false, "TARGET_NOT_FOUND", "The program target is not available.", null, null);
         if (purpose == MediaPurposes.ReviewImage && (!request.TargetId.HasValue || !await _db.Reviews.AnyAsync(x => x.Id == request.TargetId && x.BusinessId == businessId, cancellationToken)))
             return (false, "TARGET_NOT_FOUND", "The review target is not available.", null, null);

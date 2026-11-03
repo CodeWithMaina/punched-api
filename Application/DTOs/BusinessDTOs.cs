@@ -1471,6 +1471,15 @@ public class StaffMemberResponse
     /// </summary>
     [JsonPropertyName("positionIsActive")]
     public bool? PositionIsActive { get; set; }
+
+    /// <summary>
+    /// The membership's lifecycle state: <c>Active</c> | <c>Invited</c> |
+    /// <c>Suspended</c> | <c>Left</c>. Reported so the roster can show — and
+    /// reactivate — a member who was deactivated, instead of silently dropping
+    /// them from the list.
+    /// </summary>
+    [JsonPropertyName("membershipStatus")]
+    public string MembershipStatus { get; set; } = "Active";
 }
 
 /// <summary>Paginated staff list envelope with filter metadata.</summary>

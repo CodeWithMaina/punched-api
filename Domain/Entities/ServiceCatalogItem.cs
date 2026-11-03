@@ -40,5 +40,54 @@ public class ServiceCatalogItem : BaseEntity
     /// </summary>
     public Guid? CategoryId { get; set; }
 
+    /// <summary>
+    /// Whether the business has filed this service away permanently (the
+    /// "archive" action). An archived service is never bookable and never shown
+    /// on a public surface, and it keeps its history — unlike a delete, which
+    /// also deactivates it but is meant to be final.
+    ///
+    /// <para>Archiving always writes <c>IsActive = false</c>; restoring clears
+    /// this flag and reactivates. <c>IsArchived</c> is therefore only ever
+    /// meaningful together with <see cref="IsActive"/> = false, which is what
+    /// <see cref="ServiceCatalogStatuses.From"/> encodes.</para>
+    /// </summary>
+    public bool IsArchived { get; set; }
+
     public virtual ServiceCategory? Category { get; set; }
+}
+
+/// <summary>
+/// The three owner-facing service states, derived from the two persisted flags.
+///
+/// <para><c>IsActive</c> answers "do we still offer this?"; <c>Showcase</c>
+/// answers "are we advertising it?"; <c>IsArchived</c> answers "have we filed it
+/// away?". Only the first and third decide the status, so a paused-but-advertised
+/// service stays <c>paused</c> rather than flipping to a fourth state.</para>
+/// </summary>
+public static class ServiceCatalogStatuses
+{
+    public const string Active = "active";
+    public const string Paused = "paused";
+    public const string Archived = "archived";
+
+    public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
+    {
+        Active, Paused, Archived
+    };
+
+    /// <summary>Archived wins over paused: a filed-away service is never merely paused.</summary>
+    public static string From(bool isActive, bool isArchived) =>
+        isArchived ? Archived : isActive ? Active : Paused;
+
+    /// <summary>
+    /// Translates a status back into the persisted flags. Unknown values return
+    /// null so a caller can reject them instead of guessing a state.
+    /// </summary>
+    public static (bool IsActive, bool IsArchived)? ToFlags(string? status) => status?.Trim().ToLowerInvariant() switch
+    {
+        Active => (true, false),
+        Paused => (false, false),
+        Archived => (false, true),
+        _ => null
+    };
 }

@@ -13,6 +13,36 @@ namespace PunchedApi.Tests;
 /// </summary>
 public partial class AppointmentLifecycleTests : IAsyncLifetime
 {
+    /// <summary>
+    /// The instant the fixture pins "now" to.
+    ///
+    /// <para>Every booking rule here is time-relative (lead time, "the new time must
+    /// be in the future", shift windows, proposal expiry), so a fixture built on
+    /// <c>DateTime.UtcNow</c> only exercises them at certain hours — which is exactly
+    /// why four reschedule tests used to fail in the evening: they booked
+    /// <c>UtcNow + 2h</c> against an 08:00–20:00 shift, and from about 18:00 that
+    /// landed outside it. The clock is now fixed and the appointment times are fixed
+    /// with it, so the rules are tested identically at any hour, in any timezone, on
+    /// any day.</para>
+    /// </summary>
+    private static readonly TestClock Clock = TestClock.AtUtc(2026, 3, 2, 6, 0);
+
+    /// <summary>Booked start: 10:00 UTC — inside the 08:00–20:00 shift.</summary>
+    private static readonly DateTime BookedStart = new(2026, 3, 2, 10, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>
+    /// The staff rota the fixture seeds: 08:00–20:00 on the booked day plus the days a
+    /// reschedule proposal may move into.
+    /// </summary>
+    private static readonly DateOnly[] RosteredDays =
+    [
+        new(2026, 3, 2),
+        new(2026, 3, 3),
+        new(2026, 3, 4),
+        new(2026, 3, 5)
+    ];
+
+
     private Microsoft.Data.Sqlite.SqliteConnection _connection = null!;
     private ApplicationDbContext _context = null!;
     private AppointmentService _appointments = null!;
@@ -29,7 +59,7 @@ public partial class AppointmentLifecycleTests : IAsyncLifetime
         _connection = BookingTestBase.CreateConnection();
         _context = BookingTestBase.CreateContext(_connection);
         _commissions = BusinessOperationsTestBase.CreateCommissionService(_context);
-        _appointments = BusinessOperationsTestBase.CreateAppointmentService(_context, _commissions);
+        _appointments = BusinessOperationsTestBase.CreateAppointmentService(_context, _commissions, Clock);
 
         _owner = BookingTestBase.CreateOwner("lifecycle-owner@test.com");
         _business = BookingTestBase.CreateBusiness(_owner.Id, "Lifecycle Salon");
@@ -38,8 +68,14 @@ public partial class AppointmentLifecycleTests : IAsyncLifetime
         _service = BookingTestBase.CreateService(_business.Id, "Cut", 60, 1000m);
 
         await BookingTestBase.SeedAsync(_context, _owner, _business, _staff, _customer, _service,
-            BookingTestBase.CreateAssignment(_business.Id, _staff.Id, _service.Id),
-            BookingTestBase.CreateShift(_business.Id, _staff.Id, DateOnly.FromDateTime(DateTime.UtcNow.Date), 8, 20));
+            BookingTestBase.CreateAssignment(_business.Id, _staff.Id, _service.Id));
+
+        // The rota is seeded as its own call so the array is the params array rather
+        // than a single (unusable) entity element.
+        await BookingTestBase.SeedAsync(_context,
+            RosteredDays
+                .Select(day => BookingTestBase.CreateShift(_business.Id, _staff.Id, day, 8, 20))
+                .ToArray());
 
         await BusinessOperationsTestBase.ProvisionAsync(_context, _business.Id);
 
@@ -55,7 +91,7 @@ public partial class AppointmentLifecycleTests : IAsyncLifetime
 
     private async Task<Appointment> BookedAppointmentAsync()
     {
-        var start = DateTime.UtcNow.AddHours(2);
+        var start = BookedStart;
         var appointment = BookingTestBase.CreateAppointment(
             _business.Id, _customer.Id, _staff.Id, start, start.AddHours(1), "booked");
 

@@ -362,6 +362,7 @@ public partial class BusinessService : IBusinessService
             return ApiResponse<BusinessResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
         var policy = business.ReminderPolicy;
+        var isNewPolicy = policy == null;
         if (policy == null)
         {
             policy = new BusinessReminderPolicy
@@ -383,7 +384,14 @@ public partial class BusinessService : IBusinessService
             policy.ChannelsJson = System.Text.Json.JsonSerializer.Serialize(request.Channels);
         policy.UpdatedAt = DateTime.UtcNow;
 
-        _context.BusinessReminderPolicies.Update(policy);
+        // Only mark an EXISTING row as Modified. Calling Update() on the row we
+        // just Add()ed flips it to Modified, so EF issues an UPDATE for a row
+        // that is not in the database yet and the save fails its row-count check
+        // (DbUpdateConcurrencyException) — which made the very first save of a
+        // business's reminder policy impossible.
+        if (!isNewPolicy)
+            _context.BusinessReminderPolicies.Update(policy);
+
         await _unitOfWork.SaveChangesAsync();
 
         return ApiResponse<BusinessResponse>.Ok(MapToResponse(business));
@@ -1628,7 +1636,20 @@ public partial class BusinessService : IBusinessService
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
 
-        var staffIdsForList = await GetStaffUserIdsAsync(business.Id);
+        // The roster is the team, including members who were deactivated: a
+        // suspended member must stay visible so the owner can reactivate them and
+        // so their history stays reachable. Only a member who LEFT the business is
+        // excluded, because they are no longer part of the team.
+        var rosterMemberships = await _context.BusinessMemberships
+            .AsNoTracking()
+            .Where(m => m.BusinessId == business.Id
+                && m.Role == BusinessMembershipRole.Staff
+                && m.Status != BusinessMembershipStatus.Left)
+            .Select(m => new { m.UserId, m.Status })
+            .ToListAsync();
+
+        var staffIdsForList = rosterMemberships.Select(m => m.UserId).ToList();
+
         var query = _context.Users
             .Where(u => staffIdsForList.Contains(u.Id) && !u.IsDeleted)
             .AsNoTracking();
@@ -1696,6 +1717,14 @@ public partial class BusinessService : IBusinessService
                     .Select(p => (bool?)p.IsActive)
                     .FirstOrDefault())
                 .FirstOrDefault(),
+
+            // Membership state, resolved in the same statement. `Left` cannot
+            // appear because the roster excludes it.
+            MembershipStatus = _context.BusinessMemberships
+                .Any(m => m.UserId == u.Id && m.BusinessId == business.Id
+                    && m.Status == BusinessMembershipStatus.Suspended)
+                ? "Suspended"
+                : "Active",
         });
 
         return await ProjectStaffListAsync(projected, status, activity, goalStatus, sortBy, sortDirection, page, pageSize);

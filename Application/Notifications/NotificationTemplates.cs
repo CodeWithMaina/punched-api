@@ -42,6 +42,7 @@ public static class NotificationTemplates
         Add(templates, "loyalty.stamp_expired", "Stamp progress expired", "Stamp progress expired", "Your stamp progress at {{businessName}} has expired.");
         Add(templates, "payment.success", "Payment received", "Payment received", "We received your payment of {{amount}} to {{businessName}}.");
         Add(templates, "security.verification_code", "Your verification code", "Your verification code", "Your verification code is {{code}}. Do not share it with anyone.");
+        Add(templates, "storefront.enquiry", "New enquiry from your page", "New storefront enquiry", "{{visitorName}} asked about {{topic}} through your Punched page. Reference {{reference}} — reply on the number they left.");
         return templates;
     }
 

@@ -51,4 +51,29 @@ public static class MediaPolicy
         if (!AllowsRelationship(purpose, relationship))
             throw new InvalidOperationException($"Media purpose '{purpose}' cannot be assigned through '{relationship}'.");
     }
+
+    /// <summary>
+    /// Whether a media row may back one of a service's images.
+    ///
+    /// <para>Shared by the single-image attach on <c>MediaService</c> and the
+    /// ordered image-set write on <c>ServiceCatalogService</c>, so the two paths
+    /// can never disagree about what is attachable — a service image must belong
+    /// to the same business as the service, carry the service-image purpose and
+    /// have finished uploading.</para>
+    /// </summary>
+    public static bool IsServiceImageAttachable(Guid serviceBusinessId, Domain.Entities.Media? media) =>
+        media != null
+        && media.Purpose == Domain.Entities.MediaPurposes.ServiceImage
+        && media.BusinessId == serviceBusinessId
+        && media.Status is Domain.Entities.MediaStatus.Uploaded
+            or Domain.Entities.MediaStatus.Processing
+            or Domain.Entities.MediaStatus.Ready;
+
+    /// <summary>
+    /// Whether one more image fits on a service. <paramref name="maxServiceImages"/>
+    /// &lt;= 0 means unlimited; otherwise the cap is a hard ceiling that every
+    /// write path enforces server-side.
+    /// </summary>
+    public static bool HasServiceImageCapacity(int attachedCount, int maxServiceImages) =>
+        maxServiceImages <= 0 || attachedCount < maxServiceImages;
 }

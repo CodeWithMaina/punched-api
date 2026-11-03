@@ -36,6 +36,29 @@ public interface IServiceCatalogService
     /// <summary>Partially updates an owner-scoped service.</summary>
     Task<ApiResponse<ServiceCatalogItemResponse>> UpdateServiceAsync(Guid ownerUserId, Guid serviceId, UpdateServiceRequest request);
 
+    /// <summary>
+    /// Moves an owner-scoped service to one of the three lifecycle states
+    /// (<c>active</c>, <c>paused</c>, <c>archived</c>). Kept separate from the
+    /// partial update so the transition itself is validated rather than inferred
+    /// from two booleans that could contradict each other.
+    /// </summary>
+    Task<ApiResponse<ServiceCatalogItemResponse>> SetServiceStatusAsync(
+        Guid ownerUserId, Guid serviceId, string status);
+
+    /// <summary>
+    /// Owner-scoped ordered image list for one service: index 0 is the cover.
+    /// </summary>
+    Task<ApiResponse<List<ServiceImageResponse>>> GetServiceImagesAsync(Guid ownerUserId, Guid serviceId);
+
+    /// <summary>
+    /// Replaces the ordered image set of an owner-scoped service in one
+    /// transaction. The array order becomes the display order (index 0 is the
+    /// cover); images not listed are detached, and the three-image ceiling,
+    /// business ownership and upload state are all enforced here.
+    /// </summary>
+    Task<ApiResponse<List<ServiceImageResponse>>> SetServiceImagesAsync(
+        Guid ownerUserId, Guid serviceId, IReadOnlyList<Guid> mediaIds);
+
     /// <summary>Soft-deletes a service by setting IsActive = false.</summary>
     Task<ApiResponse<bool>> DeleteServiceAsync(Guid ownerUserId, Guid serviceId);
 

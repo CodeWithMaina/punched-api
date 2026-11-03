@@ -12,19 +12,32 @@ namespace PunchedApi.Tests.Notifications;
 public sealed class NotificationOutboxPostgresFixture : IAsyncLifetime
 {
     private const string EnableVariable = "PUNCHED_NOTIFICATION_POSTGRES_TESTS";
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder()
-        .WithImage("postgres:16-alpine")
-        .WithDatabase("punched_notification_tests")
-        .WithUsername("postgres")
-        .WithPassword("notification_test_only")
-        .Build();
+
+    /// <summary>
+    /// Built inside <see cref="InitializeAsync"/>, not in a field initializer:
+    /// constructing the builder resolves the Docker endpoint, which throws on a
+    /// machine without a daemon. That exception used to surface as a failure of the
+    /// class's non-Docker test (the reflection check), because xUnit builds the
+    /// fixture before any test in the class runs. Building it after the guards means
+    /// "no Docker" yields the intended skip instead of a red suite.
+    /// </summary>
+    private PostgreSqlContainer? _postgres;
+
     private bool _started;
 
-    public string ConnectionString => _postgres.GetConnectionString();
+    public string ConnectionString => _postgres?.GetConnectionString() ?? string.Empty;
 
     public async Task InitializeAsync()
     {
         if (!IsEnabled || !DockerProbe.IsAvailable) return;
+
+        _postgres = new PostgreSqlBuilder()
+            .WithImage("postgres:16-alpine")
+            .WithDatabase("punched_notification_tests")
+            .WithUsername("postgres")
+            .WithPassword("notification_test_only")
+            .Build();
+
         await _postgres.StartAsync();
         _started = true;
         await using var db = CreateContext();
@@ -43,7 +56,7 @@ public sealed class NotificationOutboxPostgresFixture : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        if (_started) await _postgres.DisposeAsync();
+        if (_started && _postgres != null) await _postgres.DisposeAsync();
     }
 }
 

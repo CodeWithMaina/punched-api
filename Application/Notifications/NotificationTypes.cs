@@ -18,6 +18,24 @@ public static class NotificationTypes
     };
     private static readonly string[] InAppOnly = { NotificationChannel.InApp };
 
+    /// <summary>
+    /// In-app, email and push — used where the recipient is the business's own
+    /// operator and the message is an operational alert their storefront sends.
+    ///
+    /// <para>Push is declared because the registry's own invariant is that any
+    /// email-bearing transactional type also offers push (see
+    /// <c>Phase8NotificationChannelsTests</c>). It is inert in a deployment that
+    /// registers no push channel, so declaring it cannot deliver anything.
+    /// SMS is deliberately excluded: it is opt-in and cost-bearing, and an
+    /// enquiry alert must never incur a cost the business did not choose.</para>
+    /// </summary>
+    private static readonly string[] OperatorAlertChannels =
+    {
+        NotificationChannel.InApp,
+        NotificationChannel.Email,
+        NotificationChannel.Push
+    };
+
     /// <summary>All supported transactional notification types.</summary>
     public static readonly IReadOnlyList<NotificationTypeDef> All = new NotificationTypeDef[]
     {
@@ -167,6 +185,23 @@ public static class NotificationTypes
         new("customer.lapsed", NotificationCategory.System, Channels)
         {
             PayloadSchema = Schema(Required("businessName"), "customerName", "daysInactive")
+        },
+
+        // ── Storefront ───────────────────────────────────────────────────────
+        // An anonymous visitor's enquiry from a business's public page. The
+        // recipient is the business owner; the visitor never gets a row, because
+        // the platform holds no identity for them and no consent to message them.
+        //
+        // In-app always, plus email when the deployment has a sender configured
+        // (`Email.Enabled` + `Email.FromAddress`) and the owner's SYSTEM/email
+        // preference is on — both are the existing, configurable layers, so no
+        // second switch is introduced here. With email unconfigured the channel
+        // fails permanently at delivery, which the outbox records without
+        // retrying; the in-app row the owner reads is written first and is
+        // unaffected, so a persisted enquiry is never lost to a delivery fault.
+        new("storefront.enquiry", NotificationCategory.System, OperatorAlertChannels)
+        {
+            PayloadSchema = Schema(Required("businessName", "topic"), "visitorName", "reference")
         },
     };
 

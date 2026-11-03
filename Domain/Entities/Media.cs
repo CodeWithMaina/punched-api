@@ -84,6 +84,24 @@ public class BusinessMedia : BaseEntity
     public string Role { get; set; } = "Gallery";
     public int SortOrder { get; set; }
     public bool IsFeatured { get; set; }
+
+    /// <summary>
+    /// Owner-written caption shown under the image on the public gallery. Null
+    /// means the owner wrote none, and the storefront renders the image without
+    /// one rather than inventing a description.
+    /// </summary>
+    public string? Caption { get; set; }
+
+    /// <summary>
+    /// Whether the image is published to the public gallery.
+    ///
+    /// <para>Attached-but-hidden is a real state: an owner can prepare a shoot and
+    /// reveal it later without re-uploading, and can pull one image without
+    /// losing its position or caption. Detaching (<c>DELETE</c>) is how an image
+    /// leaves the gallery entirely.</para>
+    /// </summary>
+    public bool IsVisible { get; set; } = true;
+
     public Business Business { get; set; } = null!;
     public Media Media { get; set; } = null!;
 }
