@@ -27,6 +27,19 @@ public class ServiceCatalogService : IServiceCatalogService
     /// </summary>
     private const string ModuleKey = "serviceCatalog";
 
+    /// <summary>
+    /// The module that owns staff PROFILE data (name, job title, bio,
+    /// specialities, photo, public/bookable flags).
+    ///
+    /// <para>The public roster is staff profile data, so it is gated by this
+    /// module as well as by <see cref="ModuleKey"/> — the same pair
+    /// <c>StorefrontSearchService</c> already uses for its staff results. Without
+    /// it, switching the <c>staff</c> module off in the platform admin console
+    /// would hide the owner's staff console while leaving every staff member's
+    /// profile publicly readable at <c>GET /v1/services/{id}/staff</c>.</para>
+    /// </summary>
+    private const string StaffModuleKey = "staff";
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<ServiceCatalogService> _logger;
     private readonly IModuleEntitlementService _moduleEntitlementService;
@@ -622,6 +635,34 @@ public class ServiceCatalogService : IServiceCatalogService
         var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Id == businessId && !b.IsDeleted);
         if (business == null)
             return ApiResponse<List<EligibleStaffResponse>>.Fail("NOT_FOUND", "Business not found.");
+
+        /* Module entitlement, enforced on the PUBLIC path too.
+         *
+         * [RequireModule] deliberately skips any endpoint marked [AllowAnonymous]
+         * (an anonymous caller has no token for it to resolve), and it is a
+         * single-key attribute — so the class-level serviceCatalog gate never
+         * applies here and could not express a second key anyway. The roster is
+         * checked here instead, against the business the request named, on the
+         * SAME effective-entitlement lookup [RequireModule] and the storefront
+         * bootstrap use. It requires BOTH:
+         *   - serviceCatalog: the roster only exists beside a bookable catalogue;
+         *   - staff: the payload is staff profile data, so withdrawing the staff
+         *     module must withdraw it from the storefront as well as the console.
+         * MODULE_DISABLED (not NOT_FOUND) so the storefront can tell "this
+         * business has withdrawn the team" from "this address is wrong".
+         */
+        foreach (var required in new[] { ModuleKey, StaffModuleKey })
+        {
+            if (await _moduleEntitlementService.IsModuleEnabledAsync(businessId, required))
+                continue;
+
+            _logger.LogWarning(
+                "Public roster request for business {BusinessId} refused: module '{ModuleKey}' is not enabled.",
+                businessId, required);
+            return ApiResponse<List<EligibleStaffResponse>>.Fail(
+                "MODULE_DISABLED",
+                $"The '{required}' module is not enabled for this business.");
+        }
 
         var distinct = (serviceIds ?? Array.Empty<Guid>()).Distinct().ToArray();
         var services = await _unitOfWork.ServiceCatalogItems.FindAsync(s => s.BusinessId == businessId &&

@@ -30,6 +30,7 @@ public class StampCardServiceTests : IDisposable
         public Task<HashSet<string>> GetEffectiveModuleKeysAsync(Guid businessId) =>
             Task.FromResult(new HashSet<string>());
         public void Invalidate(Guid businessId) { }
+        public void InvalidateAll() { }
         public IReadOnlyList<string> ValidateConfiguration(IEnumerable<(string ModuleKey, bool Enabled)> overrides) =>
             Array.Empty<string>();
     }

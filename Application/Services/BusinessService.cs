@@ -34,6 +34,12 @@ public partial class BusinessService : IBusinessService
     /// <summary>Active tenant (null in unit tests / root host) — scoping only, never a grant.</summary>
     private readonly ITenantContext? _tenant;
 
+    /// <summary>
+    /// Optional (unit tests construct without it). When present, the storefront
+    /// bootstrap attaches the business's published Storefront Builder config.
+    /// </summary>
+    private readonly IStorefrontBuilderService? _storefrontBuilder;
+
     public BusinessService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
@@ -46,7 +52,8 @@ public partial class BusinessService : IBusinessService
         ILogger<BusinessService> logger,
         ITenantContext? tenant = null,
         ICardDesignResolver? cardDesignResolver = null,
-        IBusinessMembershipService? memberships = null)
+        IBusinessMembershipService? memberships = null,
+        IStorefrontBuilderService? storefrontBuilder = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
@@ -60,6 +67,7 @@ public partial class BusinessService : IBusinessService
         _logger = logger;
         _tenant = tenant;
         _cardDesignResolver = cardDesignResolver;
+        _storefrontBuilder = storefrontBuilder;
     }
 
     /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>

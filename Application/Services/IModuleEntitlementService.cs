@@ -34,6 +34,19 @@ public interface IModuleEntitlementService
     void Invalidate(Guid businessId);
 
     /// <summary>
+    /// Drops EVERY business's cached resolution, in one step.
+    ///
+    /// <para>Call this after a change that affects all businesses at once — a
+    /// module's platform availability, or a change to the module catalogue —
+    /// where invalidating business-by-business is either impossible (the module
+    /// may be entitled through any plan) or would touch every row in the table.
+    /// The next read of any business re-resolves from the database, so a module
+    /// switched off in the admin console stops being served immediately instead
+    /// of after the cache TTL.</para>
+    /// </summary>
+    void InvalidateAll();
+
+    /// <summary>
     /// Authoring-time dependency validation (plan §14.1, G7): given the full
     /// intended override configuration for a business, returns one problem
     /// string per dependency violation, e.g.

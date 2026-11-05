@@ -400,11 +400,13 @@ public class ModuleEnforcementIntegrationTests : IDisposable
         Assert.Equal("DEPENDENCY_MISSING", body.Error?.Code);
     }
 
-    private AdminModulesController CreateAdminController()
+    private AdminModulesController CreateAdminController(
+        IStorefrontCacheInvalidator? storefrontCache = null)
     {
         var controller = new AdminModulesController(
             _entitlements, _db,
             new PunchedApi.Application.Services.SubscriptionAuditService(_db, TestHelpers.CreateLogger<SubscriptionAuditService>()),
+            storefrontCache ?? new StubStorefrontCacheInvalidator(),
             TestHelpers.CreateLogger<AdminModulesController>());
 
         var identity = new ClaimsIdentity(new[]

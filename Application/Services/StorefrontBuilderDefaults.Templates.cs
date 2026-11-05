@@ -1,0 +1,121 @@
+using PunchedApi.Application.DTOs;
+
+namespace PunchedApi.Application.Services;
+
+public static partial class StorefrontBuilderDefaults
+{
+    /// <summary>
+    /// Applies a template's design to a configuration. Content (section titles,
+    /// descriptions, settings, media ids, pages and SEO) is preserved when
+    /// <paramref name="preserveContent"/> is true — so switching template changes
+    /// the look without discarding what the owner wrote.
+    /// </summary>
+    public static StorefrontConfigDto ApplyTemplate(
+        StorefrontConfigDto config, string templateId, bool preserveContent)
+    {
+        var template = StorefrontTemplates.Find(templateId) ?? StorefrontTemplates.Find(DefaultTemplateId)!;
+        config.TemplateId = template.Id;
+
+        // Design tokens — always taken from the template.
+        config.Theme = CloneTheme(template.Theme);
+
+        config.Header.Variant = template.HeaderVariant;
+        config.Header.Transparent = template.HeaderVariant is "minimal" or "floating" or "centered";
+        config.Header.Sticky = template.HeaderVariant is "sticky-compact" or "solid" or "split";
+
+        config.Hero.Variant = template.HeroVariant;
+        config.Hero.TextAlign = template.HeroVariant switch
+        {
+            "centered" or "premium" or "gradient" or "video" => "center",
+            "editorial" => "left",
+            _ => "left",
+        };
+        config.Hero.Height = template.HeroVariant switch
+        {
+            "premium" or "video" => "screen",
+            "minimal" => "compact",
+            "centered" or "gradient" => "standard",
+            _ => "tall",
+        };
+        config.Hero.BackgroundColor = template.Theme.Primary;
+
+        config.Footer.Variant = template.FooterVariant;
+        config.Footer.BackgroundColor = template.Theme.Primary;
+        config.Footer.TextColor = template.Theme.Background;
+
+        // Sections: rebuild from the blueprint, keeping content of any existing
+        // section of the same key (in order, so duplicate keys map 1:1).
+        var previous = new Dictionary<string, Queue<StorefrontSectionDto>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var existing in config.Sections)
+        {
+            if (!previous.TryGetValue(existing.Key, out var queue))
+            {
+                queue = new Queue<StorefrontSectionDto>();
+                previous[existing.Key] = queue;
+            }
+            queue.Enqueue(existing);
+        }
+
+        var rebuilt = new List<StorefrontSectionDto>();
+        var order = 0;
+        foreach (var (key, variant) in template.Blueprint)
+        {
+            var def = StorefrontSectionCatalog.Find(key);
+            if (def == null) continue;
+
+            StorefrontSectionDto? carried = null;
+            if (previous.TryGetValue(key, out var queue) && queue.Count > 0) carried = queue.Dequeue();
+
+            rebuilt.Add(new StorefrontSectionDto
+            {
+                Id = carried?.Id ?? $"{key}-{Guid.NewGuid():n}",
+                Key = key,
+                Variant = StorefrontSectionCatalog.NormaliseVariant(key, variant),
+                Enabled = carried?.Enabled ?? true,
+                Order = order += 10,
+                Title = carried?.Title ?? (preserveContent ? null : def.DefaultTitle),
+                Description = carried?.Description ?? (preserveContent ? null : def.DefaultDescription),
+                Settings = carried?.Settings ?? new Dictionary<string, string>(),
+            });
+        }
+        config.Sections = rebuilt;
+
+        if (config.Pages.Count == 0) config.Pages = DefaultPages();
+
+        return config;
+    }
+
+    private static StorefrontThemeDto CloneTheme(StorefrontThemeDto source) => new()
+    {
+        Primary = source.Primary,
+        Secondary = source.Secondary,
+        Accent = source.Accent,
+        Background = source.Background,
+        Surface = source.Surface,
+        Text = source.Text,
+        MutedText = source.MutedText,
+        ButtonBackground = source.ButtonBackground,
+        ButtonText = source.ButtonText,
+        Border = source.Border,
+        HeadingFont = source.HeadingFont,
+        BodyFont = source.BodyFont,
+        HeadingWeight = source.HeadingWeight,
+        BodyWeight = source.BodyWeight,
+        BaseFontSize = source.BaseFontSize,
+        HeadingScale = source.HeadingScale,
+        LineHeight = source.LineHeight,
+        LetterSpacing = source.LetterSpacing,
+        ContentWidth = source.ContentWidth,
+        SectionSpacing = source.SectionSpacing,
+        ContainerPadding = source.ContainerPadding,
+        Radius = source.Radius,
+        CardStyle = source.CardStyle,
+        Shadow = source.Shadow,
+        ImageRatio = source.ImageRatio,
+        ButtonStyle = source.ButtonStyle,
+        BackgroundStyle = source.BackgroundStyle,
+        BackgroundImageMediaId = source.BackgroundImageMediaId,
+        GradientFrom = source.GradientFrom,
+        GradientTo = source.GradientTo,
+    };
+}

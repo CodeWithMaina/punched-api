@@ -51,6 +51,25 @@ public class EmailChannelTests
     }
 
     [Fact]
+    public async Task Security_message_reaches_an_unverified_address()
+    {
+        await using var context = CreateContext();
+        var recipient = CreateUser("unverified@example.com", verified: false);
+        context.Users.Add(recipient);
+        await context.SaveChangesAsync();
+        var smtp = new CapturingSmtpDelivery();
+        var channel = CreateChannel(context, smtp);
+
+        // A verification code is what proves the address, so it must be deliverable
+        // before the address is verified — otherwise a new registration can never
+        // complete.
+        await channel.SendAsync(Message(recipient.Id, category: NotificationCategory.Security));
+
+        var mime = Assert.IsType<MimeMessage>(smtp.Message);
+        Assert.Equal("unverified@example.com", mime.To.Mailboxes.Single().Address);
+    }
+
+    [Fact]
     public async Task Happy_path_builds_mime_with_configured_from_and_user_resolved_to()
     {
         await using var context = CreateContext();

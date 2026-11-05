@@ -19,6 +19,14 @@ public static class NotificationTypes
     private static readonly string[] InAppOnly = { NotificationChannel.InApp };
 
     /// <summary>
+    /// Email only. The verification code is what proves control of an address, so
+    /// it must not require prior verification and must never be persisted into the
+    /// in-app inbox payload or rendered into SMS/push (defect register D21 — a
+    /// plain-text code must not leak into external channels or analytics).
+    /// </summary>
+    private static readonly string[] SecurityChannels = { NotificationChannel.Email };
+
+    /// <summary>
     /// In-app, email and push — used where the recipient is the business's own
     /// operator and the message is an operational alert their storefront sends.
     ///
@@ -149,7 +157,7 @@ public static class NotificationTypes
         },
         // Urgent retries (10s → 60s) because the code expires; still bounded by
         // the same attempt ceiling as every other type.
-        new("security.verification_code", NotificationCategory.Security, Channels)
+        new("security.verification_code", NotificationCategory.Security, SecurityChannels)
         {
             IsSecurity = true,
             RetryAttempts = 3,

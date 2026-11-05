@@ -34,18 +34,26 @@ public sealed class NotificationService : INotificationService
     /// <summary>Dispatch guard (suppression etc.); null only in unit tests.</summary>
     private readonly INotificationDispatchGuard? _dispatchGuard;
 
+    /// <summary>
+    /// Provider-configuration availability; null only in unit tests (the Force path
+    /// then keeps its historical "all declared channels" behaviour).
+    /// </summary>
+    private readonly INotificationChannelAvailability? _channelAvailability;
+
     public NotificationService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
         IPreferenceResolver preferences,
         ILogger<NotificationService> logger,
-        INotificationDispatchGuard? dispatchGuard = null)
+        INotificationDispatchGuard? dispatchGuard = null,
+        INotificationChannelAvailability? channelAvailability = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
         _preferences = preferences;
         _logger = logger;
         _dispatchGuard = dispatchGuard;
+        _channelAvailability = channelAvailability;
     }
 
     /// <inheritdoc />
@@ -80,7 +88,7 @@ public sealed class NotificationService : INotificationService
 
         // 3. Preferences. R2 — only SECURITY may bypass them.
         var surviving = request.Force && definition.Category == NotificationCategory.Security
-            ? (IReadOnlyList<string>)ForcePastPreferences(request, definition)
+            ? await ForcePastPreferencesAsync(request, definition, ct)
             : await _preferences.ResolveAsync(
                 request.RecipientUserId, request.BusinessId, definition.Category, definition.DefaultChannels, ct);
 
@@ -138,7 +146,15 @@ public sealed class NotificationService : INotificationService
     }
 
     /// <summary>R2 — the Force bypass is narrow, and always audited.</summary>
-    private IReadOnlyList<string> ForcePastPreferences(NotificationRequest request, NotificationTypeDef definition)
+    /// <remarks>
+    /// Force bypasses <em>preferences</em>, never <em>availability</em>: a channel
+    /// this deployment cannot deliver on (SMTP off, no VAPID keys, no mobile
+    /// number) must not be queued just to dead-letter. Unit-test providers that
+    /// register no availability service keep the historical "all declared
+    /// channels" behaviour.
+    /// </remarks>
+    private async Task<IReadOnlyList<string>> ForcePastPreferencesAsync(
+        NotificationRequest request, NotificationTypeDef definition, CancellationToken ct)
     {
         _logger.LogWarning(
             "notification forced past preferences {NotificationType} to user {RecipientUserId} for business {BusinessId}",
@@ -146,7 +162,11 @@ public sealed class NotificationService : INotificationService
             request.RecipientUserId,
             request.BusinessId);
 
-        return definition.DefaultChannels;
+        if (_channelAvailability is null)
+            return definition.DefaultChannels;
+
+        return await _channelAvailability.FilterAvailableAsync(
+            request.RecipientUserId, definition.DefaultChannels, ct);
     }
 
     /// <summary>Writes the inbox row plus its same-UoW ledger row and returns the inbox id.</summary>

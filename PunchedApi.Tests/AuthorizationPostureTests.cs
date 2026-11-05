@@ -95,6 +95,11 @@ public class AuthorizationPostureTests
         "ServiceCatalog|GET|{businessId:guid}/staff",
         "ServiceCatalog|GET|{businessId:guid}/{id:guid}",
         "LandingPage|GET|public/{businessId:guid}/landing-page",
+        // Public Storefront Builder projection: the published storefront config
+        // (template, theme tokens, ordered sections, header/footer, pages) with
+        // resolved media variants. Read-only, anonymous, tenant-narrowed and
+        // capability-filtered; it never returns a draft or another business's data.
+        "StorefrontBuilder|GET|public/{businessId:guid}",
         // Public plans + payment webhook
         "Subscription|GET|v1/plans",
         "Subscription|POST|v1/webhooks/payments",

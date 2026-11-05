@@ -80,10 +80,10 @@ internal static class BookingTestBase
     /// The public-catalogue path enforces the serviceCatalog module gate
     /// itself (the [RequireModule] attribute cannot, because that endpoint is
     /// [AllowAnonymous] and therefore has no caller business to resolve). The
-    /// default stub therefore ENABLES serviceCatalog: a business that has rows
-    /// in the catalogue is, by definition, a business that sells services, and
-    /// every pre-existing test here is asserting catalogue behaviour rather
-    /// than gate behaviour.
+    /// default stub models a FULLY-PROVISIONED business: serviceCatalog for the
+    /// catalogue and staff for the roster, because the roster is staff profile
+    /// data and is gated on BOTH. That keeps every pre-existing test here
+    /// asserting catalogue and roster behaviour rather than gate behaviour.
     ///
     /// Pass <paramref name="entitlements"/> to assert the gate itself (an empty
     /// stub models a business that never bought the module).
@@ -94,7 +94,7 @@ internal static class BookingTestBase
         => new(
             new UnitOfWork(context),
             TestHelpers.CreateLogger<ServiceCatalogService>(),
-            entitlements ?? new StubModuleEntitlements("serviceCatalog"),
+            entitlements ?? new StubModuleEntitlements("serviceCatalog", "staff"),
             context);
 
     /// <summary>Adds and saves the given entities in one commit.</summary>

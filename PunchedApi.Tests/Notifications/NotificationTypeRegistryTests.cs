@@ -17,12 +17,22 @@ public class NotificationTypeRegistryTests
         Assert.Equal(33, NotificationTypes.All.Count);
         foreach (var definition in NotificationTypes.All.Where(definition => definition.DefaultChannels.Contains(NotificationChannel.Email)))
         {
-            Assert.Contains(NotificationChannel.InApp, definition.DefaultChannels);
+            // SECURITY (the verification code) is email-only by design (defect
+            // register D21): the code must not be persisted into the in-app inbox
+            // payload or rendered into SMS/push, and an unverified recipient has no
+            // inbox to read it from anyway.
+            var isSecurity = definition.Category == NotificationCategory.Security;
+
             Assert.Contains(NotificationChannel.Email, definition.DefaultChannels);
             Assert.False(string.IsNullOrWhiteSpace(definition.TitleTemplate));
             Assert.False(string.IsNullOrWhiteSpace(definition.BodyTemplate));
             Assert.NotEmpty(NotificationTemplates.Get(definition.Name, NotificationChannel.Email).Subject);
-            Assert.NotEmpty(NotificationTemplates.Get(definition.Name, NotificationChannel.InApp).Body);
+
+            if (!isSecurity)
+            {
+                Assert.Contains(NotificationChannel.InApp, definition.DefaultChannels);
+                Assert.NotEmpty(NotificationTemplates.Get(definition.Name, NotificationChannel.InApp).Body);
+            }
 
             var tokens = Regex.Matches(definition.TitleTemplate + definition.BodyTemplate, @"\{\{([^{}]+)\}\}")
                 .Select(match => match.Groups[1].Value);
@@ -42,6 +52,18 @@ public class NotificationTypeRegistryTests
                     "topic", "visitorName"
                 }));
         }
+    }
+
+    [Fact]
+    public void Security_verification_code_is_email_only()
+    {
+        var definition = NotificationTypes.Get("security.verification_code");
+
+        Assert.Single(definition.DefaultChannels);
+        Assert.Contains(NotificationChannel.Email, definition.DefaultChannels);
+        Assert.DoesNotContain(NotificationChannel.InApp, definition.DefaultChannels);
+        Assert.DoesNotContain(NotificationChannel.Sms, definition.DefaultChannels);
+        Assert.DoesNotContain(NotificationChannel.Push, definition.DefaultChannels);
     }
 
     [Theory]

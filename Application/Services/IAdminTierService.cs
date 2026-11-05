@@ -51,4 +51,24 @@ public interface IAdminTierService
 
     /// <summary>Admin module catalog (runtime manifest enriched with DB metadata).</summary>
     Task<ApiResponse<AdminModulesCatalogResponse>> GetCatalogModulesAsync();
+
+    /// <summary>
+    /// Clones a tier (metadata + module set) into a new Draft tier with a fresh
+    /// key. The source tier is never modified. Audited.
+    /// </summary>
+    Task<ApiResponse<AdminTierDetail>> DuplicateAsync(Guid id, AdminDuplicateTierRequest request, Guid? actorUserId);
+
+    /// <summary>
+    /// Module catalogue management view: every registered module with its
+    /// plan/business usage counts and DB availability flag.
+    /// </summary>
+    Task<ApiResponse<AdminModuleCatalogResponse>> GetModuleCatalogAsync();
+
+    /// <summary>
+    /// Updates a module's catalogue metadata (display name, description,
+    /// availability). The module KEY is immutable — it is the entitlement
+    /// contract. Deactivating a module removes it from entitlement resolution.
+    /// </summary>
+    Task<ApiResponse<AdminModuleCatalogItem>> UpdateModuleAsync(
+        string moduleKey, AdminModuleUpdateRequest request, Guid? actorUserId);
 }

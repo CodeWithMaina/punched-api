@@ -916,6 +916,10 @@ namespace PunchedApi.Migrations
                         .HasDefaultValue("stamps")
                         .HasColumnName("daily_goal_type");
 
+                    b.Property<DateTime?>("DeactivatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deactivated_at");
+
                     b.Property<int?>("DefaultAppointmentDailyGoal")
                         .HasColumnType("integer")
                         .HasColumnName("default_appointment_daily_goal");
@@ -985,6 +989,23 @@ namespace PunchedApi.Migrations
                         .HasColumnType("character varying(63)")
                         .HasColumnName("slug");
 
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("active")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("SuspendedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("suspended_at");
+
+                    b.Property<string>("SuspendedReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("suspended_reason");
+
                     b.Property<string>("TimeZoneId")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -1006,6 +1027,8 @@ namespace PunchedApi.Migrations
                     b.HasIndex("Slug")
                         .IsUnique();
 
+                    b.HasIndex("Status");
+
                     b.HasIndex("Name", "Location");
 
                     b.HasIndex("OwnerId", "IsDeleted");
@@ -1015,6 +1038,8 @@ namespace PunchedApi.Migrations
                             t.HasCheckConstraint("chk_business_booking_hours", "\"booking_open_hour\" >= 0 AND \"booking_open_hour\" <= 23 AND \"booking_close_hour\" >= 1 AND \"booking_close_hour\" <= 24 AND \"booking_close_hour\" > \"booking_open_hour\"");
 
                             t.HasCheckConstraint("chk_business_booking_interval", "\"booking_slot_interval_minutes\" >= 5 AND \"booking_slot_interval_minutes\" <= 240");
+
+                            t.HasCheckConstraint("chk_business_status", "\"status\" IN ('active', 'suspended', 'deactivated')");
                         });
                 });
 
@@ -1090,9 +1115,40 @@ namespace PunchedApi.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<string>("DraftConfigJson")
+                        .HasColumnType("text")
+                        .HasColumnName("draft_config_json");
+
                     b.Property<Guid?>("HeroBackgroundMediaId")
                         .HasColumnType("uuid")
                         .HasColumnName("hero_background_media_id");
+
+                    b.Property<bool>("IsPublished")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_published");
+
+                    b.Property<DateTime?>("PublishedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("published_at");
+
+                    b.Property<string>("PublishedConfigJson")
+                        .HasColumnType("text")
+                        .HasColumnName("published_config_json");
+
+                    b.Property<int>("PublishedVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("published_version");
+
+                    b.Property<string>("TemplateId")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("")
+                        .HasColumnName("template_id");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -1689,9 +1745,22 @@ namespace PunchedApi.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<DateTime?>("CurrentPeriodStartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("current_period_starts_at");
+
                     b.Property<DateTime?>("EndsAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("ends_at");
+
+                    b.Property<string>("PauseReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("pause_reason");
+
+                    b.Property<DateTime?>("PausedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("paused_at");
 
                     b.Property<Guid>("PlanId")
                         .HasColumnType("uuid")

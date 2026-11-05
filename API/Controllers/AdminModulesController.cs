@@ -26,17 +26,20 @@ public class AdminModulesController : ControllerBase
     private readonly IModuleEntitlementService _entitlementService;
     private readonly ApplicationDbContext _context;
     private readonly ISubscriptionAuditService _audit;
+    private readonly IStorefrontCacheInvalidator _storefrontCache;
     private readonly ILogger<AdminModulesController> _logger;
 
     public AdminModulesController(
         IModuleEntitlementService entitlementService,
         ApplicationDbContext context,
         ISubscriptionAuditService audit,
+        IStorefrontCacheInvalidator storefrontCache,
         ILogger<AdminModulesController> logger)
     {
         _entitlementService = entitlementService;
         _context = context;
         _audit = audit;
+        _storefrontCache = storefrontCache;
         _logger = logger;
     }
 
@@ -159,6 +162,9 @@ public class AdminModulesController : ControllerBase
             businessId, moduleKey, request.Enabled ? "FORCE-ENABLED" : "FORCE-DISABLED",
             adminUserId, request.Reason ?? "(none)");
 
+        // This business's storefront payload is now stale (its capabilities changed).
+        await _storefrontCache.EvictAsync(HttpContext.RequestAborted);
+
         return Ok(ApiResponse<MessageResponse>.Ok(new MessageResponse
         {
             Message = $"Module '{moduleKey}' {(request.Enabled ? "force-enabled" : "force-disabled")} for the business."
@@ -196,6 +202,9 @@ public class AdminModulesController : ControllerBase
         _logger.LogInformation(
             "ADMIN override removal: business {BusinessId} module {ModuleKey} reverted to plan entitlement by {AdminUserId}.",
             businessId, moduleKey, CurrentUserId());
+
+        // Reverting to the plan entitlement can change the storefront payload too.
+        await _storefrontCache.EvictAsync(HttpContext.RequestAborted);
 
         return Ok(ApiResponse<MessageResponse>.Ok(new MessageResponse
         {

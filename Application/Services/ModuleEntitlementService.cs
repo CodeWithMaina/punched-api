@@ -18,6 +18,13 @@ public class ModuleEntitlementService : IModuleEntitlementService
 {
     private const int CacheTtlSeconds = 60;
 
+    /// <summary>
+    /// Key of the shared generation marker. Bumping it orphans every cached
+    /// entry in one step, which is how <see cref="InvalidateAll"/> works without
+    /// having to enumerate (and therefore know) every business's cache key.
+    /// </summary>
+    private const string GenerationKey = "modules:entitlements:generation";
+
     private readonly ApplicationDbContext _context;
     private readonly ILogger<ModuleEntitlementService> _logger;
     private readonly IMemoryCache _cache;
@@ -30,7 +37,32 @@ public class ModuleEntitlementService : IModuleEntitlementService
         _context = context;
         _logger = logger;
         _cache = cache ?? new MemoryCache(new MemoryCacheOptions());
+
+        // Seed the generation marker up front. Creating it lazily would let two
+        // concurrent first calls each build their own marker; one of them would
+        // then be invisible to readers, so a bump written to it would be lost and
+        // a stale entry could survive.
+        Generation();
     }
+
+    /// <summary>Mutable generation marker; a field so it can be read/incremented atomically.</summary>
+    private sealed class CacheGeneration
+    {
+        public long Value;
+    }
+
+    /// <summary>The shared generation marker for this cache instance.</summary>
+    private CacheGeneration Generation() =>
+        _cache.GetOrCreate(GenerationKey, _ => new CacheGeneration())!;
+
+    private long CurrentGeneration() => Interlocked.Read(ref Generation().Value);
+
+    /// <summary>
+    /// A resolved entitlement list, stamped with the generation it was written
+    /// under. A mismatch means a platform-wide change has happened since, so the
+    /// entry is treated as a miss even though it is still in the cache.
+    /// </summary>
+    private sealed record CachedEntitlements(ModuleEntitlementResult Result, long Generation);
 
     /// <summary>Cache key for a business's resolved entitlements.</summary>
     internal static string CacheKey(Guid businessId) => $"modules:entitlements:{businessId}";
@@ -63,20 +95,35 @@ public class ModuleEntitlementService : IModuleEntitlementService
 
     public async Task<ModuleEntitlementResult> GetBusinessModulesAsync(Guid businessId, Guid? userId = null)
     {
-        if (_cache.TryGetValue(CacheKey(businessId), out ModuleEntitlementResult? cached) && cached != null)
+        if (_cache.TryGetValue(CacheKey(businessId), out CachedEntitlements? cached) &&
+            cached != null &&
+            cached.Generation == CurrentGeneration())
         {
             _logger.LogDebug("Entitlement cache hit for business {BusinessId}.", businessId);
-            return cached;
+            return cached.Result;
         }
 
         var result = await ResolveAsync(businessId);
-        _cache.Set(CacheKey(businessId), result, TimeSpan.FromSeconds(CacheTtlSeconds));
+        _cache.Set(
+            CacheKey(businessId),
+            new CachedEntitlements(result, CurrentGeneration()),
+            TimeSpan.FromSeconds(CacheTtlSeconds));
         return result;
     }
 
     private async Task<ModuleEntitlementResult> ResolveAsync(Guid businessId)
     {
         var result = new ModuleEntitlementResult();
+
+        // Platform-administration gate: a suspended or deactivated business holds
+        // no module access regardless of its subscription state. The business row
+        // is the authority (the global query filter also excludes soft-deleted rows).
+        var businessStatus = await _context.Businesses
+            .AsNoTracking()
+            .Where(b => b.Id == businessId)
+            .Select(b => b.Status)
+            .FirstOrDefaultAsync();
+        var businessActive = businessStatus == BusinessStatus.Active;
 
         // Project only the fields entitlement resolution actually needs from the
         // subscription → plan → plan-modules graph (plan key/name + the set of
@@ -109,7 +156,7 @@ public class ModuleEntitlementService : IModuleEntitlementService
         }
 
         var subscriptionActive = subscription != null &&
-            (subscription.Status == "active" || subscription.Status == "trial") &&
+            SubscriptionStatus.GrantsAccess(subscription.Status) &&
             (!subscription.EndsAt.HasValue || subscription.EndsAt > DateTime.UtcNow);
 
         var planModuleIds = subscription?.PlanModuleIds.ToHashSet() ?? new HashSet<Guid>();
@@ -168,7 +215,7 @@ public class ModuleEntitlementService : IModuleEntitlementService
                 entitlement.Source = "PLAN";
             }
 
-            entitlement.HasAccess = entitlement.IsEnabled && subscriptionActive;
+            entitlement.HasAccess = entitlement.IsEnabled && subscriptionActive && businessActive;
             result.Modules.Add(entitlement);
         }
 
@@ -196,6 +243,17 @@ public class ModuleEntitlementService : IModuleEntitlementService
     {
         _cache.Remove(CacheKey(businessId));
         _logger.LogDebug("Entitlement cache invalidated for business {BusinessId}.", businessId);
+    }
+
+    /// <inheritdoc />
+    public void InvalidateAll()
+    {
+        // Bump the shared generation. Every entry already in the cache is now
+        // stamped with an older generation and is treated as a miss on its next
+        // read, so the whole cache is dropped in O(1) without enumerating keys.
+        var generation = Interlocked.Increment(ref Generation().Value);
+        _logger.LogWarning(
+            "Entitlement cache invalidated for ALL businesses (generation {Generation}).", generation);
     }
 
     /// <summary>

@@ -40,6 +40,26 @@ public class BusinessSubscription : BaseEntity
     /// </summary>
     public DateTime? CanceledAt { get; set; }
 
+    /// <summary>
+    /// UTC timestamp when an administrator paused the subscription (null if never
+    /// paused, or cleared on resume). A paused subscription withholds module
+    /// access but keeps the row and its history.
+    /// </summary>
+    public DateTime? PausedAt { get; set; }
+
+    /// <summary>
+    /// Administrative reason recorded when the subscription was paused.
+    /// </summary>
+    [MaxLength(500)]
+    public string? PauseReason { get; set; }
+
+    /// <summary>
+    /// UTC timestamp when the current paid period began (set on plan change and
+    /// renewal). Distinct from <see cref="StartsAt"/>, which records the first
+    /// activation of this subscription row.
+    /// </summary>
+    public DateTime? CurrentPeriodStartsAt { get; set; }
+
     // ── Navigation ──────────────────────────────────────────
     /// <summary>
     /// The subscribed business.

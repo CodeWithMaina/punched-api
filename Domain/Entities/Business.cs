@@ -93,6 +93,33 @@ public class Business : BaseEntity
     /// </summary>
     public DateTime? DeletedAt { get; set; }
 
+    // ── Platform administration lifecycle ───────────────────
+    /// <summary>
+    /// Platform-administration status (see <see cref="BusinessStatus"/>):
+    /// "active", "suspended" or "deactivated". Independent of the business's
+    /// subscription and of <see cref="IsDeleted"/>; a suspended or deactivated
+    /// business keeps every row of data.
+    /// </summary>
+    [Required]
+    [MaxLength(20)]
+    public string Status { get; set; } = BusinessStatus.Active;
+
+    /// <summary>
+    /// UTC timestamp when an administrator suspended this business (null if never).
+    /// </summary>
+    public DateTime? SuspendedAt { get; set; }
+
+    /// <summary>
+    /// Administrative reason recorded when the business was suspended.
+    /// </summary>
+    [MaxLength(500)]
+    public string? SuspendedReason { get; set; }
+
+    /// <summary>
+    /// UTC timestamp when an administrator deactivated this business (null if never).
+    /// </summary>
+    public DateTime? DeactivatedAt { get; set; }
+
     /// <summary>
     /// Default daily stamp goal (per staff member) used when a staff member has
     /// no personal override. Null means no business default has been configured.

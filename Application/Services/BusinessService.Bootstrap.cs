@@ -99,6 +99,13 @@ public partial class BusinessService
             var config = LandingPageDefaults.Merge(
                 landingRow == null ? null : ParseBootstrapLandingConfig(landingRow.ConfigJson));
 
+            // The rich Storefront Builder projection (published only). Null when the
+            // business has not published via the builder — the flat fields above then
+            // remain the source of truth for the renderer.
+            var storefront = _storefrontBuilder == null
+                ? null
+                : await _storefrontBuilder.GetPublishedForBusinessAsync(businessId);
+
             return ApiResponse<StorefrontBootstrapResponse>.Ok(new StorefrontBootstrapResponse
             {
                 BusinessId = businessId,
@@ -157,6 +164,7 @@ public partial class BusinessService
                         .ToList(),
                     PrimaryCta = config.PrimaryCta,
                     SecondaryCta = config.SecondaryCta,
+                    Storefront = storefront,
                 },
             });
     }

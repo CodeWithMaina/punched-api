@@ -71,6 +71,27 @@ public class BusinessConfiguration : IEntityTypeConfiguration<Business>
         builder.Property(e => e.DeletedAt)
             .HasColumnName("deleted_at");
 
+        // ── Platform administration lifecycle ──────────────────
+        // status is the platform-administration state (active/suspended/
+        // deactivated). It is a separate axis from is_deleted (soft delete) and
+        // from the business's subscription; a suspended or deactivated business
+        // keeps every row of data.
+        builder.Property(e => e.Status)
+            .IsRequired()
+            .HasMaxLength(20)
+            .HasColumnName("status")
+            .HasDefaultValue(BusinessStatus.Active);
+
+        builder.Property(e => e.SuspendedAt)
+            .HasColumnName("suspended_at");
+
+        builder.Property(e => e.SuspendedReason)
+            .HasMaxLength(500)
+            .HasColumnName("suspended_reason");
+
+        builder.Property(e => e.DeactivatedAt)
+            .HasColumnName("deactivated_at");
+
         builder.Property(e => e.DefaultDailyGoal)
             .HasColumnName("default_daily_goal");
 
@@ -111,6 +132,9 @@ public class BusinessConfiguration : IEntityTypeConfiguration<Business>
                 "\"booking_open_hour\" >= 0 AND \"booking_open_hour\" <= 23 AND \"booking_close_hour\" >= 1 AND \"booking_close_hour\" <= 24 AND \"booking_close_hour\" > \"booking_open_hour\"");
             t.HasCheckConstraint("chk_business_booking_interval",
                 "\"booking_slot_interval_minutes\" >= 5 AND \"booking_slot_interval_minutes\" <= 240");
+            // Only the three administration states may be persisted.
+            t.HasCheckConstraint("chk_business_status",
+                "\"status\" IN ('active', 'suspended', 'deactivated')");
         });
 
         builder.Property(e => e.CreatedAt)
@@ -121,6 +145,8 @@ public class BusinessConfiguration : IEntityTypeConfiguration<Business>
         builder.HasIndex(e => e.Category);
         builder.HasIndex(e => e.OwnerId);
         builder.HasIndex(e => new { e.OwnerId, e.IsDeleted });
+        // Platform-administration filtering (list by status, stats rollups).
+        builder.HasIndex(e => e.Status);
         builder.HasIndex(e => e.LogoMediaId);
         builder.HasIndex(e => e.CoverMediaId);
         // Subdomain slugs are globally unique — this index is the final

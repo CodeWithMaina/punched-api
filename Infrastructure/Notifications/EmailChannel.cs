@@ -51,7 +51,15 @@ public sealed class EmailChannel : INotificationChannel
         var recipient = await _context.Users
             .Include(user => user.Auth)
             .SingleOrDefaultAsync(user => user.Id == message.RecipientUserId && !user.IsDeleted, ct);
-        if (recipient is null || string.IsNullOrWhiteSpace(recipient.Email) || recipient.Auth?.IsVerified != true)
+
+        // A SECURITY message *is* the proof of address control (the verification
+        // code), so it must be deliverable to an address that is not yet verified —
+        // otherwise a new registration can never be verified. Every other category
+        // still requires a verified address so we never mail unproven inboxes.
+        var requiresVerifiedEmail = message.Category != NotificationCategory.Security;
+        if (recipient is null
+            || string.IsNullOrWhiteSpace(recipient.Email)
+            || (requiresVerifiedEmail && recipient.Auth?.IsVerified != true))
             throw new PermanentChannelException("The notification recipient is not eligible for email delivery.");
 
         if (string.IsNullOrWhiteSpace(_settings.FromAddress))

@@ -23,7 +23,7 @@ namespace PunchedApi.Application.Notifications;
 /// <c>BusinessScopeResolver</c> — and every preference write evicts the affected key (R6).
 /// </para>
 /// </remarks>
-public sealed class PreferenceResolver : IPreferenceResolver
+public sealed class PreferenceResolver : IPreferenceResolver, INotificationChannelAvailability
 {
     private const string ScopeUserGlobal = "user_global";
     private const string ScopeUserBusiness = "user_business";
@@ -269,13 +269,42 @@ public sealed class PreferenceResolver : IPreferenceResolver
         return null;
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> FilterAvailableAsync(
+        Guid userId, IEnumerable<string> channels, CancellationToken ct = default)
+    {
+        // Provider configuration first: a SECURITY OTP must reach an address that is
+        // not verified yet (the code *is* the proof), so the recipient-eligibility
+        // check on email is deliberately skipped here. SMS still needs a number or
+        // it can only fail permanently.
+        var available = await AvailableChannelsAsync(userId, requireVerifiedEmail: false, ct);
+        var filtered = new List<string>();
+        foreach (var channel in channels)
+        {
+            if (!available.Contains(channel)) continue;
+            if (filtered.Contains(channel)) continue;
+            filtered.Add(channel);
+        }
+
+        return filtered;
+    }
+
+    /// <summary>Channels the preference view may offer: configuration + eligibility.</summary>
+    private Task<HashSet<string>> AvailableChannelsAsync(Guid userId, CancellationToken ct)
+        => AvailableChannelsAsync(userId, requireVerifiedEmail: true, ct);
+
     /// <summary>
     /// Channels this deployment can actually deliver on: <c>in_app</c> plus one
     /// <see cref="INotificationChannel"/> registration per shipped external channel.
     /// The DI registration *is* the phase gate, so shipping a channel needs no edit
     /// here (email = Phase 4, sms = Phase 6, push = Phase 7).
     /// </summary>
-    private async Task<HashSet<string>> AvailableChannelsAsync(Guid userId, CancellationToken ct)
+    /// <param name="requireVerifiedEmail">
+    /// True for the preference view (only offer email once the address is proven);
+    /// false for the dispatch path, where a SECURITY code is itself the proof.
+    /// </param>
+    private async Task<HashSet<string>> AvailableChannelsAsync(
+        Guid userId, bool requireVerifiedEmail, CancellationToken ct)
     {
         var available = new HashSet<string>(StringComparer.Ordinal) { NotificationChannel.InApp };
         if (!_hasConfiguredSettings && _channels.Count == 0)
@@ -286,7 +315,7 @@ public sealed class PreferenceResolver : IPreferenceResolver
 
         if ((_emailSettings.Enabled && !string.IsNullOrWhiteSpace(_emailSettings.Host)
             && !string.IsNullOrWhiteSpace(_emailSettings.FromAddress)
-            && await HasVerifiedEmailAsync(userId))
+            && (!requireVerifiedEmail || await HasVerifiedEmailAsync(userId)))
             || (!_hasConfiguredSettings && _channels.Any(channel => channel.Name == NotificationChannel.Email)))
             available.Add(NotificationChannel.Email);
         if ((_smsSettings.Enabled && await HasPhoneNumberAsync(userId))

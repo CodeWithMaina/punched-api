@@ -32,6 +32,14 @@ public class BusinessLandingPageConfigConfiguration : IEntityTypeConfiguration<B
 
         builder.Property(e => e.ConfigJson).IsRequired().HasColumnName("config_json");
 
+        // Storefront Builder columns (additive; see BusinessLandingPageConfig).
+        builder.Property(e => e.TemplateId).IsRequired().HasDefaultValue(string.Empty).HasColumnName("template_id");
+        builder.Property(e => e.DraftConfigJson).HasColumnName("draft_config_json");
+        builder.Property(e => e.PublishedConfigJson).HasColumnName("published_config_json");
+        builder.Property(e => e.IsPublished).IsRequired().HasDefaultValue(true).HasColumnName("is_published");
+        builder.Property(e => e.PublishedAt).HasColumnName("published_at");
+        builder.Property(e => e.PublishedVersion).IsRequired().HasDefaultValue(0).HasColumnName("published_version");
+
         builder.HasOne(e => e.Business)
             .WithMany()
             .HasForeignKey(e => e.BusinessId)

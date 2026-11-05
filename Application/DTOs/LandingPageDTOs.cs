@@ -167,6 +167,14 @@ public class PublicLandingPageResponse
 
     [JsonPropertyName("secondaryCta")]
     public LandingPageCtaDto SecondaryCta { get; set; } = new();
+
+    /// <summary>
+    /// The rich Storefront Builder projection when the business has published one.
+    /// Null for businesses still on the legacy simple landing page — consumers must
+    /// fall back to the flat fields above.
+    /// </summary>
+    [JsonPropertyName("storefront")]
+    public PublicStorefrontDto? Storefront { get; set; }
 }
 
 public class PublicLandingPageSection

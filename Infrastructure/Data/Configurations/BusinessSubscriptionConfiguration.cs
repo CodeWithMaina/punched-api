@@ -24,6 +24,9 @@ public class BusinessSubscriptionConfiguration : IEntityTypeConfiguration<Busine
         builder.Property(x => x.StartsAt).HasColumnName("starts_at");
         builder.Property(x => x.EndsAt).HasColumnName("ends_at");
         builder.Property(x => x.CanceledAt).HasColumnName("canceled_at");
+        builder.Property(x => x.PausedAt).HasColumnName("paused_at");
+        builder.Property(x => x.PauseReason).HasMaxLength(500).HasColumnName("pause_reason");
+        builder.Property(x => x.CurrentPeriodStartsAt).HasColumnName("current_period_starts_at");
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
 
         builder.HasOne(x => x.Business)

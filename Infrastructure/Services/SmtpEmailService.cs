@@ -108,15 +108,36 @@ public class SmtpEmailService : IEmailService
 
     private async Task<bool> SendAsync(string email, string subject, string templateType, string? businessName, string htmlBody)
     {
+        // Fail closed and loud when email is not configured: never attempt an
+        // anonymous SMTP session against an empty host, and never silently drop
+        // the message — the ledger row records why.
+        var fromAddress = !string.IsNullOrWhiteSpace(_settings.FromAddress)
+            ? _settings.FromAddress
+            : _settings.Username;
+        if (!_settings.Enabled || string.IsNullOrWhiteSpace(_settings.Host) || string.IsNullOrWhiteSpace(fromAddress))
+        {
+            _logger.LogWarning(
+                "Skipped email {TemplateType} to {Email}: email delivery is not configured (Email:Enabled/Host/FromAddress).",
+                templateType, email);
+            await PersistAsync(email, businessName, "email", templateType, "failed", "email_not_configured");
+            return false;
+        }
+
         try
         {
             var message = new MimeMessage();
-            message.From.Add(new MailboxAddress(_settings.FromName, _settings.FromAddress));
+            message.From.Add(new MailboxAddress(_settings.FromName, fromAddress));
             message.To.Add(MailboxAddress.Parse(email));
             message.Subject = subject;
-            message.Body = new TextPart("html") { Text = htmlBody };
+            // multipart/alternative (text + html) reads better in clients that
+            // refuse HTML and scores better with spam filters than html-only mail.
+            message.Body = new BodyBuilder
+            {
+                HtmlBody = htmlBody,
+                TextBody = ToPlainText(htmlBody)
+            }.ToMessageBody();
 
-            using var client = new SmtpClient();
+            using var client = new SmtpClient { Timeout = checked(Math.Max(5, _settings.TimeoutSeconds) * 1000) };
 
             // Auto-detect TLS strategy based on port
             var secureOption = _settings.Port == 465
@@ -124,7 +145,10 @@ public class SmtpEmailService : IEmailService
                 : SecureSocketOptions.StartTls;
 
             await client.ConnectAsync(_settings.Host, _settings.Port, secureOption);
-            await client.AuthenticateAsync(_settings.Username, _settings.Password);
+            // Only authenticate when credentials exist (a local relay or a
+            // no-auth dev SMTP server has none).
+            if (!string.IsNullOrWhiteSpace(_settings.Username))
+                await client.AuthenticateAsync(_settings.Username, _settings.Password);
             await client.SendAsync(message);
             await client.DisconnectAsync(quit: true);
 
@@ -138,6 +162,21 @@ public class SmtpEmailService : IEmailService
             await PersistAsync(email, businessName, "email", templateType, "failed", ex.Message);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Crude HTML → text projection for the multipart/alternative part. It only has
+    /// to be readable; the HTML part remains the authoritative rendering.
+    /// </summary>
+    private static string ToPlainText(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return string.Empty;
+        var withBreaks = System.Text.RegularExpressions.Regex.Replace(
+            html, @"<(br|/p|/div|/h[1-6]|/tr)\s*/?>", "\n",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var stripped = System.Text.RegularExpressions.Regex.Replace(withBreaks, "<[^>]+>", string.Empty);
+        var decoded = System.Net.WebUtility.HtmlDecode(stripped);
+        return System.Text.RegularExpressions.Regex.Replace(decoded, @"\n{3,}", "\n\n").Trim();
     }
 
         private async Task PersistAsync(string email, string? businessName, string channel, string templateType, string status, string? error)

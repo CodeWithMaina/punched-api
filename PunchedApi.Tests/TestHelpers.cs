@@ -55,6 +55,24 @@ internal sealed class StubModuleEntitlements : IModuleEntitlementService
 
     public void Invalidate(Guid businessId) { }
 
+    public void InvalidateAll() { }
+
     public IReadOnlyList<string> ValidateConfiguration(IEnumerable<(string ModuleKey, bool Enabled)> overrides) =>
         Array.Empty<string>();
+}
+
+/// <summary>
+/// Records storefront-cache evictions so a test can assert that a mutation
+/// dropped the cached storefront payload. Nothing is actually evicted.
+/// </summary>
+internal sealed class StubStorefrontCacheInvalidator : IStorefrontCacheInvalidator
+{
+    /// <summary>How many times <see cref="EvictAsync"/> was called.</summary>
+    public int Evictions { get; private set; }
+
+    public Task EvictAsync(CancellationToken cancellationToken = default)
+    {
+        Evictions++;
+        return Task.CompletedTask;
+    }
 }

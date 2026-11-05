@@ -220,4 +220,150 @@ public async Task<ApiResponse<BusinessSubscriptionDetail>> GetBusinessSubscripti
             return null;
         }
     }
+    // ═════════════════════════════════════════════════════════
+    //  SUBSCRIPTION LIST + STATS
+    // ═════════════════════════════════════════════════════════
+
+    /// <inheritdoc />
+    public async Task<ApiResponse<PaginatedResponse<AdminSubscriptionListItem>>> ListSubscriptionsAsync(
+        AdminSubscriptionListQuery query, int page, int pageSize)
+    {
+        try
+        {
+            var q = _context.BusinessSubscriptions
+                .AsNoTracking()
+                .Join(_context.Businesses.AsNoTracking(),
+                    s => s.BusinessId, b => b.Id, (s, b) => new { s, b })
+                .Join(_context.SubscriptionPlans.AsNoTracking(),
+                    x => x.s.PlanId, p => p.Id, (x, p) => new { x.s, x.b, p });
+
+            if (!string.IsNullOrWhiteSpace(query.Search))
+            {
+                var pattern = $"%{query.Search.Trim()}%";
+                q = q.Where(x =>
+                    EF.Functions.ILike(x.b.Name, pattern) ||
+                    EF.Functions.ILike(x.p.Name, pattern) ||
+                    EF.Functions.ILike(x.p.Key, pattern));
+            }
+
+            if (query.BusinessId.HasValue)
+                q = q.Where(x => x.b.Id == query.BusinessId.Value);
+
+            if (!string.IsNullOrWhiteSpace(query.Status))
+                q = q.Where(x => x.s.Status == query.Status);
+
+            if (!string.IsNullOrWhiteSpace(query.PlanKey))
+                q = q.Where(x => x.p.Key == query.PlanKey);
+
+            if (!string.IsNullOrWhiteSpace(query.BillingInterval))
+                q = q.Where(x => x.p.BillingInterval == query.BillingInterval);
+
+            if (query.RenewingBefore.HasValue)
+                q = q.Where(x => x.s.EndsAt != null && x.s.EndsAt <= query.RenewingBefore.Value);
+
+            if (query.ExpiringBefore.HasValue)
+                q = q.Where(x => x.s.EndsAt != null && x.s.EndsAt <= query.ExpiringBefore.Value);
+
+            var totalCount = await q.CountAsync();
+
+            var ascending = string.Equals(query.Direction, "asc", StringComparison.OrdinalIgnoreCase);
+            q = (query.Sort ?? "created").ToLowerInvariant() switch
+            {
+                "business" => ascending ? q.OrderBy(x => x.b.Name) : q.OrderByDescending(x => x.b.Name),
+                "status" => ascending ? q.OrderBy(x => x.s.Status) : q.OrderByDescending(x => x.s.Status),
+                "expiry" => ascending ? q.OrderBy(x => x.s.EndsAt) : q.OrderByDescending(x => x.s.EndsAt),
+                _ => ascending ? q.OrderBy(x => x.s.CreatedAt) : q.OrderByDescending(x => x.s.CreatedAt),
+            };
+
+            var items = await q
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .Select(x => new AdminSubscriptionListItem
+                {
+                    SubscriptionId = x.s.Id,
+                    BusinessId = x.b.Id,
+                    BusinessName = x.b.Name,
+                    BusinessStatus = x.b.Status,
+                    PlanId = x.p.Id,
+                    PlanKey = x.p.Key,
+                    PlanName = x.p.Name,
+                    BillingInterval = x.p.BillingInterval,
+                    Price = x.p.Price,
+                    Status = x.s.Status,
+                    StartsAt = x.s.StartsAt,
+                    EndsAt = x.s.EndsAt,
+                    PausedAt = x.s.PausedAt,
+                    CanceledAt = x.s.CanceledAt,
+                    CreatedAt = x.s.CreatedAt,
+                    EnabledModuleCount = x.p.PlanModules.Count,
+                })
+                .ToListAsync();
+
+            return ApiResponse<PaginatedResponse<AdminSubscriptionListItem>>.Ok(
+                new PaginatedResponse<AdminSubscriptionListItem>
+                {
+                    Items = items,
+                    TotalCount = totalCount,
+                    Page = page,
+                    PageSize = pageSize,
+                });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to list subscriptions for the platform administrator.");
+            return ApiResponse<PaginatedResponse<AdminSubscriptionListItem>>.Fail(
+                "LIST_FAILED", "Failed to list subscriptions.");
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<ApiResponse<AdminSubscriptionStats>> GetStatsAsync()
+    {
+        try
+        {
+            var soon = DateTime.UtcNow.AddDays(7);
+
+            var grouped = await _context.BusinessSubscriptions.AsNoTracking()
+                .GroupBy(s => s.Status)
+                .Select(g => new { Status = g.Key, Count = g.Count() })
+                .ToListAsync();
+            int Count(string status) => grouped.FirstOrDefault(g => g.Status == status)?.Count ?? 0;
+
+            var renewingIn7Days = await _context.BusinessSubscriptions.AsNoTracking()
+                .CountAsync(s => (s.Status == "active" || s.Status == "trial") &&
+                                 s.EndsAt != null && s.EndsAt <= soon);
+
+            // Recurring revenue from access-granting subscriptions. Yearly plans are
+            // normalised to a monthly figure (price / 12) for MRR; ARR is MRR × 12.
+            var monthly = await _context.BusinessSubscriptions.AsNoTracking()
+                .Where(s => (s.Status == "active" || s.Status == "trial") && s.Plan.BillingInterval == "monthly")
+                .SumAsync(s => (decimal?)s.Plan.Price) ?? 0m;
+            var yearly = await _context.BusinessSubscriptions.AsNoTracking()
+                .Where(s => (s.Status == "active" || s.Status == "trial") && s.Plan.BillingInterval == "yearly")
+                .SumAsync(s => (decimal?)s.Plan.Price) ?? 0m;
+
+            var mrr = monthly + Math.Round(yearly / 12m, 2);
+
+            return ApiResponse<AdminSubscriptionStats>.Ok(new AdminSubscriptionStats
+            {
+                Total = grouped.Sum(g => g.Count),
+                Active = Count("active"),
+                Trial = Count("trial"),
+                Paused = Count("paused"),
+                Canceled = Count("canceled"),
+                Expired = Count("expired"),
+                PastDue = Count("past_due"),
+                Deactivated = Count("deactivated"),
+                RenewingIn7Days = renewingIn7Days,
+                MonthlyRecurringRevenue = mrr,
+                AnnualRecurringRevenue = Math.Round(mrr * 12m, 2),
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to compute subscription statistics.");
+            return ApiResponse<AdminSubscriptionStats>.Fail(
+                "STATS_FAILED", "Failed to compute subscription statistics.");
+        }
+    }
 }

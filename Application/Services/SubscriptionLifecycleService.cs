@@ -47,8 +47,11 @@ public class SubscriptionLifecycleService : ISubscriptionLifecycleService
         subscription.PlanId = plan.Id;
         subscription.Status = "active";
         subscription.StartsAt = now;
+        subscription.CurrentPeriodStartsAt = now;
         subscription.EndsAt = ComputeEndsAt(plan, now);
         subscription.CanceledAt = null;
+        subscription.PausedAt = null;
+        subscription.PauseReason = null;
         await _context.SaveChangesAsync();
 
         _entitlements.Invalidate(businessId);
@@ -99,10 +102,13 @@ public class SubscriptionLifecycleService : ISubscriptionLifecycleService
         {
             row.Status = "active";
             row.StartsAt ??= now;
+            row.CurrentPeriodStartsAt = now;
             row.EndsAt = newEndsAt ?? (row.EndsAt.HasValue
                 ? row.EndsAt > now ? row.EndsAt : ComputeEndsAt(row.Plan, now)
                 : ComputeEndsAt(row.Plan, now));
             row.CanceledAt = null;
+            row.PausedAt = null;
+            row.PauseReason = null;
         }
 
         if (rows.Count > 0)
@@ -138,6 +144,171 @@ public class SubscriptionLifecycleService : ISubscriptionLifecycleService
             _logger.LogWarning(
                 "Subscription canceled: business {BusinessId}, {Count} row(s). Reason: {Reason}",
                 businessId, rows.Count, reason ?? "(none)");
+        }
+
+        return rows.Count;
+    }
+
+    /// <inheritdoc />
+    public async Task<int> PauseAsync(Guid businessId, string? reason, Guid? actorUserId)
+    {
+        var rows = await _context.BusinessSubscriptions
+            .Where(s => s.BusinessId == businessId &&
+                (s.Status == "active" || s.Status == "trial" || s.Status == "past_due"))
+            .ToListAsync();
+
+        var now = DateTime.UtcNow;
+        foreach (var row in rows)
+        {
+            row.Status = "paused";
+            row.PausedAt = now;
+            row.PauseReason = reason;
+        }
+
+        if (rows.Count > 0)
+        {
+            await _context.SaveChangesAsync();
+            _entitlements.Invalidate(businessId);
+            _logger.LogWarning(
+                "Subscription paused: business {BusinessId}, {Count} row(s) by {ActorUserId}. Reason: {Reason}",
+                businessId, rows.Count, actorUserId, reason ?? "(none)");
+        }
+
+        return rows.Count;
+    }
+
+    /// <inheritdoc />
+    public async Task<int> ResumeAsync(Guid businessId, Guid? actorUserId)
+    {
+        var rows = await _context.BusinessSubscriptions
+            .Where(s => s.BusinessId == businessId && s.Status == "paused")
+            .Include(s => s.Plan)
+            .ToListAsync();
+
+        var now = DateTime.UtcNow;
+        foreach (var row in rows)
+        {
+            row.Status = "active";
+            row.PausedAt = null;
+            row.PauseReason = null;
+            // If the period elapsed while paused, grant a fresh interval so the
+            // business is not expired the instant it is resumed.
+            if (!row.EndsAt.HasValue || row.EndsAt <= now)
+            {
+                row.CurrentPeriodStartsAt = now;
+                row.EndsAt = ComputeEndsAt(row.Plan, now);
+            }
+        }
+
+        if (rows.Count > 0)
+        {
+            await _context.SaveChangesAsync();
+            _entitlements.Invalidate(businessId);
+            _logger.LogInformation(
+                "Subscription resumed: business {BusinessId}, {Count} row(s) by {ActorUserId}.",
+                businessId, rows.Count, actorUserId);
+        }
+
+        return rows.Count;
+    }
+
+    /// <inheritdoc />
+    public async Task<int> ExtendAsync(Guid businessId, DateTime newEndsAt, Guid? actorUserId, string? reason)
+    {
+        var rows = await _context.BusinessSubscriptions
+            .Where(s => s.BusinessId == businessId)
+            .Include(s => s.Plan)
+            .ToListAsync();
+
+        var now = DateTime.UtcNow;
+        var target = DateTime.SpecifyKind(newEndsAt, DateTimeKind.Utc);
+        foreach (var row in rows)
+        {
+            // Never shorten: extend means the later of the current end and the request.
+            if (!row.EndsAt.HasValue || row.EndsAt < target)
+                row.EndsAt = target;
+
+            // A lapsed subscription that is extended must grant access again.
+            if (!Domain.Entities.SubscriptionStatus.GrantsAccess(row.Status))
+            {
+                row.Status = "active";
+                row.CanceledAt = null;
+                row.PausedAt = null;
+                row.PauseReason = null;
+                row.CurrentPeriodStartsAt = now;
+            }
+        }
+
+        if (rows.Count > 0)
+        {
+            await _context.SaveChangesAsync();
+            _entitlements.Invalidate(businessId);
+            _logger.LogWarning(
+                "Subscription extended: business {BusinessId}, {Count} row(s) to {EndsAt} by {ActorUserId}. Reason: {Reason}",
+                businessId, rows.Count, target, actorUserId, reason ?? "(none)");
+        }
+
+        return rows.Count;
+    }
+
+    /// <inheritdoc />
+    public async Task<int> DeactivateAsync(Guid businessId, string? reason, Guid? actorUserId)
+    {
+        var rows = await _context.BusinessSubscriptions
+            .Where(s => s.BusinessId == businessId &&
+                s.Status != "deactivated")
+            .ToListAsync();
+
+        foreach (var row in rows)
+        {
+            row.Status = "deactivated";
+            row.PauseReason = reason;
+        }
+
+        if (rows.Count > 0)
+        {
+            await _context.SaveChangesAsync();
+            _entitlements.Invalidate(businessId);
+            _logger.LogWarning(
+                "Subscription deactivated: business {BusinessId}, {Count} row(s) by {ActorUserId}. Reason: {Reason}",
+                businessId, rows.Count, actorUserId, reason ?? "(none)");
+        }
+
+        return rows.Count;
+    }
+
+    /// <inheritdoc />
+    public async Task<int> ReactivateAsync(Guid businessId, Guid? actorUserId)
+    {
+        var rows = await _context.BusinessSubscriptions
+            .Where(s => s.BusinessId == businessId &&
+                (s.Status == "expired" || s.Status == "past_due" || s.Status == "canceled" ||
+                 s.Status == "paused" || s.Status == "deactivated"))
+            .Include(s => s.Plan)
+            .ToListAsync();
+
+        var now = DateTime.UtcNow;
+        foreach (var row in rows)
+        {
+            row.Status = "active";
+            row.StartsAt ??= now;
+            row.CurrentPeriodStartsAt = now;
+            // Keep a period that is still in the future; otherwise grant a fresh one.
+            row.EndsAt = row.EndsAt.HasValue && row.EndsAt > now
+                ? row.EndsAt
+                : ComputeEndsAt(row.Plan, now);
+            row.CanceledAt = null;
+            row.PausedAt = null;
+            row.PauseReason = null;
+        }
+
+        if (rows.Count > 0)
+        {
+            await _context.SaveChangesAsync();
+            _entitlements.Invalidate(businessId);
+            _logger.LogWarning(
+                "Subscription reactivated: business {BusinessId}, {Count} row(s) by {ActorUserId}.",
+                businessId, rows.Count, actorUserId);
         }
 
         return rows.Count;

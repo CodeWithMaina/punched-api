@@ -23,13 +23,16 @@ public class AdminSubscriptionTiersController : ControllerBase
 {
     private readonly IAdminTierService _tierService;
     private readonly IAdminSubscriptionService _subscriptionService;
+    private readonly IStorefrontCacheInvalidator _storefrontCache;
 
     public AdminSubscriptionTiersController(
         IAdminTierService tierService,
-        IAdminSubscriptionService subscriptionService)
+        IAdminSubscriptionService subscriptionService,
+        IStorefrontCacheInvalidator storefrontCache)
     {
         _tierService = tierService;
         _subscriptionService = subscriptionService;
+        _storefrontCache = storefrontCache;
     }
 
     // ── Tier CRUD ───────────────────────────────────────────
@@ -171,7 +174,12 @@ public class AdminSubscriptionTiersController : ControllerBase
     public async Task<IActionResult> SetTierModules(Guid tierId, [FromBody] AdminTierModulesRequest request)
     {
         var result = await _tierService.SetModulesAsync(tierId, request, CurrentUserId());
-        return result.Success ? Ok(result) : StatusCode(FeatureErrorStatus(result.Error), result);
+        if (!result.Success) return StatusCode(FeatureErrorStatus(result.Error), result);
+
+        // The tier's subscribers just gained or lost modules; drop the cached
+        // storefront payloads so their capabilities follow immediately.
+        await _storefrontCache.EvictAsync(HttpContext.RequestAborted);
+        return Ok(result);
     }
 
     /// <summary>The admin module catalog (runtime manifest enriched with DB metadata).</summary>
@@ -221,6 +229,51 @@ public class AdminSubscriptionTiersController : ControllerBase
         var result = await _subscriptionService.GetAuditLogsAsync(page, pageSize, businessId, tierId);
         return Ok(result);
     }
+
+    // ── Tier duplicate ──────────────────────────────────────
+
+    /// <summary>Clones a tier (metadata + module set) into a new Draft tier.</summary>
+    [HttpPost("subscription-tiers/{tierId:guid}/duplicate")]
+    [ProducesResponseType(typeof(ApiResponse<AdminTierDetail>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> DuplicateTier(Guid tierId, [FromBody] AdminDuplicateTierRequest? request)
+    {
+        var result = await _tierService.DuplicateAsync(
+            tierId, request ?? new AdminDuplicateTierRequest(), CurrentUserId());
+        return result.Success ? Ok(result) : StatusCode(FeatureErrorStatus(result.Error), result);
+    }
+
+    // ── Module catalogue management ─────────────────────────
+
+    /// <summary>The module catalogue with plan/business usage counts and availability.</summary>
+    [HttpGet("module-catalog")]
+    [ProducesResponseType(typeof(ApiResponse<AdminModuleCatalogResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetModuleCatalogue()
+    {
+        var result = await _tierService.GetModuleCatalogAsync();
+        return Ok(result);
+    }
+
+    /// <summary>Updates a module's catalogue metadata (the module key is immutable).</summary>
+    [HttpPut("modules/{moduleKey}")]
+    [ProducesResponseType(typeof(ApiResponse<AdminModuleCatalogItem>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> UpdateModule(string moduleKey, [FromBody] AdminModuleUpdateRequest request)
+    {
+        var result = await _tierService.UpdateModuleAsync(moduleKey, request, CurrentUserId());
+        if (!result.Success) return StatusCode(ModuleErrorStatus(result.Error), result);
+
+        // Switching a module off (or on) is platform-wide: every business's
+        // cached storefront payload may now be wrong, so evict them all.
+        await _storefrontCache.EvictAsync(HttpContext.RequestAborted);
+        return Ok(result);
+    }
+
+    /// <summary>Maps module-catalogue error codes to HTTP statuses; 400 otherwise.</summary>
+    private static int ModuleErrorStatus(ApiError? error) =>
+        error?.Code == "INVALID_MODULE" ? StatusCodes.Status404NotFound : StatusCodes.Status400BadRequest;
 
     /// <summary>Maps well-known feature error codes to HTTP statuses; 400 otherwise.</summary>
     private static int FeatureErrorStatus(ApiError? error) =>

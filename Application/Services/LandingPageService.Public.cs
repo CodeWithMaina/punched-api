@@ -56,6 +56,9 @@ public partial class LandingPageService
                 Sections = FilterSections(config.Sections, capabilities),
                 PrimaryCta = config.PrimaryCta,
                 SecondaryCta = config.SecondaryCta,
+                Storefront = _storefrontBuilder == null
+                    ? null
+                    : await _storefrontBuilder.GetPublishedForBusinessAsync(businessId),
             };
             return ApiResponse<PublicLandingPageResponse>.Ok(response);
         }

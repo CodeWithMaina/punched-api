@@ -110,6 +110,91 @@ public class ModuleEntitlementCacheTests : IDisposable
         Assert.NotNull(result);
     }
 
+    /// <summary>
+    /// A platform-wide change (a module switched off in the admin console) must
+    /// not be served from cache for ANY business. Without <c>InvalidateAll</c> the
+    /// per-business entries survive their full 60-second TTL, which is exactly
+    /// what made a disabled module keep appearing on live storefronts.
+    /// </summary>
+    [Fact]
+    public async Task InvalidateAll_ForcesFreshResolutionForEveryBusiness()
+    {
+        var secondBusinessId = Guid.NewGuid();
+        var proPlan = _db.SubscriptionPlans.Single(p => p.Key == "pro");
+
+        await SubscribeProAsync();
+        _db.Businesses.Add(new Business
+        {
+            Id = secondBusinessId,
+            Name = "Second Cache Biz",
+            Category = "salon",
+            Location = "Nairobi",
+            MpesaNumber = "654321"
+        });
+        _db.BusinessSubscriptions.Add(new BusinessSubscription
+        {
+            BusinessId = secondBusinessId,
+            PlanId = proPlan.Id,
+            Status = "active"
+        });
+        await _db.SaveChangesAsync();
+
+        // Warm both entries.
+        var firstWarm = await _service.GetBusinessModulesAsync(_businessId);
+        var secondWarm = await _service.GetBusinessModulesAsync(secondBusinessId);
+        Assert.NotNull(firstWarm.CurrentPlan);
+        Assert.NotNull(secondWarm.CurrentPlan);
+
+        // Withdraw the subscription from both, then invalidate globally.
+        _db.BusinessSubscriptions.RemoveRange(_db.BusinessSubscriptions.ToList());
+        await _db.SaveChangesAsync();
+        _service.InvalidateAll();
+
+        var first = await _service.GetBusinessModulesAsync(_businessId);
+        var second = await _service.GetBusinessModulesAsync(secondBusinessId);
+
+        Assert.NotSame(firstWarm, first);
+        Assert.NotSame(secondWarm, second);
+        Assert.Null(first.CurrentPlan);
+        Assert.Null(second.CurrentPlan);
+        Assert.All(first.Modules, m => Assert.False(m.HasAccess));
+        Assert.All(second.Modules, m => Assert.False(m.HasAccess));
+    }
+
+    /// <summary>
+    /// The per-business invalidate must NOT be a global flush: it exists so one
+    /// business's plan change does not force every other business to re-resolve.
+    /// </summary>
+    [Fact]
+    public async Task Invalidate_ForOneBusiness_LeavesAnotherBusinessesEntryWarm()
+    {
+        var secondBusinessId = Guid.NewGuid();
+        var proPlan = _db.SubscriptionPlans.Single(p => p.Key == "pro");
+
+        await SubscribeProAsync();
+        _db.Businesses.Add(new Business
+        {
+            Id = secondBusinessId,
+            Name = "Untouched Biz",
+            Category = "salon",
+            Location = "Nairobi",
+            MpesaNumber = "111222"
+        });
+        _db.BusinessSubscriptions.Add(new BusinessSubscription
+        {
+            BusinessId = secondBusinessId,
+            PlanId = proPlan.Id,
+            Status = "active"
+        });
+        await _db.SaveChangesAsync();
+
+        var other = await _service.GetBusinessModulesAsync(secondBusinessId);
+        _service.Invalidate(_businessId);
+
+        var otherAgain = await _service.GetBusinessModulesAsync(secondBusinessId);
+        Assert.Same(other, otherAgain);
+    }
+
     public void Dispose()
     {
         _db.Database.EnsureDeleted();

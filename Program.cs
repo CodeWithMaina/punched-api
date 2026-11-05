@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using PunchedApi.API.Middleware;
@@ -150,11 +151,21 @@ try
     builder.Services.AddScoped<JwtTokenService>();
     builder.Services.AddScoped<IAuthService, AuthService>();
 
-    // Use ConsoleEmailService for development; switch to SmtpEmailService for production
-    if (builder.Environment.IsDevelopment())
-        builder.Services.AddScoped<IEmailService, ConsoleEmailService>();
-    else
+    // Use real SMTP whenever the deployment is configured for it (Email:Enabled +
+    // Host + FromAddress), in every environment — so local development exercises
+    // the exact path production uses. When email is not configured we fall back to
+    // the console sink, which logs the message and still writes the same
+    // NotificationLog ledger row, so nothing silently disappears.
+    var emailSettings = builder.Configuration
+        .GetSection(EmailSettings.SectionName)
+        .Get<EmailSettings>() ?? new EmailSettings();
+    var emailConfigured = emailSettings.Enabled
+        && !string.IsNullOrWhiteSpace(emailSettings.Host)
+        && !string.IsNullOrWhiteSpace(emailSettings.FromAddress);
+    if (emailConfigured)
         builder.Services.AddScoped<IEmailService, SmtpEmailService>();
+    else
+        builder.Services.AddScoped<IEmailService, ConsoleEmailService>();
 
     builder.Services.Configure<PublicAppSettings>(
         builder.Configuration.GetSection(PublicAppSettings.SectionName));
@@ -175,6 +186,10 @@ try
     // unresolvable and the customer dashboard bootstrap answers 500.
     builder.Services.AddScoped<BusinessService>();
     builder.Services.AddScoped<ILandingPageService, LandingPageService>();
+
+    // Storefront Builder (v1/storefront/builder/* owner + public/{id} read):
+    // draft/published configuration, template switching and the public projection.
+    builder.Services.AddScoped<IStorefrontBuilderService, StorefrontBuilderService>();
 
     // Storefront enquiries (POST /v1/businesses/{id}/enquiries): recorded against
     // the business and delivered to its owner through the notification pipeline.
@@ -306,7 +321,14 @@ try
     // worker and each external channel stay behind INotificationChannel, registered
     // one AddScoped line at a time (email = Phase 4, sms = Phase 6, push = Phase 7).
     builder.Services.AddScoped<INotificationService, NotificationService>();
-    builder.Services.AddScoped<IPreferenceResolver, PreferenceResolver>();
+    // One resolver instance backs both interfaces in a scope: the preference view
+    // and the "which channels can this deployment deliver on" question. The
+    // notification core consults the latter on the SECURITY Force path so an OTP
+    // never queues a channel the deployment cannot deliver (which would only
+    // dead-letter).
+    builder.Services.AddScoped<PreferenceResolver>();
+    builder.Services.AddScoped<IPreferenceResolver>(sp => sp.GetRequiredService<PreferenceResolver>());
+    builder.Services.AddScoped<INotificationChannelAvailability>(sp => sp.GetRequiredService<PreferenceResolver>());
     // Phase 1.6: suppression / frequency / quiet-hours / budget guard consulted
     // before external dispatch (and for in-app at acceptance).
     builder.Services.AddScoped<INotificationDispatchGuard, NotificationDispatchGuard>();
@@ -333,6 +355,10 @@ try
     builder.Services.AddScoped<INotificationChannel, EmailChannel>();
     builder.Services.AddHttpClient<AfricaTalkingClient>();
     builder.Services.AddScoped<INotificationChannel, SmsChannel>();
+    // The WebPush client is wrapped behind IPushNotificationSender so the channel
+    // stays unit-testable and the HttpClient/ECDSA resources it owns are created
+    // and disposed in one place.
+    builder.Services.AddScoped<IPushNotificationSender, WebPushNotificationSender>();
     builder.Services.AddScoped<INotificationChannel, PushChannel>();
     builder.Services.AddScoped<IQrService, QrService>();
     builder.Services.AddScoped<ICustomerEnrollmentService, CustomerEnrollmentService>();
@@ -402,6 +428,12 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     builder.Services.AddScoped<ISubscriptionAuditService, SubscriptionAuditService>();
     builder.Services.AddScoped<IAdminTierService, AdminTierService>();
     builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>();
+    // Business management (list/detail/update/status/members/audit) + subscription
+    // lifecycle actions for the platform administration console.
+    builder.Services.AddScoped<IAdminBusinessService, AdminBusinessService>();
+    // Evicts cached storefront payloads after a mutation that can change a
+    // business's effective modules (the storefront bootstrap is output-cached 30 s).
+    builder.Services.AddSingleton<IStorefrontCacheInvalidator, StorefrontCacheInvalidator>();
 
     // ── Module enforcement (plugin architecture Phases 4-6) ──
     // Fail-closed by default — enforcement is unconditional (Step 8).
@@ -832,7 +864,7 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
         options.AddPolicy("storefront-bootstrap", builder =>
             builder.Expire(TimeSpan.FromSeconds(30))
                    .SetVaryByHeader(TenantConsistencyMiddleware.TenantHeader)
-                   .Tag("storefront-bootstrap"));
+                   .Tag(StorefrontCacheInvalidator.StorefrontBootstrapTag));
     });
 
     builder.Services.AddSwaggerGen(c =>
@@ -974,7 +1006,11 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
     // endpoint that does not opt out, and liveness probes carry no token.
     app.MapGet("/", () => Results.Ok(new { status = "healthy", service = "Punched API", version = "1.0.0" }))
         .AllowAnonymous();
-    app.MapGet("/health", async (ApplicationDbContext db) =>
+    app.MapGet("/health", async (
+        ApplicationDbContext db,
+        IOptions<EmailSettings> emailOptions,
+        IOptions<VapidSettings> vapidOptions,
+        IOptions<SmsSettings> smsOptions) =>
     {
         var dbOk = false;
         try
@@ -1006,12 +1042,29 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
             ? "healthy"
             : "unhealthy";
 
+        // Channel readiness: the same predicates the preference view and the
+        // dispatch path use, surfaced so "is email/push actually configured here?"
+        // is answerable from one HTTP call.
+        var email = emailOptions.Value;
+        var vapid = vapidOptions.Value;
+        var sms = smsOptions.Value;
+
         return Results.Ok(new
         {
             status = overall,
             database = dbOk ? "connected" : "disconnected",
             workers = workersEnabledBool ? "enabled" : "disabled",
-            queue_depth = queueDepth
+            queue_depth = queueDepth,
+            channels = new
+            {
+                in_app = "ready",
+                email = email.Enabled && !string.IsNullOrWhiteSpace(email.Host) && !string.IsNullOrWhiteSpace(email.FromAddress)
+                    ? "ready" : "unconfigured",
+                push = vapid.Enabled && !string.IsNullOrWhiteSpace(vapid.PublicKey) && !string.IsNullOrWhiteSpace(vapid.PrivateKey)
+                    ? "ready" : "unconfigured",
+                sms = sms.Enabled && !string.IsNullOrWhiteSpace(sms.ApiKey)
+                    ? "ready" : "unconfigured"
+            }
         });
     })
         .AllowAnonymous();

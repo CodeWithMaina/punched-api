@@ -481,6 +481,208 @@ public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? acto
             return ApiResponse<AdminModulesCatalogResponse>.Fail("CATALOG_FAILED", "Failed to load the module catalog.");
         }
     }
+    // ═════════════════════════════════════════════════════════════
+    //  DUPLICATE
+    // ═════════════════════════════════════════════════════════════
+
+    /// <inheritdoc />
+    public async Task<ApiResponse<AdminTierDetail>> DuplicateAsync(
+        Guid id, AdminDuplicateTierRequest request, Guid? actorUserId)
+    {
+        try
+        {
+            var source = await _context.SubscriptionPlans
+                .AsNoTracking()
+                .Include(p => p.PlanModules)
+                .FirstOrDefaultAsync(p => p.Id == id);
+            if (source == null)
+                return ApiResponse<AdminTierDetail>.Fail(ErrTierNotFound, "No subscription tier exists with the given id.");
+
+            var key = string.IsNullOrWhiteSpace(request.Key)
+                ? $"{source.Key}-copy"
+                : request.Key.Trim().ToLowerInvariant();
+            if (await _context.SubscriptionPlans.AnyAsync(p => p.Key == key))
+                return ApiResponse<AdminTierDetail>.Fail(ErrDuplicateKey, $"A tier with key '{key}' already exists.");
+
+            var now = DateTime.UtcNow;
+            // A duplicate always starts as Draft: it is not assignable until an
+            // administrator reviews and publishes it.
+            var copy = new SubscriptionPlan
+            {
+                Id = Guid.NewGuid(),
+                Key = key,
+                Name = string.IsNullOrWhiteSpace(request.Name) ? $"{source.Name} (copy)" : request.Name.Trim(),
+                Description = source.Description,
+                Price = source.Price,
+                BillingInterval = source.BillingInterval,
+                DisplayOrder = source.DisplayOrder,
+                IsDefault = false,
+                IsActive = false,
+                LifecycleState = SubscriptionPlanLifecycleState.Draft,
+                CreatedAt = now,
+            };
+            _context.SubscriptionPlans.Add(copy);
+
+            foreach (var moduleId in source.PlanModules.Select(pm => pm.ModuleId).Distinct())
+                copy.PlanModules.Add(new PlanModule { PlanId = copy.Id, ModuleId = moduleId });
+
+            await _context.SaveChangesAsync();
+
+            await _audit.RecordAsync(
+                "TIER_DUPLICATED", actorUserId, targetBusinessId: null, targetPlanId: copy.Id,
+                payloadJson: JsonSerializer.Serialize(new
+                {
+                    sourceTierId = source.Id,
+                    sourceKey = source.Key,
+                    tierId = copy.Id,
+                    key = copy.Key,
+                }),
+                reason: "Tier duplicated as Draft.");
+
+            _logger.LogInformation(
+                "Admin duplicated subscription tier {SourceKey} -> {Key} ({TierId}) by {Actor}.",
+                source.Key, copy.Key, copy.Id, actorUserId);
+
+            return await GetAsync(copy.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to duplicate subscription tier {TierId}.", id);
+            return ApiResponse<AdminTierDetail>.Fail("DUPLICATE_FAILED", "Failed to duplicate the subscription tier.");
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    //  MODULE CATALOGUE
+    // ═════════════════════════════════════════════════════════════
+
+    /// <inheritdoc />
+    public async Task<ApiResponse<AdminModuleCatalogResponse>> GetModuleCatalogAsync()
+    {
+        try
+        {
+            var modules = await BuildModuleCatalogItemsAsync();
+            return ApiResponse<AdminModuleCatalogResponse>.Ok(new AdminModuleCatalogResponse { Modules = modules });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load the admin module catalogue.");
+            return ApiResponse<AdminModuleCatalogResponse>.Fail("CATALOG_FAILED", "Failed to load the module catalogue.");
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<ApiResponse<AdminModuleCatalogItem>> UpdateModuleAsync(
+        string moduleKey, AdminModuleUpdateRequest request, Guid? actorUserId)
+    {
+        try
+        {
+            var key = (moduleKey ?? string.Empty).Trim();
+            var module = await _context.Modules.FirstOrDefaultAsync(m => m.Key == key);
+            if (module == null)
+                return ApiResponse<AdminModuleCatalogItem>.Fail(ErrInvalidModule, $"No module with key '{key}'.");
+
+            var before = new { module.Name, module.Description, module.IsActive };
+
+            if (request.Name != null)
+            {
+                var name = request.Name.Trim();
+                if (name.Length is 0 or > 100)
+                    return ApiResponse<AdminModuleCatalogItem>.Fail("VALIDATION", "Name must be between 1 and 100 characters.");
+                module.Name = name;
+            }
+
+            if (request.Description != null)
+            {
+                var description = request.Description.Trim();
+                if (description.Length > 500)
+                    return ApiResponse<AdminModuleCatalogItem>.Fail("VALIDATION", "Description must be 500 characters or fewer.");
+                module.Description = description.Length == 0 ? null : description;
+            }
+
+            if (request.IsActive.HasValue)
+                module.IsActive = request.IsActive.Value;
+
+            await _context.SaveChangesAsync();
+
+            // A module's availability is a PLATFORM-WIDE entitlement change: it is
+            // granted through whichever plan (or override) each business holds, so
+            // there is no subscriber list to walk. Bump the entitlement cache
+            // generation instead, which drops every business's cached resolution
+            // immediately — otherwise a module switched off here would keep being
+            // served for the remainder of the 60-second TTL.
+            _entitlements.InvalidateAll();
+
+            await _audit.RecordAsync(
+                "MODULE_UPDATED", actorUserId, targetBusinessId: null, targetPlanId: null,
+                payloadJson: JsonSerializer.Serialize(new
+                {
+                    moduleKey = module.Key,
+                    before,
+                    after = new { module.Name, module.Description, module.IsActive },
+                }),
+                reason: request.Reason ?? $"Platform administrator updated module '{module.Key}'.");
+
+            _logger.LogWarning(
+                "ADMIN updated module {ModuleKey} by {ActorUserId}. Active={IsActive}. Reason: {Reason}",
+                module.Key, actorUserId, module.IsActive, request.Reason ?? "(none)");
+
+            var items = await BuildModuleCatalogItemsAsync();
+            var item = items.First(i => string.Equals(i.Key, module.Key, StringComparison.OrdinalIgnoreCase));
+            return ApiResponse<AdminModuleCatalogItem>.Ok(item);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to update module {ModuleKey}.", moduleKey);
+            return ApiResponse<AdminModuleCatalogItem>.Fail("UPDATE_FAILED", "Failed to update the module.");
+        }
+    }
+
+    /// <summary>
+    /// Builds the module catalogue view: the runtime manifest is the identity
+    /// authority; the DB supplies the availability flag and the usage counts.
+    /// </summary>
+    private async Task<List<AdminModuleCatalogItem>> BuildModuleCatalogItemsAsync()
+    {
+        var dbModules = await _context.Modules.AsNoTracking()
+            .ToDictionaryAsync(m => m.Key, StringComparer.OrdinalIgnoreCase);
+
+        var planCounts = await _context.PlanModules.AsNoTracking()
+            .GroupBy(pm => pm.ModuleId)
+            .Select(g => new { ModuleId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.ModuleId, x => x.Count);
+
+        var businessCounts = await _context.BusinessModules.AsNoTracking()
+            .Where(bm => bm.IsEnabled)
+            .GroupBy(bm => bm.ModuleId)
+            .Select(g => new { ModuleId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.ModuleId, x => x.Count);
+
+        return ModuleCatalog.Modules
+            .Select(def =>
+            {
+                dbModules.TryGetValue(def.Key, out var row);
+                var moduleId = row?.Id ?? Guid.Empty;
+                return new AdminModuleCatalogItem
+                {
+                    Key = def.Key,
+                    Name = row?.Name ?? def.Name,
+                    Description = row?.Description ?? def.Description,
+                    IsCore = row?.IsCore ?? def.Visibility == ModuleVisibility.Core,
+                    Visibility = def.Visibility.ToString(),
+                    Version = row?.Version ?? def.Version,
+                    IsActive = row?.IsActive ?? true,
+                    Dependencies = def.Dependencies.ToList(),
+                    PlanCount = planCounts.TryGetValue(moduleId, out var pc) ? pc : 0,
+                    BusinessCount = businessCounts.TryGetValue(moduleId, out var bc) ? bc : 0,
+                };
+            })
+            .OrderBy(m => m.Visibility)
+            .ThenBy(m => m.Name)
+            .ToList();
+    }
+
+
 // ═════════════════════════════════════════════════════════════
     //  HELPERS
     // ═════════════════════════════════════════════════════════════

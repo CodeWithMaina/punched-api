@@ -23,19 +23,22 @@ public partial class LandingPageService : ILandingPageService
     private readonly IModuleEntitlementService _moduleEntitlementService;
     private readonly ITenantContext? _tenant;
     private readonly ILogger<LandingPageService> _logger;
+    private readonly IStorefrontBuilderService? _storefrontBuilder;
 
     public LandingPageService(
         ApplicationDbContext context,
         IBusinessScopeResolver businessScopeResolver,
         IModuleEntitlementService moduleEntitlementService,
         ILogger<LandingPageService> logger,
-        ITenantContext? tenant = null)
+        ITenantContext? tenant = null,
+        IStorefrontBuilderService? storefrontBuilder = null)
     {
         _context = context;
         _businessScopeResolver = businessScopeResolver;
         _moduleEntitlementService = moduleEntitlementService;
         _logger = logger;
         _tenant = tenant;
+        _storefrontBuilder = storefrontBuilder;
     }
 
     private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;

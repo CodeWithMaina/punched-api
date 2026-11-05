@@ -882,7 +882,7 @@ public class AuthService : IAuthService
 
         try
         {
-            await _notifications.QueueAsync(new NotificationRequest(
+            var result = await _notifications.QueueAsync(new NotificationRequest(
                 "security.verification_code",
                 userId,
                 null,
@@ -893,6 +893,18 @@ public class AuthService : IAuthService
                 },
                 $"otp:{userId}:{expiresAtUtc:yyyyMMddHHmmssfff}",
                 Force: true));
+
+            // The pipeline only accepts channels this deployment can actually
+            // deliver on (availability, not preference). If none survive — e.g. SMTP
+            // is switched off — the OTP must not vanish: send it through the direct
+            // transactional path, which logs the reason when it too is unavailable.
+            if (result.Channels.Count == 0)
+            {
+                _logger.LogWarning(
+                    "Verification code for {Email} was accepted on no channel; falling back to direct email.",
+                    email);
+                await _emailService.SendVerificationCodeAsync(email, verificationCode);
+            }
         }
         catch (Exception ex)
         {

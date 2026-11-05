@@ -9,6 +9,10 @@ public class Phase8NotificationChannelsTests
     {
         foreach (var definition in NotificationTypes.All.Where(definition => definition.DefaultChannels.Contains(NotificationChannel.Email)))
         {
+            // SECURITY (the verification code) is email-only by design: an OTP is
+            // never pushed, SMS'd or written to the in-app inbox (D21).
+            if (definition.Category == NotificationCategory.Security) continue;
+
             Assert.Contains(NotificationChannel.Push, definition.DefaultChannels);
         }
     }
