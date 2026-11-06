@@ -456,6 +456,8 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     // RBAC role management. Each resolves the caller's business server-side and
     // re-checks business-scoped permissions inside the service.
     builder.Services.AddScoped<IServiceCategoryService, ServiceCategoryService>();
+    builder.Services.AddScoped<IProviderEligibilityService, ProviderEligibilityService>();
+    builder.Services.AddScoped<IOperatingModeService, OperatingModeService>();
     builder.Services.AddScoped<IStaffPositionService, StaffPositionService>();
 
 // Staff management: one member's profile, services, working week and state.
@@ -969,6 +971,23 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
         var moduleCatalogSeeder = scope.ServiceProvider.GetRequiredService<IModuleCatalogSeeder>();
         await moduleCatalogSeeder.EnsureModuleCatalogAsync();
         Log.Information("Module catalog verified.");
+
+        // Give any business that has no categories yet the default starter set.
+        // Idempotent (skips businesses that already have any category) and
+        // best-effort — a seed failure must never block startup.
+        try
+        {
+            var operatingModeService = scope.ServiceProvider
+                .GetRequiredService<IOperatingModeService>();
+            var seededBusinesses = await operatingModeService.BackfillDefaultCategoriesAsync();
+            if (seededBusinesses > 0)
+                Log.Information(
+                    "Seeded default service categories for {Count} business(es).", seededBusinesses);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Default service category backfill skipped.");
+        }
     }
 
     // ── Middleware Pipeline ──────────────────────────────────

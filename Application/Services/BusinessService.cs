@@ -256,6 +256,9 @@ public partial class BusinessService : IBusinessService
                 // Subdomain address (java-house.punched.app) — generated,
                 // collision-checked slug; see IBusinessSlugGenerator.
                 Slug = await _slugGenerator.GenerateAsync(request.Name),
+                // Operating mode is chosen during onboarding and persisted here;
+                // it drives the effective provider model everywhere downstream.
+                OperatingMode = BusinessOperatingModes.Normalize(request.OperatingMode),
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -294,6 +297,12 @@ public partial class BusinessService : IBusinessService
             // Ensure the newly created business is not locked out of modules:
             // provision the default (Starter) subscription. Best-effort.
             await _subscriptionProvisioning.EnsureDefaultSubscriptionAsync(business.Id);
+
+            // Give the new business a starting set of categories to organise its
+            // services under. Owners rename/reorder/deactivate/delete freely —
+            // these are ordinary rows, never a global template. Best-effort so a
+            // seed hiccup can never fail business creation.
+            await SeedDefaultCategoriesAsync(business.Id);
 
             return ApiResponse<BusinessResponse>.Ok(MapToResponse(business));
         }
@@ -1145,6 +1154,43 @@ public partial class BusinessService : IBusinessService
         });
     }
 
+    /// <summary>
+    /// Seeds the default service categories for a brand-new business. Idempotent
+    /// (skips when any category exists) and best-effort: a failure here is logged
+    /// and swallowed so it can never roll back a successful signup.
+    /// </summary>
+    private async Task SeedDefaultCategoriesAsync(Guid businessId)
+    {
+        try
+        {
+            if (await _context.ServiceCategories.AnyAsync(c => c.BusinessId == businessId))
+                return;
+
+            var now = DateTime.UtcNow;
+            var sortOrder = 0;
+            foreach (var (name, description) in ServiceCategoryDefaults.All)
+            {
+                await _context.ServiceCategories.AddAsync(new ServiceCategory
+                {
+                    Id = Guid.NewGuid(),
+                    BusinessId = businessId,
+                    Name = name,
+                    Description = description,
+                    SortOrder = sortOrder++,
+                    IsActive = true,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+            }
+
+            await _context.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Default category seed failed for business {BusinessId}", businessId);
+        }
+    }
+
     private static BusinessResponse MapToResponse(Business b) => new()
     {
         Id = b.Id,
@@ -1159,6 +1205,8 @@ public partial class BusinessService : IBusinessService
         LogoMediaId = b.LogoMediaId,
         CoverMediaId = b.CoverMediaId,
         OwnerId = b.OwnerId,
+        OperatingMode = Domain.Entities.BusinessOperatingModes.Normalize(b.OperatingMode),
+        OperatingModeLabel = Domain.Entities.BusinessOperatingModes.Label(b.OperatingMode),
         DefaultDailyGoal = b.DefaultDailyGoal,
         DailyGoalType = string.IsNullOrWhiteSpace(b.DailyGoalType) ? "stamps" : b.DailyGoalType.Trim().ToLowerInvariant(),
         DefaultAppointmentDailyGoal = b.DefaultAppointmentDailyGoal,
@@ -1735,11 +1783,12 @@ public partial class BusinessService : IBusinessService
                 : "Active",
         });
 
-        return await ProjectStaffListAsync(projected, status, activity, goalStatus, sortBy, sortDirection, page, pageSize);
+        return await ProjectStaffListAsync(projected, business.Id, status, activity, goalStatus, sortBy, sortDirection, page, pageSize);
     }
 
     private async Task<ApiResponse<StaffListResponse>> ProjectStaffListAsync(
         IQueryable<StaffMemberResponse> projected,
+        Guid businessId,
         string? status, string? activity, string? goalStatus,
         string sortBy, string sortDirection, int page, int pageSize)
     {
@@ -1788,6 +1837,45 @@ public partial class BusinessService : IBusinessService
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync();
+
+        // Attach each member's category specialisations (the source of their
+        // service eligibility) in two batched queries for the page — never one
+        // per row. Chips render from this without a second call.
+        if (items.Count > 0)
+        {
+            var pageUserIds = items.Select(i => i.UserId).ToList();
+
+            var categoryRows = await _context.StaffServiceCategories.AsNoTracking()
+                .Where(a => a.BusinessId == businessId && pageUserIds.Contains(a.StaffUserId))
+                .Select(a => new { a.StaffUserId, a.ServiceCategoryId })
+                .ToListAsync();
+
+            if (categoryRows.Count > 0)
+            {
+                var categoryIds = categoryRows.Select(r => r.ServiceCategoryId).Distinct().ToList();
+                var categoryNames = await _context.ServiceCategories.AsNoTracking()
+                    .Where(c => c.BusinessId == businessId && categoryIds.Contains(c.Id))
+                    .OrderBy(c => c.SortOrder).ThenBy(c => c.Name)
+                    .Select(c => new { c.Id, c.Name })
+                    .ToListAsync();
+
+                var nameById = categoryNames.ToDictionary(c => c.Id, c => c.Name);
+                var order = categoryNames.Select((c, index) => (c.Id, index)).ToDictionary(x => x.Id, x => x.index);
+
+                var byStaff = categoryRows
+                    .Where(r => nameById.ContainsKey(r.ServiceCategoryId))
+                    .GroupBy(r => r.StaffUserId)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => g.Select(r => new ProviderCategoryResponse { Id = r.ServiceCategoryId, Name = nameById[r.ServiceCategoryId] })
+                              .OrderBy(c => order.TryGetValue(c.Id, out var i) ? i : int.MaxValue)
+                              .ToList());
+
+                foreach (var item in items)
+                    if (byStaff.TryGetValue(item.UserId, out var cats))
+                        item.Categories = cats;
+            }
+        }
 
         return ApiResponse<StaffListResponse>.Ok(new StaffListResponse
         {

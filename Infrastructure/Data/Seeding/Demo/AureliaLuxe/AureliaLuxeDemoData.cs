@@ -48,6 +48,13 @@ internal static class AureliaLuxeDemoData
     public const string LogoUrl = "https://images.unsplash.com/photo-1524504388940-b1c1722653e1";
     public const string CoverUrl = "https://images.unsplash.com/photo-1560066984-138dadb4c035";
     public const string MpesaNumber = "4021001";
+
+    /// <summary>
+    /// Share of a booking the demo collects up front, so the storefront's
+    /// M-PESA confirmation flow has a real booking fee to charge. 30% matches the
+    /// 30% deposit the demo's own landing-page copy advertises.
+    /// </summary>
+    public const decimal BookingFeePercentage = 30m;
     public const string TimeZoneId = "Africa/Nairobi";
     public const string AddressLine = "The Mirage, 3rd Floor, Ring Road Westlands, Nairobi, Kenya";
     public const string WebsiteUrl = "https://aurelialuxe.co.ke";

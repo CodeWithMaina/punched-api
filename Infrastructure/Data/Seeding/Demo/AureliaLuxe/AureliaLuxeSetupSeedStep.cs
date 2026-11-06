@@ -581,6 +581,43 @@ public sealed class AureliaLuxeSetupSeedStep : ISeedStep
             changed = true;
         }
 
+        // ── Manual M-PESA (the demo's primary checkout path) ──
+        // The Daraja channel above is switched on but has NO credentials by design, so
+        // the platform can never raise a real STK request for the demo. That leaves the
+        // manual channel as the one a visitor can actually complete: they send the
+        // booking fee to the published PayBill and paste the confirmation, which lands
+        // in the owner's verification queue. Seeding it means the storefront booking →
+        // pay → paste flow is exercisable on a fresh database with no setup screen.
+        if (!config.ManualMpesaEnabled)
+        {
+            config.ManualMpesaEnabled = true;
+            changed = true;
+        }
+
+        if (!string.Equals(config.MpesaPaybillNumber, AureliaLuxeDemoData.MpesaNumber, StringComparison.Ordinal))
+        {
+            config.MpesaPaybillNumber = AureliaLuxeDemoData.MpesaNumber;
+            changed = true;
+        }
+
+        if (!string.Equals(config.MpesaPaybillAccount, "AURELIA", StringComparison.Ordinal))
+        {
+            config.MpesaPaybillAccount = "AURELIA";
+            changed = true;
+        }
+
+        if (!string.Equals(config.MpesaPayeeName, AureliaLuxeDemoData.Name, StringComparison.Ordinal))
+        {
+            config.MpesaPayeeName = AureliaLuxeDemoData.Name;
+            changed = true;
+        }
+
+        if (config.BookingFeePercentage != AureliaLuxeDemoData.BookingFeePercentage)
+        {
+            config.BookingFeePercentage = AureliaLuxeDemoData.BookingFeePercentage;
+            changed = true;
+        }
+
         // Deliberately NO Daraja credentials: payments stay on the internal
         // demo records and no real M-PESA request can ever be raised.
         if (changed)

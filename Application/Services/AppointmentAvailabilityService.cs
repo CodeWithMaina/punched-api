@@ -40,6 +40,14 @@ public class AppointmentAvailabilityService
     private readonly ILogger<AppointmentAvailabilityService> _logger;
 
     /// <summary>
+    /// The authoritative provider-eligibility resolver. Optional in the
+    /// constructor so existing construction sites (tests) keep compiling; when
+    /// absent a resolver over the same DbContext is used, so behaviour is
+    /// identical — category-based eligibility, owner-as-provider fallback, etc.
+    /// </summary>
+    private readonly IProviderEligibilityService _eligibility;
+
+    /// <summary>
     /// The clock every availability decision reads. Injectable so a test can pin
     /// "now" and assert lead time, the past-slot boundary and the booking window
     /// without depending on the wall clock (which is what made the reschedule
@@ -50,11 +58,13 @@ public class AppointmentAvailabilityService
     public AppointmentAvailabilityService(
         ApplicationDbContext context,
         ILogger<AppointmentAvailabilityService> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IProviderEligibilityService? providerEligibility = null)
     {
         _context = context;
         _logger = logger;
         _time = timeProvider ?? TimeProvider.System;
+        _eligibility = providerEligibility ?? new ProviderEligibilityService(context);
     }
 
     /// <summary>Current UTC time, from the injected clock.</summary>
@@ -568,61 +578,54 @@ public class AppointmentAvailabilityService
             m.Status == BusinessMembershipStatus.Active);
 
     /// <summary>
-    /// True when the user owns a business that has no linked staff — the owner
-    /// is then the sole provider and their diary is the one bookings block.
+    /// True when <paramref name="userId"/> is the provider the business collapses
+    /// to: the effective provider model is owner-based (Solo operating mode, or
+    /// the Staff module is not entitled), or the business has no active staff yet
+    /// so the owner stands in.
     /// </summary>
-    public async Task<bool> IsSoloOwnerAsync(Guid businessId, Guid userId) =>
-        await _context.BusinessMemberships.AsNoTracking().AnyAsync(m =>
+    public async Task<bool> IsSoloOwnerAsync(Guid businessId, Guid userId)
+    {
+        var isOwner = await _context.BusinessMemberships.AsNoTracking().AnyAsync(m =>
             m.BusinessId == businessId &&
             m.UserId == userId &&
             m.Role == BusinessMembershipRole.Owner &&
-            m.Status == BusinessMembershipStatus.Active)
-        && !await HasActiveStaffAsync(businessId);
+            m.Status == BusinessMembershipStatus.Active);
+
+        if (!isOwner) return false;
+
+        var model = await _eligibility.ResolveModelAsync(businessId);
+        if (model != EffectiveProviderModel.CategoryBased) return true;
+
+        return !await HasActiveStaffAsync(businessId);
+    }
 
     /// <summary>
-    /// Staff of the business assigned to every requested service. A business with
-    /// no linked staff falls back to its owner as the single provider.
+    /// Whether <paramref name="providerUserId"/> is eligible to take all of the
+    /// requested services, resolved through the single eligibility mechanism.
+    /// The authoritative server-side check behind booking and reschedule, so the
+    /// appointment service never re-implements the rule.
+    /// </summary>
+    public Task<bool> IsProviderEligibleAsync(Guid businessId, Guid providerUserId, Guid[] serviceIds) =>
+        _eligibility.IsEligibleAsync(businessId, providerUserId, serviceIds);
+
+    /// <summary>
+    /// Providers eligible to take every requested service, resolved through the
+    /// single <see cref="IProviderEligibilityService"/> so availability, booking
+    /// and appointment validation can never disagree.
+    ///
+    /// <para>Sole / owner-based models return just the owner; category-based
+    /// models return the owner and staff assigned to the services' categories
+    /// (a business with no staff yet falls back to its owner).</para>
     /// </summary>
     private async Task<List<User>> GetEligibleStaffAsync(Guid businessId, Guid[] serviceIds)
     {
-        var hasStaff = await HasActiveStaffAsync(businessId);
-        if (!hasStaff)
-        {
-            var ownerId = await _context.BusinessMemberships.AsNoTracking()
-                .Where(m => m.BusinessId == businessId &&
-                            m.Role == BusinessMembershipRole.Owner &&
-                            m.Status == BusinessMembershipStatus.Active)
-                .Select(m => (Guid?)m.UserId)
-                .FirstOrDefaultAsync();
-            if (ownerId == null || ownerId == Guid.Empty)
-                return new List<User>();
+        var resolution = await _eligibility.ResolveForServicesAsync(businessId, serviceIds);
+        var providerIds = resolution.EligibleProviderIds;
+        if (providerIds.Count == 0) return new List<User>();
 
-            return await _context.Users.AsNoTracking()
-                .Where(u => u.Id == ownerId)
-                .ToListAsync();
-        }
-
-        var assignments = await _context.StaffServiceAssignments.AsNoTracking()
-            .Where(a => a.BusinessId == businessId && serviceIds.Contains(a.ServiceCatalogItemId))
-            .Select(a => new { a.StaffUserId, a.ServiceCatalogItemId })
-            .ToListAsync();
-
-        var staffIds = assignments
-            .GroupBy(a => a.StaffUserId)
-            .Where(g => g.Select(x => x.ServiceCatalogItemId).Distinct().Count() == serviceIds.Length)
-            .Select(g => g.Key)
-            .ToList();
-
-        if (staffIds.Count == 0)
-            return new List<User>();
-
+        // Preserve the ordering the booking UI relied on (alphabetical).
         return await _context.Users.AsNoTracking()
-            .Where(u => staffIds.Contains(u.Id) && _context.BusinessMemberships.Any(m =>
-                m.UserId == u.Id &&
-                m.BusinessId == businessId &&
-                m.Role == BusinessMembershipRole.Staff &&
-                m.Status == BusinessMembershipStatus.Active &&
-                m.IsBookable))
+            .Where(u => providerIds.Contains(u.Id))
             .OrderBy(u => u.FullName)
             .ToListAsync();
     }

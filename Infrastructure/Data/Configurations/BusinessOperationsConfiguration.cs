@@ -40,6 +40,55 @@ public class ServiceCategoryConfiguration : IEntityTypeConfiguration<ServiceCate
 }
 
 /// <summary>
+/// <c>staff_service_categories</c> — the provider ↔ service-category
+/// specialisation link. The primary source of provider eligibility: a provider
+/// assigned to a category is eligible for every active service in it.
+/// </summary>
+public class StaffServiceCategoryConfiguration : IEntityTypeConfiguration<StaffServiceCategory>
+{
+    public void Configure(EntityTypeBuilder<StaffServiceCategory> builder)
+    {
+        builder.ToTable("staff_service_categories");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.StaffUserId).IsRequired().HasColumnName("staff_user_id");
+        builder.Property(x => x.ServiceCategoryId).IsRequired().HasColumnName("service_category_id");
+        builder.Property(x => x.BusinessId).IsRequired().HasColumnName("business_id");
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at");
+
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(x => x.StaffUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Removing a category clears its provider assignments rather than being
+        // blocked: deletion is already gated in the service to categories with no
+        // SERVICES, and orphan provider links must not become undeletable rows.
+        builder.HasOne<ServiceCategory>()
+            .WithMany()
+            .HasForeignKey(x => x.ServiceCategoryId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne<Business>()
+            .WithMany()
+            .HasForeignKey(x => x.BusinessId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // One provider/category pair per tenant (idempotent assignment).
+        builder.HasIndex(x => new { x.BusinessId, x.StaffUserId, x.ServiceCategoryId })
+            .IsUnique()
+            .HasDatabaseName("ux_staff_service_categories_business_staff_category");
+
+        // "which staff are in this category" / "which categories is this staff in".
+        builder.HasIndex(x => new { x.BusinessId, x.ServiceCategoryId })
+            .HasDatabaseName("ix_staff_service_categories_business_category");
+        builder.HasIndex(x => new { x.BusinessId, x.StaffUserId })
+            .HasDatabaseName("ix_staff_service_categories_business_staff");
+    }
+}
+
+/// <summary>
 /// <c>staff_positions</c> — business-managed job titles.
 /// </summary>
 public class StaffPositionConfiguration : IEntityTypeConfiguration<StaffPosition>

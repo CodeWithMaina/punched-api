@@ -92,6 +92,15 @@ public class BusinessConfiguration : IEntityTypeConfiguration<Business>
         builder.Property(e => e.DeactivatedAt)
             .HasColumnName("deactivated_at");
 
+        // How the business operates. Persisted configuration consulted by the
+        // booking flow, staff management and the dashboard; defaultValue keeps
+        // every pre-existing row on the multi-staff behaviour it already had.
+        builder.Property(e => e.OperatingMode)
+            .IsRequired()
+            .HasMaxLength(20)
+            .HasColumnName("operating_mode")
+            .HasDefaultValue(BusinessOperatingModes.MultiStaff);
+
         builder.Property(e => e.DefaultDailyGoal)
             .HasColumnName("default_daily_goal");
 
@@ -135,6 +144,9 @@ public class BusinessConfiguration : IEntityTypeConfiguration<Business>
             // Only the three administration states may be persisted.
             t.HasCheckConstraint("chk_business_status",
                 "\"status\" IN ('active', 'suspended', 'deactivated')");
+            // Only the two operating modes may be persisted.
+            t.HasCheckConstraint("chk_business_operating_mode",
+                "\"operating_mode\" IN ('solo', 'multi_staff')");
         });
 
         builder.Property(e => e.CreatedAt)

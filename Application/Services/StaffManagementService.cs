@@ -199,6 +199,28 @@ public partial class StaffManagementService : IStaffManagementService
         }
 
         detail.Services = await LoadServicesAsync(businessId, staffUserId);
+
+        // Category specialisations — what actually drives the services above.
+        var assignedCategoryIds = await _context.StaffServiceCategories.AsNoTracking()
+            .Where(a => a.BusinessId == businessId && a.StaffUserId == staffUserId)
+            .Select(a => a.ServiceCategoryId)
+            .ToListAsync();
+
+        detail.Categories = assignedCategoryIds.Count == 0
+            ? []
+            : await _context.ServiceCategories.AsNoTracking()
+                .Where(c => c.BusinessId == businessId && assignedCategoryIds.Contains(c.Id))
+                .OrderBy(c => c.SortOrder).ThenBy(c => c.Name)
+                .Select(c => new ProviderCategoryResponse
+                {
+                    Id = c.Id,
+                    Name = c.Name,
+                    Description = c.Description,
+                    IsActive = c.IsActive,
+                    ServiceCount = _context.ServiceCatalogItems.Count(s => s.BusinessId == businessId && s.CategoryId == c.Id)
+                })
+                .ToListAsync();
+
         var availability = await LoadAvailabilityAsync(businessId, staffUserId);
         detail.Availability = availability.Days;
         detail.AvailabilitySource = availability.Source;
@@ -701,22 +723,35 @@ public partial class StaffManagementService
 public partial class StaffManagementService
 {
     /// <summary>
-    /// The services a member delivers, with their category and price/duration
-    /// snapshot. Two batched queries — never one per assignment.
+    /// The services a member delivers, resolved from <b>category eligibility</b>:
+    /// every service in the categories the member is assigned to, plus any
+    /// grandfathered UNCategorised service still assigned the legacy way. Batched
+    /// — never one query per assignment.
     /// </summary>
     private async Task<List<StaffServiceLinkResponse>> LoadServicesAsync(Guid businessId, Guid staffUserId)
     {
-        var serviceIds = await _context.StaffServiceAssignments.AsNoTracking()
+        var assignedCategoryIds = await _context.StaffServiceCategories.AsNoTracking()
+            .Where(a => a.BusinessId == businessId && a.StaffUserId == staffUserId)
+            .Select(a => a.ServiceCategoryId)
+            .ToListAsync();
+
+        // Legacy assignments are only ever consulted for services that have no
+        // category — for a categorised service, category membership is the sole
+        // source of eligibility (so removing a category removes the services).
+        var legacyServiceIds = await _context.StaffServiceAssignments.AsNoTracking()
             .Where(a => a.BusinessId == businessId && a.StaffUserId == staffUserId)
             .Select(a => a.ServiceCatalogItemId)
             .ToListAsync();
 
-        if (serviceIds.Count == 0) return [];
-
         var services = await _context.ServiceCatalogItems.AsNoTracking()
-            .Where(s => s.BusinessId == businessId && serviceIds.Contains(s.Id))
+            .Where(s => s.BusinessId == businessId &&
+                        (s.CategoryId != null
+                            ? assignedCategoryIds.Contains(s.CategoryId.Value)
+                            : legacyServiceIds.Contains(s.Id)))
             .Select(s => new { s.Id, s.Name, s.CategoryId, s.DurationMinutes, s.Price, s.IsActive, s.Showcase })
             .ToListAsync();
+
+        if (services.Count == 0) return [];
 
         var categoryIds = services.Where(s => s.CategoryId.HasValue)
             .Select(s => s.CategoryId!.Value).Distinct().ToList();

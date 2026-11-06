@@ -60,6 +60,12 @@ public class StaffDetailResponse
     // ── Relations ────────────────────────────────────────────
     /// <summary>Services this member may deliver, with the price/duration snapshot.</summary>
     [JsonPropertyName("services")] public List<StaffServiceLinkResponse> Services { get; set; } = [];
+
+    /// <summary>
+    /// The service categories this provider specialises in — the source of their
+    /// service eligibility. Empty for a provider not yet assigned any category.
+    /// </summary>
+    [JsonPropertyName("categories")] public List<ProviderCategoryResponse> Categories { get; set; } = [];
     /// <summary>The seven recurring weekdays; always seven entries.</summary>
     [JsonPropertyName("availability")] public List<StaffAvailabilityDayResponse> Availability { get; set; } = [];
     /// <summary>

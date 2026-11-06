@@ -121,6 +121,22 @@ public class Business : BaseEntity
     public DateTime? DeactivatedAt { get; set; }
 
     /// <summary>
+    /// How the business operates — <see cref="BusinessOperatingModes.Solo"/>
+    /// (the owner provides every service) or
+    /// <see cref="BusinessOperatingModes.MultiStaff"/> (a team of providers
+    /// resolved from category assignments). Persisted configuration, not a UI
+    /// hint: the effective provider model, the booking flow, staff management
+    /// and the dashboard all resolve through it.
+    ///
+    /// <para>Defaults to <see cref="BusinessOperatingModes.MultiStaff"/> because
+    /// that is how every pre-existing business already behaved — adding the
+    /// column can never silently strip a tenant down to a single provider.</para>
+    /// </summary>
+    [Required]
+    [MaxLength(20)]
+    public string OperatingMode { get; set; } = BusinessOperatingModes.MultiStaff;
+
+    /// <summary>
     /// Default daily stamp goal (per staff member) used when a staff member has
     /// no personal override. Null means no business default has been configured.
     /// </summary>

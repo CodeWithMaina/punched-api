@@ -71,6 +71,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<AppointmentResource> AppointmentResources => Set<AppointmentResource>();
     public DbSet<ServiceCatalogItem> ServiceCatalogItems => Set<ServiceCatalogItem>();
     public DbSet<StaffServiceAssignment> StaffServiceAssignments => Set<StaffServiceAssignment>();
+    public DbSet<StaffServiceCategory> StaffServiceCategories => Set<StaffServiceCategory>();
     public DbSet<Notification> Notifications => Set<Notification>();
 
     /// <summary>Sparse preference overrides (business kill-switches + user overrides).</summary>

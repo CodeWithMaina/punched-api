@@ -61,13 +61,22 @@ public class ServiceCatalogService : IServiceCatalogService
     /// </summary>
     private readonly MediaStorageOptions _mediaOptions;
 
+    /// <summary>
+    /// The single provider-eligibility resolver. Optional so existing
+    /// construction sites (tests) keep compiling; when absent a resolver over
+    /// the same DbContext is used, so behaviour — category eligibility, owner
+    /// fallback, solo mode — is identical.
+    /// </summary>
+    private readonly IProviderEligibilityService _eligibility;
+
     public ServiceCatalogService(
         IUnitOfWork unitOfWork,
         ILogger<ServiceCatalogService> logger,
         IModuleEntitlementService moduleEntitlementService,
         ApplicationDbContext context,
         ITenantContext? tenant = null,
-        IOptions<MediaStorageOptions>? mediaOptions = null)
+        IOptions<MediaStorageOptions>? mediaOptions = null,
+        IProviderEligibilityService? providerEligibility = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
@@ -75,6 +84,7 @@ public class ServiceCatalogService : IServiceCatalogService
         _context = context;
         _tenant = tenant;
         _mediaOptions = mediaOptions?.Value ?? new MediaStorageOptions();
+        _eligibility = providerEligibility ?? new ProviderEligibilityService(context, moduleEntitlementService);
     }
 
     /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
@@ -103,7 +113,7 @@ public class ServiceCatalogService : IServiceCatalogService
             (TenantBusinessId == null || b.Id == TenantBusinessId));
         return business == null
             ? ApiResponse<ServiceCatalogItemResponse>.Fail("NOT_FOUND", "Business not found.")
-            : await CreateForBusinessCoreAsync(business.Id, request);
+            : await CreateForBusinessCoreAsync(business.Id, request, enforceCategory: false);
     }
 
     public async Task<ApiResponse<ServiceCatalogItemResponse>> UpdateForBusinessAsync(Guid businessId, Guid serviceId, UpdateServiceRequest request)
@@ -112,7 +122,7 @@ public class ServiceCatalogService : IServiceCatalogService
             (TenantBusinessId == null || b.Id == TenantBusinessId));
         return business == null
             ? ApiResponse<ServiceCatalogItemResponse>.Fail("NOT_FOUND", "Business not found.")
-            : await UpdateForBusinessCoreAsync(business.Id, serviceId, request);
+            : await UpdateForBusinessCoreAsync(business.Id, serviceId, request, enforceCategory: false);
     }
 
     public async Task<ApiResponse<bool>> DeleteForBusinessAsync(Guid businessId, Guid serviceId)
@@ -348,12 +358,16 @@ public class ServiceCatalogService : IServiceCatalogService
         return await CreateForBusinessCoreAsync(business.Id, request);
     }
 
-    private async Task<ApiResponse<ServiceCatalogItemResponse>> CreateForBusinessCoreAsync(Guid businessId, CreateServiceRequest request)
+    private async Task<ApiResponse<ServiceCatalogItemResponse>> CreateForBusinessCoreAsync(Guid businessId, CreateServiceRequest request, bool enforceCategory = true)
     {
 
         var categoryError = await ValidateCategoryAsync(businessId, request.CategoryId);
         if (categoryError != null)
             return ApiResponse<ServiceCatalogItemResponse>.Fail(categoryError.Value.Code, categoryError.Value.Message);
+
+        var categoryRequired = await RequireCategoryAsync(businessId, request.CategoryId, enforceCategory);
+        if (categoryRequired != null)
+            return ApiResponse<ServiceCatalogItemResponse>.Fail(categoryRequired.Value.Code, categoryRequired.Value.Message);
 
         var service = new ServiceCatalogItem
         {
@@ -392,6 +406,40 @@ public class ServiceCatalogService : IServiceCatalogService
             : ("CATEGORY_NOT_FOUND", "The category does not belong to this business.");
     }
 
+    /// <summary>
+    /// In a multi-staff business (with the Staff module enabled) every service
+    /// must be filed under a category, because category membership is what makes
+    /// providers eligible. Solo and staff-module-disabled businesses may still
+    /// leave a service uncategorised — their provider model does not depend on it.
+    /// Returns null when the assignment is acceptable.
+    /// </summary>
+    private async Task<(string Code, string Message)?> RequireCategoryAsync(Guid businessId, Guid? categoryId, bool enforce = true)
+    {
+        if (!enforce) return null;
+        if (categoryId is Guid) return null;
+
+        // Nothing to choose yet — never block a business before it has any
+        // categories (the seed/backfill provides them, but a brand-new tenant
+        // must not be un-creatable in the window before that runs).
+        var hasCategories = await _context.ServiceCategories
+            .AnyAsync(c => c.BusinessId == businessId);
+        if (!hasCategories) return null;
+
+        var operatingMode = await _context.Businesses.AsNoTracking()
+            .Where(b => b.Id == businessId)
+            .Select(b => b.OperatingMode)
+            .FirstOrDefaultAsync();
+
+        if (Domain.Entities.BusinessOperatingModes.IsSolo(operatingMode)) return null;
+
+        var staffEntitled = await _moduleEntitlementService
+            .IsModuleEnabledAsync(businessId, ProviderEligibilityService.StaffModuleKey);
+        if (!staffEntitled) return null;
+
+        return ("CATEGORY_REQUIRED",
+            "Choose a category for this service — providers are made eligible for a service through its category.");
+    }
+
     public async Task<ApiResponse<ServiceCatalogItemResponse>> UpdateServiceAsync(Guid ownerUserId, Guid serviceId, UpdateServiceRequest request)
     {
         var business = await ResolveOwnerBusinessAsync(ownerUserId);
@@ -401,7 +449,7 @@ public class ServiceCatalogService : IServiceCatalogService
         return await UpdateForBusinessCoreAsync(business.Id, serviceId, request);
     }
 
-    private async Task<ApiResponse<ServiceCatalogItemResponse>> UpdateForBusinessCoreAsync(Guid businessId, Guid serviceId, UpdateServiceRequest request)
+    private async Task<ApiResponse<ServiceCatalogItemResponse>> UpdateForBusinessCoreAsync(Guid businessId, Guid serviceId, UpdateServiceRequest request, bool enforceCategory = true)
     {
 
         var service = await _unitOfWork.ServiceCatalogItems.FirstOrDefaultAsync(s => s.Id == serviceId);
@@ -438,6 +486,10 @@ public class ServiceCatalogService : IServiceCatalogService
         // being sent leaves the current filing untouched.
         if (request.ClearCategory == true)
         {
+            var categoryRequired = await RequireCategoryAsync(businessId, null, enforceCategory);
+            if (categoryRequired != null)
+                return ApiResponse<ServiceCatalogItemResponse>.Fail(categoryRequired.Value.Code, categoryRequired.Value.Message);
+
             service.CategoryId = null;
         }
         else if (request.CategoryId.HasValue)
@@ -670,44 +722,49 @@ public class ServiceCatalogService : IServiceCatalogService
         if (services.Count() != distinct.Length)
             return ApiResponse<List<EligibleStaffResponse>>.Fail("SERVICE_NOT_FOUND", "One or more services are unavailable.");
 
-        // Resolve the candidate staff set from the staff-service assignments.
-        // Only members who are public AND bookable are offered: switching either
-        // flag off takes someone out of the storefront/booking picker without
-        // touching their assignments or their history.
+        // Resolve the candidate providers through the single eligibility
+        // mechanism: category-based in a multi-staff business, the owner in a
+        // solo / staff-module-disabled business (or while no team exists).
+        // Members who are not PUBLIC and BOOKABLE are hidden from the storefront
+        // and the booking picker; the owner is shown whenever they are eligible.
+        var model = await _eligibility.ResolveModelAsync(businessId);
+        var (ownerId, ownerIsProvider) = await _eligibility.ResolveOwnerProviderAsync(businessId);
+
+        // The owner only participates when they are providing services (their
+        // membership `IsBookable`); an owner who opted out is never offered.
+        var ownerAsProvider = ownerId is Guid oid2 && ownerIsProvider ? oid2 : (Guid?)null;
+
+        var bookableStaffIds = (await _unitOfWork.BusinessMemberships.SelectNoTrackingAsync(
+            m => m.BusinessId == businessId &&
+                 m.Role == BusinessMembershipRole.Staff &&
+                 m.Status == BusinessMembershipStatus.Active &&
+                 m.IsPublic &&
+                 m.IsBookable,
+            m => m.UserId)).ToHashSet();
+
         List<Guid> staffIds;
-        if (distinct.Length == 0)
+        if (model != EffectiveProviderModel.CategoryBased)
         {
-            // No service filter: every bookable staff member of this business is eligible.
-            staffIds = await _unitOfWork.BusinessMemberships.SelectNoTrackingAsync(
-                m => m.BusinessId == businessId &&
-                     m.Role == BusinessMembershipRole.Staff &&
-                     m.Status == BusinessMembershipStatus.Active &&
-                     m.IsPublic &&
-                     m.IsBookable,
-                m => m.UserId);
+            // Solo / owner-only: the owner is the sole provider, unless opted out.
+            staffIds = ownerAsProvider is Guid soloOwner ? new List<Guid> { soloOwner } : new List<Guid>();
+        }
+        else if (distinct.Length == 0)
+        {
+            // No service filter: every public, bookable staff member (plus the
+            // owner, who stands in while the business has no team yet).
+            staffIds = bookableStaffIds.ToList();
+            if (ownerAsProvider is Guid ownerCandidate && !staffIds.Contains(ownerCandidate))
+                staffIds.Add(ownerCandidate);
         }
         else
         {
-            var assignments = await _unitOfWork.StaffServiceAssignments
-                .FindAsync(a => a.BusinessId == businessId && distinct.Contains(a.ServiceCatalogItemId));
-
-            // A staff member is eligible only when assigned to ALL requested services.
-            var assignedIds = assignments
-                .GroupBy(a => a.StaffUserId)
-                .Where(g => g.Select(x => x.ServiceCatalogItemId).Distinct().Count() == distinct.Length)
-                .Select(g => g.Key)
+            var resolution = await _eligibility.ResolveForServicesAsync(businessId, distinct);
+            staffIds = resolution.EligibleProviderIds
+                .Where(id => bookableStaffIds.Contains(id) || (ownerAsProvider is Guid oid && id == oid))
                 .ToList();
 
-            staffIds = assignedIds.Count == 0
-                ? assignedIds
-                : await _unitOfWork.BusinessMemberships.SelectNoTrackingAsync(
-                    m => m.BusinessId == businessId &&
-                         assignedIds.Contains(m.UserId) &&
-                         m.Role == BusinessMembershipRole.Staff &&
-                         m.Status == BusinessMembershipStatus.Active &&
-                         m.IsPublic &&
-                         m.IsBookable,
-                    m => m.UserId);
+            if (staffIds.Count == 0 && resolution.SoloProviderId is Guid soloProvider)
+                staffIds = new List<Guid> { soloProvider };
         }
 
         if (staffIds.Count == 0)
@@ -728,14 +785,54 @@ public class ServiceCatalogService : IServiceCatalogService
             s => s.Id);
         var publicServiceIds = publicServices.ToHashSet();
 
-        var serviceAssignments = publicServiceIds.Count == 0
+        // Which published services each provider delivers — computed from
+        // CATEGORY eligibility (every service in an assigned category), with the
+        // legacy explicit assignment still honoured for uncategorised services.
+        var publicServicesWithCategory = publicServiceIds.Count == 0
+            ? new List<(Guid Id, Guid? CategoryId)>()
+            : (await _context.ServiceCatalogItems.AsNoTracking()
+                .Where(s => s.BusinessId == businessId && publicServiceIds.Contains(s.Id))
+                .Select(s => new { s.Id, s.CategoryId })
+                .ToListAsync())
+              .Select(s => (s.Id, s.CategoryId))
+              .ToList();
+
+        var providerCategoryRows = publicServiceIds.Count == 0
+            ? new List<(Guid StaffUserId, Guid CategoryId)>()
+            : (await _context.StaffServiceCategories.AsNoTracking()
+                .Where(a => a.BusinessId == businessId && staffIds.Contains(a.StaffUserId))
+                .Select(a => new { a.StaffUserId, a.ServiceCategoryId })
+                .ToListAsync())
+              .Select(a => (a.StaffUserId, CategoryId: a.ServiceCategoryId))
+              .ToList();
+
+        var categoriesByStaff = providerCategoryRows
+            .GroupBy(x => x.StaffUserId)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.CategoryId).ToHashSet());
+
+        var legacyAssignments = publicServiceIds.Count == 0
             ? new List<StaffServiceAssignment>()
             : (await _unitOfWork.StaffServiceAssignments.FindNoTrackingAsync(
                 a => a.BusinessId == businessId && staffIds.Contains(a.StaffUserId))).ToList();
-        var servicesByStaff = serviceAssignments
-            .Where(a => publicServiceIds.Contains(a.ServiceCatalogItemId))
+
+        var legacyByStaff = legacyAssignments
             .GroupBy(a => a.StaffUserId)
-            .ToDictionary(g => g.Key, g => g.Select(a => a.ServiceCatalogItemId).Distinct().ToList());
+            .ToDictionary(g => g.Key, g => g.Select(a => a.ServiceCatalogItemId).ToHashSet());
+
+        var servicesByStaff = new Dictionary<Guid, List<Guid>>();
+        foreach (var providerId in staffIds)
+        {
+            categoriesByStaff.TryGetValue(providerId, out var cats);
+            legacyByStaff.TryGetValue(providerId, out var legacy);
+
+            servicesByStaff[providerId] = publicServicesWithCategory
+                .Where(sc =>
+                    (sc.CategoryId is Guid cid && cats != null && cats.Contains(cid)) ||
+                    (sc.CategoryId == null && legacy != null && legacy.Contains(sc.Id)))
+                .Select(sc => sc.Id)
+                .Distinct()
+                .ToList();
+        }
 
         // The current title is the most recent history row for the member. A row
         // with a null label is a *clearing* (the title was removed), so the

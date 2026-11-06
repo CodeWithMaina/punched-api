@@ -34,6 +34,15 @@ public class CreateBusinessRequest
 
     [JsonPropertyName("mpesaNumber")]
     public string MpesaNumber { get; set; } = string.Empty;
+
+    /// <summary>
+    /// How the business operates: <c>solo</c> (owner provides every service,
+    /// no staff layer) or <c>multi_staff</c> (a team resolved from categories).
+    /// Omitted defaults to <c>multi_staff</c> so older clients keep the
+    /// behaviour they had before the field existed.
+    /// </summary>
+    [JsonPropertyName("operatingMode")]
+    public string? OperatingMode { get; set; }
 }
 
 public class UpdateBusinessRequest
@@ -165,6 +174,14 @@ public class BusinessResponse
 
     [JsonPropertyName("ownerId")]
     public Guid? OwnerId { get; set; }
+
+    /// <summary><c>solo</c> | <c>multi_staff</c> — the persisted operating mode.</summary>
+    [JsonPropertyName("operatingMode")]
+    public string OperatingMode { get; set; } = "multi_staff";
+
+    /// <summary>Human label for the dashboard badge ("Solo Business" etc.).</summary>
+    [JsonPropertyName("operatingModeLabel")]
+    public string OperatingModeLabel { get; set; } = "Multi-Staff Business";
 
     [JsonPropertyName("defaultDailyGoal")]
     public int? DefaultDailyGoal { get; set; }
@@ -1409,6 +1426,13 @@ public class StaffMemberResponse
 
     [JsonPropertyName("avatarUrl")]
     public string? AvatarUrl { get; set; }
+
+    /// <summary>
+    /// The service categories this member specialises in — the source of their
+    /// service eligibility. Empty for a member not yet assigned any category.
+    /// </summary>
+    [JsonPropertyName("categories")]
+    public List<ProviderCategoryResponse> Categories { get; set; } = [];
 
     [JsonPropertyName("stampsIssued")]
     public int StampsIssued { get; set; }

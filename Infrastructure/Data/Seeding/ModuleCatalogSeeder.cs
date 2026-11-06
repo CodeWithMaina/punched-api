@@ -52,15 +52,21 @@ public sealed class ModuleCatalogSeeder : IModuleCatalogSeeder
             if (existingModules.TryGetValue(definition.Key, out var existing))
             {
                 // Refresh display metadata; preserve database identity.
+                // CRITICAL: never overwrite IsActive on an EXISTING module. It is
+                // admin-managed platform state (PUT /v1/admin/modules/{key}); the
+                // seeder runs on EVERY startup, so clobbering it here silently
+                // re-enabled a module the administrator had switched off. Mirrors
+                // the plan branch below, which never touches admin-owned flags.
                 existing.Name = definition.Name;
                 existing.Description = definition.Description;
                 existing.Version = definition.Version;
                 existing.IsCore = definition.IsCore;
-                existing.IsActive = definition.IsActive;
                 existing.DependenciesJson = definition.DependenciesJson;
             }
             else
             {
+                // New inserts inherit the seed's default availability; from then
+                // on IsActive is owned by the admin console.
                 definition.CreatedAt = now;
                 _dbContext.Modules.Add(definition);
                 changed = true;

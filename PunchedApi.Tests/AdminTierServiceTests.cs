@@ -297,6 +297,26 @@ public class AdminTierServiceTests : IDisposable
         Assert.Equal(SubscriptionPlanLifecycleState.Draft, after.LifecycleState);
     }
 
+    [Fact]
+    public async Task Seeder_DoesNotReEnable_AdminDisabledModule()
+    {
+        // An administrator retires a platform module (PUT /v1/admin/modules/{key}).
+        var disabled = await _service.UpdateModuleAsync(
+            "loyalty", new AdminModuleUpdateRequest { IsActive = false, Reason = "Retired" }, _actorId);
+        Assert.True(disabled.Success);
+        Assert.False(disabled.Data!.IsActive);
+        Assert.False((await _db.Modules.AsNoTracking().SingleAsync(m => m.Key == "loyalty")).IsActive);
+
+        // The module-catalog seeder runs on EVERY startup, in every environment.
+        var seeder = new PunchedApi.Infrastructure.Data.Seeding.ModuleCatalogSeeder(
+            _db, TestHelpers.CreateLogger<PunchedApi.Infrastructure.Data.Seeding.ModuleCatalogSeeder>());
+        await seeder.EnsureModuleCatalogAsync();
+
+        // The admin's decision must survive the restart instead of reverting to
+        // the seed default (IsActive = true).
+        Assert.False((await _db.Modules.AsNoTracking().SingleAsync(m => m.Key == "loyalty")).IsActive);
+    }
+
 
 
 

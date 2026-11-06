@@ -2432,34 +2432,34 @@ public class AppointmentService : IAppointmentService
         if (!staffUserId.HasValue)
             return (null, null, null);
 
-        // Solo business: the owner is the provider and performs every service.
-        if (await _availability.IsSoloOwnerAsync(businessId, staffUserId.Value))
-        {
-            var owner = await _context.Users.FirstOrDefaultAsync(u => u.Id == staffUserId.Value);
-            return owner == null
-                ? (null, "STAFF_NOT_FOUND", "Staff member not found in this business.")
-                : (owner, null, null);
-        }
-
-        if (!await IsStaffOfBusinessAsync(staffUserId.Value, businessId))
+        // The provider must be the owner or ACTIVE staff of THIS business.
+        if (!await IsProviderMemberAsync(staffUserId.Value, businessId))
             return (null, "STAFF_NOT_FOUND", "Staff member not found in this business.");
 
         var staff = await _context.Users.FirstOrDefaultAsync(u => u.Id == staffUserId.Value);
         if (staff == null)
             return (null, "STAFF_NOT_FOUND", "Staff member not found in this business.");
 
-        var distinctRequested = serviceIds.Distinct().ToArray();
-        var assignedCount = await _context.StaffServiceAssignments
-            .Where(a => a.StaffUserId == staff.Id && a.BusinessId == businessId && distinctRequested.Contains(a.ServiceCatalogItemId))
-            .Select(a => a.ServiceCatalogItemId)
-            .Distinct()
-            .CountAsync();
-
-        if (assignedCount != distinctRequested.Length)
-            return (null, "STAFF_NOT_AVAILABLE", "Staff member is not available for all requested services.");
+        // Authoritative eligibility through the single resolver: the owner in a
+        // solo / staff-module-disabled business, or any provider assigned the
+        // categories of the requested services. Never re-implemented here.
+        if (serviceIds.Length > 0 &&
+            !await _availability.IsProviderEligibleAsync(businessId, staffUserId.Value, serviceIds))
+        {
+            return (null, "STAFF_NOT_AVAILABLE",
+                "The selected provider does not offer all of the requested services.");
+        }
 
         return (staff, null, null);
     }
+
+    /// <summary>True when the identity is the owner or ACTIVE staff of the business.</summary>
+    private Task<bool> IsProviderMemberAsync(Guid userId, Guid businessId) =>
+        _context.BusinessMemberships.AsNoTracking().AnyAsync(m =>
+            m.UserId == userId &&
+            m.BusinessId == businessId &&
+            m.Status == BusinessMembershipStatus.Active &&
+            (m.Role == BusinessMembershipRole.Owner || m.Role == BusinessMembershipRole.Staff));
 
     private Task<RescheduleRequest?> LatestPendingRequestAsync(Guid appointmentId) =>
         _context.RescheduleRequests

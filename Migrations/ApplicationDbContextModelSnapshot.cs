@@ -975,6 +975,14 @@ namespace PunchedApi.Migrations
                         .HasColumnType("character varying(100)")
                         .HasColumnName("name");
 
+                    b.Property<string>("OperatingMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("multi_staff")
+                        .HasColumnName("operating_mode");
+
                     b.Property<Guid?>("OwnerId")
                         .HasColumnType("uuid")
                         .HasColumnName("owner_id");
@@ -1038,6 +1046,8 @@ namespace PunchedApi.Migrations
                             t.HasCheckConstraint("chk_business_booking_hours", "\"booking_open_hour\" >= 0 AND \"booking_open_hour\" <= 23 AND \"booking_close_hour\" >= 1 AND \"booking_close_hour\" <= 24 AND \"booking_close_hour\" > \"booking_open_hour\"");
 
                             t.HasCheckConstraint("chk_business_booking_interval", "\"booking_slot_interval_minutes\" >= 5 AND \"booking_slot_interval_minutes\" <= 240");
+
+                            t.HasCheckConstraint("chk_business_operating_mode", "\"operating_mode\" IN ('solo', 'multi_staff')");
 
                             t.HasCheckConstraint("chk_business_status", "\"status\" IN ('active', 'suspended', 'deactivated')");
                         });
@@ -5927,6 +5937,48 @@ namespace PunchedApi.Migrations
                     b.ToTable("staff_services", (string)null);
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.StaffServiceCategory", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("ServiceCategoryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("service_category_id");
+
+                    b.Property<Guid>("StaffUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("staff_user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ServiceCategoryId");
+
+                    b.HasIndex("StaffUserId");
+
+                    b.HasIndex("BusinessId", "ServiceCategoryId")
+                        .HasDatabaseName("ix_staff_service_categories_business_category");
+
+                    b.HasIndex("BusinessId", "StaffUserId")
+                        .HasDatabaseName("ix_staff_service_categories_business_staff");
+
+                    b.HasIndex("BusinessId", "StaffUserId", "ServiceCategoryId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_staff_service_categories_business_staff_category");
+
+                    b.ToTable("staff_service_categories", (string)null);
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.StaffShift", b =>
                 {
                     b.Property<Guid>("Id")
@@ -7981,6 +8033,27 @@ namespace PunchedApi.Migrations
                     b.HasOne("PunchedApi.Domain.Entities.ServiceCatalogItem", null)
                         .WithMany()
                         .HasForeignKey("ServiceCatalogItemId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("StaffUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.StaffServiceCategory", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.ServiceCategory", null)
+                        .WithMany()
+                        .HasForeignKey("ServiceCategoryId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
