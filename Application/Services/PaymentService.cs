@@ -112,6 +112,10 @@ public partial class PaymentService : IPaymentService
     {
         var payment = await _context.Payments
             .Include(p => p.Attempts.OrderBy(a => a.AttemptNumber))
+            // The verification trail is part of the payment contract, so the single-payment
+            // read carries it too — a customer checking on their submission sees the same
+            // history the owner does.
+            .Include(p => p.VerificationEvents)
             .FirstOrDefaultAsync(p => p.Id == paymentId);
 
         if (payment == null)
@@ -214,8 +218,13 @@ public partial class PaymentService : IPaymentService
 
         var scoped = _context.Payments.AsNoTracking().Where(p => businessId == null || p.BusinessId == businessId);
 
-        var today = scoped.Where(p => p.Status == PaymentStatus.Success && p.CompletedAt >= todayUtc);
-        var month = scoped.Where(p => p.Status == PaymentStatus.Success && p.CompletedAt >= monthStartUtc);
+        var settled = new[] { PaymentStatus.Success, PaymentStatus.Verified };
+
+        var today = scoped.Where(p => settled.Contains(p.Status) && p.CompletedAt >= todayUtc);
+        var month = scoped.Where(p => settled.Contains(p.Status) && p.CompletedAt >= monthStartUtc);
+
+        var awaitingVerification = scoped.Where(p =>
+            p.Status == PaymentStatus.Submitted || p.Status == PaymentStatus.UnderReview);
 
         var dashboard = new PaymentDashboardResponse
         {
@@ -232,6 +241,8 @@ public partial class PaymentService : IPaymentService
                 p.Status == PaymentStatus.Failed || p.Status == PaymentStatus.Expired),
             CashCollectedToday = await today.Where(p => p.Method == PaymentMethod.Cash).SumAsync(p => (decimal?)p.Amount) ?? 0m,
             MpesaCollectedToday = await today.Where(p => p.Method == PaymentMethod.Mpesa).SumAsync(p => (decimal?)p.Amount) ?? 0m,
+            AwaitingVerificationCount = await awaitingVerification.CountAsync(),
+            AwaitingVerificationAmount = await awaitingVerification.SumAsync(p => (decimal?)p.Amount) ?? 0m,
             UnmatchedCallbackCount = await _context.PaymentCallbacks
                 .Where(c => c.Kind == "c2b_confirmation" && c.PaymentId == null && c.Outcome == "unmatched")
                 .CountAsync(c => businessId == null || c.BusinessId == businessId)
@@ -254,11 +265,10 @@ public partial class PaymentService : IPaymentService
         if (!Enum.TryParse<PaymentMethod>(request.Method, true, out var method))
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "method must be 'cash' or 'mpesa'.");
 
-        if (method == PaymentMethod.Mpesa && string.IsNullOrWhiteSpace(request.PhoneNumber))
-            return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "phoneNumber is required for M-PESA payments.");
-
-        if (method == PaymentMethod.Mpesa && !IsValidKenyanPhone(request.PhoneNumber!))
-            return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "phoneNumber must be a valid Kenyan number (07XXXXXXXX/01XXXXXXXX/2547XXXXXXXX).");
+        // The phone number is only required when the platform drives the handset (an
+        // STK push). A manual M-PESA payment is made by the customer themselves, so
+        // the requirement is decided later, once the business's configuration says
+        // which channel applies.
 
         if (!PaymentTypes.TryParse(request.Type, out var type))
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", $"type must be {PaymentTypes.FullPayment}, {PaymentTypes.BookingFee} or {PaymentTypes.BalancePayment}.");
@@ -300,9 +310,16 @@ public partial class PaymentService : IPaymentService
         if (serviceTotal <= 0)
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "Appointment has no payable service total.");
 
+        // The booking fee is the business's own percentage of the service total, not
+        // a platform constant. A percentage of 0 means "nothing up front", which is a
+        // valid configuration — it is reported as such rather than silently charged.
+        if (type == PaymentType.BookingFee && config.BookingFeeFor(serviceTotal) <= 0)
+            return ApiResponse<PaymentResponse>.Fail(
+                "VALIDATION_ERROR", "This business does not collect a booking fee.");
+
         var amount = type switch
         {
-            PaymentType.BookingFee => serviceTotal / 2m,
+            PaymentType.BookingFee => config.BookingFeeFor(serviceTotal),
             PaymentType.BalancePayment => serviceTotal - alreadyPaid,
             _ => serviceTotal - alreadyPaid
         };
@@ -310,9 +327,14 @@ public partial class PaymentService : IPaymentService
         if (amount <= 0)
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "Appointment is already fully paid.");
 
+        // Manual M-PESA: the business has published its own PayBill/Till and collects
+        // by the customer paying it themselves. No Daraja call happens, so the payment
+        // is created Pending and waits for a pasted confirmation + an owner decision.
+        var manualMpesa = method == PaymentMethod.Mpesa && config.HasManualMpesaDetails;
+
         if (method == PaymentMethod.Cash && !config.CashEnabled)
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "Cash payments are not enabled for this business.");
-        if (method == PaymentMethod.Mpesa && !config.MpesaEnabled)
+        if (method == PaymentMethod.Mpesa && !manualMpesa && !config.MpesaEnabled)
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "M-PESA payments are not enabled for this business.");
 
         var payment = new Payment
@@ -323,20 +345,29 @@ public partial class PaymentService : IPaymentService
             AppointmentId = appointment.Id,
             Type = type,
             Method = method,
-            Provider = method == PaymentMethod.Cash ? PaymentProviderKind.Cash : PaymentProviderKind.DarajaStk,
+            Provider = method == PaymentMethod.Cash
+                ? PaymentProviderKind.Cash
+                : manualMpesa ? PaymentProviderKind.ManualMpesa : PaymentProviderKind.DarajaStk,
             Status = PaymentStatus.Created,
             Amount = decimal.Round(amount, 2, MidpointRounding.AwayFromZero),
             Currency = "KES",
             Reference = GenerateReference(),
-            PhoneNumber = method == PaymentMethod.Mpesa ? NormalizePhone(request.PhoneNumber!) : null,
+            // A manual payment is made *from* the customer's own handset, so their
+            // number is recorded but is not a required input for the flow.
+            PhoneNumber = method == PaymentMethod.Mpesa && !string.IsNullOrWhiteSpace(request.PhoneNumber)
+                ? NormalizePhone(request.PhoneNumber!)
+                : null,
             CreatedByUserId = userId,
             CreatedAt = DateTime.UtcNow
         };
 
         await _context.Payments.AddAsync(payment);
 
-        if (method == PaymentMethod.Mpesa)
+        if (method == PaymentMethod.Mpesa && !manualMpesa)
         {
+            if (string.IsNullOrWhiteSpace(request.PhoneNumber) || !IsValidKenyanPhone(request.PhoneNumber!))
+                return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "A valid Kenyan M-PESA phone number is required.");
+
             var (ok, err) = await StartAttemptAsync(payment, config);
             if (!ok && err != null)
             {
@@ -348,8 +379,8 @@ public partial class PaymentService : IPaymentService
         await _uow.SaveChangesAsync();
 
         _logger.LogInformation(
-            "Payment {PaymentId} ({Reference}) created for business {BusinessId}, appointment {AppointmentId}, amount {Amount} {Currency}, method {Method}",
-            payment.Id, payment.Reference, payment.BusinessId, payment.AppointmentId, payment.Amount, payment.Currency, method);
+            "Payment {PaymentId} ({Reference}) created for business {BusinessId}, appointment {AppointmentId}, amount {Amount} {Currency}, method {Method}, manual={Manual}",
+            payment.Id, payment.Reference, payment.BusinessId, payment.AppointmentId, payment.Amount, payment.Currency, method, manualMpesa);
 
         await _context.Entry(payment).Collection(p => p.Attempts).LoadAsync();
         return ApiResponse<PaymentResponse>.Ok(ToResponse(payment));
@@ -461,7 +492,8 @@ public partial class PaymentService : IPaymentService
         if (!await CanAccessPaymentAsync(payment, userId, role))
             return ApiResponse<PaymentResponse>.Fail("NOT_FOUND", "Payment not found.");
 
-        if (payment.Status is not (PaymentStatus.Created or PaymentStatus.AwaitingCustomer or PaymentStatus.Failed or PaymentStatus.Expired))
+        if (payment.Status is not (PaymentStatus.Created or PaymentStatus.AwaitingCustomer or PaymentStatus.Failed
+            or PaymentStatus.Expired or PaymentStatus.Submitted or PaymentStatus.UnderReview))
             return ApiResponse<PaymentResponse>.Fail("INVALID_STATUS_TRANSITION", "Payment in status " + payment.Status + " cannot be cancelled.");
 
         PaymentStateMachine.Transition(payment, PaymentStatus.Cancelled);
@@ -498,8 +530,42 @@ public partial class PaymentService : IPaymentService
         if (string.IsNullOrWhiteSpace(reason))
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "A reversal reason is required.");
 
-        if (payment.Status != PaymentStatus.Success)
-            return ApiResponse<PaymentResponse>.Fail("INVALID_STATUS_TRANSITION", "Only successful payments can be reversed (current: " + payment.Status + ").");
+        if (!PaymentStatuses.IsSettled(payment.Status))
+            return ApiResponse<PaymentResponse>.Fail("INVALID_STATUS_TRANSITION", "Only settled payments can be reversed (current: " + payment.Status + ").");
+
+        // A manual M-PESA payment was never executed by a provider, so there is
+        // nothing to call: it is recorded as a manual refund adjustment with the
+        // reason, exactly as an unsupported provider reversal is.
+        if (payment.Provider == PaymentProviderKind.ManualMpesa)
+        {
+            PaymentStateMachine.Transition(payment, PaymentStatus.Refunded);
+            payment.ReversalReason = Truncate("MANUAL REFUND: " + reason, 500);
+
+            if (payment.CustomerId.HasValue)
+            {
+                await _notifications.QueueAsync(new NotificationRequest(
+                    "payment.reversed",
+                    payment.CustomerId.Value,
+                    payment.BusinessId,
+                    new Dictionary<string, object?>
+                    {
+                        ["businessName"] = await GetBusinessNameAsync(payment.BusinessId),
+                        ["amount"] = payment.Amount,
+                        ["reason"] = reason,
+                        ["appointmentId"] = payment.AppointmentId
+                    },
+                    $"pay:{payment.Id}:reversed"));
+            }
+
+            await _uow.SaveChangesAsync();
+            await ReverseCommissionSafelyAsync(payment.BusinessId, payment.AppointmentId, payment.Id, reason);
+
+            _logger.LogWarning(
+                "Manual M-PESA payment {PaymentId} refunded (recorded) by owner {UserId}; reason: {Reason}",
+                payment.Id, userId, reason);
+
+            return ApiResponse<PaymentResponse>.Ok(ToResponse(payment));
+        }
 
         var config = await GetOrCreateConfigAsync(payment.BusinessId);
         var provider = _providers.FirstOrDefault(p => p.Kind == payment.Provider);
@@ -737,22 +803,42 @@ public partial class PaymentService : IPaymentService
     {
         var payments = await _context.Payments
             .Include(p => p.Attempts.OrderBy(a => a.AttemptNumber))
+            .Include(p => p.VerificationEvents)
             .Where(p => p.AppointmentId == appointment.Id)
             .OrderByDescending(p => p.CreatedAt)
             .ToListAsync();
 
+        var config = await GetOrCreateConfigAsync(appointment.BusinessId);
         var serviceTotal = appointment.Resources.Sum(r => r.Price);
-        var paid = payments.Where(p => p.Status == PaymentStatus.Success).Sum(p => p.Amount);
+        // Settled means the business holds the money — either a provider-confirmed
+        // payment or a manual M-PESA submission the owner verified.
+        var paid = payments.Where(p => PaymentStatuses.IsSettled(p.Status)).Sum(p => p.Amount);
 
         return new AppointmentPaymentSummary
         {
             AppointmentId = appointment.Id,
             ServiceTotal = serviceTotal,
+            BookingFee = config.BookingFeeFor(serviceTotal),
+            BookingFeePercentage = config.BookingFeePercentage,
             AmountPaid = paid,
             Balance = Math.Max(0, serviceTotal - paid),
             PaymentStatus = paid <= 0 ? "unpaid" : paid >= serviceTotal ? "paid" : "partially_paid",
+            VerificationStatus = ResolveVerificationStatus(payments),
             Payments = payments.Select(ToResponse).ToList()
         };
+    }
+
+    /// <summary>
+    /// One word for "where does this appointment stand with payment verification".
+    /// Derived from the payments, so it can never disagree with them.
+    /// </summary>
+    private static string ResolveVerificationStatus(IReadOnlyList<Payment> payments)
+    {
+        if (payments.Any(p => p.Status == PaymentStatus.Verified)) return "verified";
+        if (payments.Any(p => PaymentStatuses.IsAwaitingVerification(p.Status))) return "awaiting_verification";
+        if (payments.Any(p => p.Status == PaymentStatus.Rejected)) return "rejected";
+        if (payments.Any(p => p.Status is PaymentStatus.Created or PaymentStatus.AwaitingCustomer)) return "pending";
+        return "none";
     }
 
     /// <summary>Get (or lazily create) the payment configuration for a business.</summary>
@@ -818,6 +904,21 @@ public partial class PaymentService : IPaymentService
         PhoneNumber = payment.PhoneNumber,
         CreatedAt = payment.CreatedAt,
         CompletedAt = payment.CompletedAt,
+        SubmittedMessage = payment.SubmittedMessage,
+        SubmittedAt = payment.SubmittedAt,
+        ParsedTransactionCode = payment.ParsedTransactionCode,
+        ParsedAmount = payment.ParsedAmount,
+        ParsedTransactionAt = payment.ParsedTransactionAt,
+        ParsedRecipient = payment.ParsedRecipient,
+        VerifiedAt = payment.VerifiedAt,
+        VerifiedByUserId = payment.VerifiedByUserId,
+        RejectedAt = payment.RejectedAt,
+        RejectedByUserId = payment.RejectedByUserId,
+        RejectionReason = payment.RejectionReason,
+        VerificationEvents = payment.VerificationEvents
+            .OrderBy(e => e.CreatedAt)
+            .Select(ToVerificationEventResponse)
+            .ToList(),
         Attempts = payment.Attempts.OrderBy(a => a.AttemptNumber).Select(a => new PaymentAttemptResponse
         {
             AttemptNumber = a.AttemptNumber,

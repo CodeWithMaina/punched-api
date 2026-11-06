@@ -182,6 +182,23 @@ public static class NotificationTypes
         {
             PayloadSchema = Schema(Required("businessName", "amount", "reason"), "appointmentId")
         },
+        // Manual M-PESA. `payment.submitted` goes to the business's own operator (it is
+        // their queue), so it uses the operator-alert channel set: in-app always, email
+        // and push where configured, and never SMS — an alert about a payment must not
+        // incur a cost the business did not choose.
+        new("payment.submitted", NotificationCategory.Payment, OperatorAlertChannels)
+        {
+            PayloadSchema = Schema(
+                Required("businessName", "amount"), "customerName", "reference", "transactionCode")
+        },
+        new("payment.verified", NotificationCategory.Payment, Channels)
+        {
+            PayloadSchema = Schema(Required("businessName", "amount"), "appointmentId")
+        },
+        new("payment.rejected", NotificationCategory.Payment, Channels)
+        {
+            PayloadSchema = Schema(Required("businessName", "amount", "reason"), "appointmentId")
+        },
         new("appointment.follow_up", NotificationCategory.Appointment, Channels)
         {
             PayloadSchema = Schema(Required("businessName", "scheduledAt"), "appointmentId")

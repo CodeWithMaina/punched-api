@@ -1514,6 +1514,9 @@ namespace PunchedApi.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<decimal>("BookingFeePercentage")
+                        .HasColumnType("numeric");
+
                     b.Property<Guid>("BusinessId")
                         .HasColumnType("uuid");
 
@@ -1532,6 +1535,9 @@ namespace PunchedApi.Migrations
                     b.Property<DateTime?>("CredentialsUpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("ManualMpesaEnabled")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("MpesaAccountType")
                         .IsRequired()
                         .HasMaxLength(10)
@@ -1540,7 +1546,27 @@ namespace PunchedApi.Migrations
                     b.Property<bool>("MpesaEnabled")
                         .HasColumnType("boolean");
 
+                    b.Property<string>("MpesaInstructions")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("MpesaPaybillAccount")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("MpesaPaybillNumber")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("MpesaPayeeName")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<string>("MpesaShortCode")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("MpesaTillNumber")
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
 
@@ -4095,6 +4121,21 @@ namespace PunchedApi.Migrations
                     b.Property<int>("Method")
                         .HasColumnType("integer");
 
+                    b.Property<decimal?>("ParsedAmount")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("numeric(12,2)");
+
+                    b.Property<string>("ParsedRecipient")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime?>("ParsedTransactionAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ParsedTransactionCode")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
                     b.Property<string>("PhoneNumber")
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
@@ -4107,6 +4148,16 @@ namespace PunchedApi.Migrations
                         .HasMaxLength(40)
                         .HasColumnType("character varying(40)");
 
+                    b.Property<DateTime?>("RejectedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("RejectedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("RejectionReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
                     b.Property<string>("ReversalReason")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
@@ -4117,8 +4168,21 @@ namespace PunchedApi.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 
+                    b.Property<DateTime?>("SubmittedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SubmittedMessage")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
                     b.Property<int>("Type")
                         .HasColumnType("integer");
+
+                    b.Property<DateTime?>("VerifiedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("VerifiedByUserId")
+                        .HasColumnType("uuid");
 
                     b.HasKey("Id");
 
@@ -4127,6 +4191,9 @@ namespace PunchedApi.Migrations
                     b.HasIndex("CustomerId");
 
                     b.HasIndex("ExternalReference");
+
+                    b.HasIndex("ParsedTransactionCode")
+                        .IsUnique();
 
                     b.HasIndex("Reference")
                         .IsUnique();
@@ -4253,6 +4320,58 @@ namespace PunchedApi.Migrations
                     b.HasIndex("BusinessId", "Kind", "Outcome");
 
                     b.ToTable("payment_callbacks", (string)null);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.PaymentVerificationEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ActorName")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal?>("Amount")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("numeric(12,2)");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Message")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<Guid>("PaymentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("TransactionCode")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PaymentId");
+
+                    b.HasIndex("BusinessId", "CreatedAt");
+
+                    b.ToTable("payment_verification_events", (string)null);
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.Permission", b =>
@@ -7447,6 +7566,17 @@ namespace PunchedApi.Migrations
                     b.Navigation("Payment");
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.PaymentVerificationEvent", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Payment", "Payment")
+                        .WithMany("VerificationEvents")
+                        .HasForeignKey("PaymentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Payment");
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.PlanModule", b =>
                 {
                     b.HasOne("PunchedApi.Domain.Entities.Module", "Module")
@@ -8093,6 +8223,8 @@ namespace PunchedApi.Migrations
             modelBuilder.Entity("PunchedApi.Domain.Entities.Payment", b =>
                 {
                     b.Navigation("Attempts");
+
+                    b.Navigation("VerificationEvents");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.ReferralLink", b =>

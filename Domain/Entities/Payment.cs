@@ -81,10 +81,54 @@ public class Payment : BaseEntity
     [MaxLength(500)]
     public string? ReversalReason { get; set; }
 
+    // ── Manual M-PESA submission & verification ─────────────
+    // The customer pays the business's own PayBill/Till and pastes the confirmation
+    // SMS. The message is parsed, but it is NEVER proof of payment on its own: the
+    // business owner is the only authority that can move a submission to Verified.
+
+    /// <summary>Raw confirmation SMS exactly as the customer pasted it. Kept verbatim for the owner to read.</summary>
+    [MaxLength(1000)]
+    public string? SubmittedMessage { get; set; }
+
+    /// <summary>UTC time the customer submitted the message.</summary>
+    public DateTime? SubmittedAt { get; set; }
+
+    /// <summary>M-PESA transaction/receipt code extracted from the message (e.g. QJK42NUM). Unique across the platform.</summary>
+    [MaxLength(20)]
+    public string? ParsedTransactionCode { get; set; }
+
+    /// <summary>Amount extracted from the message — the value the comparison is made against, never the amount the client sent.</summary>
+    public decimal? ParsedAmount { get; set; }
+
+    /// <summary>Transaction date/time extracted from the message, when the message carried one.</summary>
+    public DateTime? ParsedTransactionAt { get; set; }
+
+    /// <summary>Payee/recipient extracted from the message, when present.</summary>
+    [MaxLength(200)]
+    public string? ParsedRecipient { get; set; }
+
+    /// <summary>UTC time the owner confirmed the money arrived (null until then).</summary>
+    public DateTime? VerifiedAt { get; set; }
+
+    /// <summary>Owner/staff user who confirmed the payment.</summary>
+    public Guid? VerifiedByUserId { get; set; }
+
+    /// <summary>UTC time the owner rejected the submission (null until then).</summary>
+    public DateTime? RejectedAt { get; set; }
+
+    /// <summary>Owner/staff user who rejected the submission.</summary>
+    public Guid? RejectedByUserId { get; set; }
+
+    /// <summary>Why the submission was rejected. Recorded so the customer can be told what to fix.</summary>
+    [MaxLength(500)]
+    public string? RejectionReason { get; set; }
+
     // ── Navigation ──────────────────────────────────────────
     public virtual Business Business { get; set; } = null!;
     public virtual Appointment? Appointment { get; set; }
     public virtual ICollection<PaymentAttempt> Attempts { get; set; } = new List<PaymentAttempt>();
+    public virtual ICollection<PaymentVerificationEvent> VerificationEvents { get; set; } =
+        new List<PaymentVerificationEvent>();
 }
 
 /// <summary>

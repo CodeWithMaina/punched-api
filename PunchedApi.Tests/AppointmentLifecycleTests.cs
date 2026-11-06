@@ -156,10 +156,34 @@ public partial class AppointmentLifecycleTests
     [Fact]
     public void The_authoritative_status_set_has_no_draft_or_pending()
     {
-        Assert.Equal(new[] { "booked", "confirmed", "completed", "cancelled", "no_show" }, AppointmentStatuses.All);
+        // pending_payment is the one status added for booking-fee collection: it holds
+        // the slot while the payment is verified. It is deliberately distinct from the
+        // rejected `pending`, which would have meant "a pending reschedule" — a separate
+        // workflow (RescheduleRequest) that is never an appointment status.
+        Assert.Equal(
+            new[] { "pending_payment", "booked", "confirmed", "completed", "cancelled", "no_show" },
+            AppointmentStatuses.All);
         Assert.False(AppointmentStatuses.IsKnown("draft"));
         Assert.False(AppointmentStatuses.IsKnown("pending"));
         Assert.False(AppointmentStatuses.IsKnown("in_progress"));
+    }
+
+    [Fact]
+    public void A_pending_payment_booking_holds_its_slot_and_can_only_be_confirmed_or_cancelled()
+    {
+        // The slot is held: the customer has committed money to that time.
+        Assert.True(AppointmentReservations.ReservesStaffTime(AppointmentStatuses.PendingPayment));
+        Assert.Contains(AppointmentStatuses.PendingPayment, AppointmentReservations.ReservingStatuses);
+
+        // It is never moved straight to completed or no_show — nobody has confirmed the
+        // visit will happen until the payment is verified.
+        Assert.True(AppointmentStatusMachine.CanTransition("pending_payment", "confirmed"));
+        Assert.True(AppointmentStatusMachine.CanTransition("pending_payment", "cancelled"));
+        Assert.False(AppointmentStatusMachine.CanTransition("pending_payment", "completed"));
+        Assert.False(AppointmentStatusMachine.CanTransition("pending_payment", "no_show"));
+
+        // Not terminal: a decision must be able to follow it.
+        Assert.False(AppointmentStatuses.IsTerminal(AppointmentStatuses.PendingPayment));
     }
 
     [Fact]

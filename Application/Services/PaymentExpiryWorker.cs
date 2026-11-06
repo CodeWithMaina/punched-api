@@ -34,6 +34,13 @@ public class PaymentExpiryWorker : BackgroundService
                 var expired = await payments.ExpireStalePaymentsAsync();
                 if (expired > 0)
                     _logger.LogInformation("PaymentExpiryWorker expired {Count} stale payment(s).", expired);
+
+                // Manual M-PESA submissions nobody decided. Same sweep, different clock:
+                // the window is days, not minutes, so this is normally a no-op — but a
+                // booking whose fee is never verified must not hold its slot forever.
+                var lapsed = await payments.ExpireStaleVerificationsAsync();
+                if (lapsed > 0)
+                    _logger.LogInformation("PaymentExpiryWorker lapsed {Count} unverified payment submission(s).", lapsed);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

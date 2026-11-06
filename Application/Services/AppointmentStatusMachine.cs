@@ -3,16 +3,30 @@ namespace PunchedApi.Application.Services;
 /// <summary>
 /// The authoritative appointment status vocabulary.
 ///
-/// <para>Five statuses exist. <c>draft</c> is deliberately absent: the platform
+/// <para>Six statuses exist. <c>draft</c> is deliberately absent: the platform
 /// has no server-side draft concept (a booking is either created or not), so
 /// keeping the status would mean maintaining a lifecycle nothing produces.
 /// <c>pending</c> is absent because a pending <i>reschedule</i> is a separate
 /// workflow (<c>RescheduleRequest</c>), never an appointment status, and
 /// <c>in_progress</c> is absent because nothing in the domain observes service
 /// start.</para>
+///
+/// <para><b>Payment-aware statuses.</b> When a business collects a booking fee,
+/// the appointment is created as <see cref="PendingPayment"/> instead of
+/// <see cref="Booked"/>: the slot is held, but the booking is not confirmed until
+/// the business verifies the payment. The task's suggested
+/// "PendingConfirmation" maps onto the existing <see cref="Booked"/> — a booking
+/// the business has yet to acknowledge — rather than a seventh status that would
+/// mean exactly the same thing.</para>
 /// </summary>
 public static class AppointmentStatuses
 {
+    /// <summary>
+    /// Created with a booking fee outstanding. The slot is reserved, but nothing is
+    /// confirmed until the payment is verified or the window expires.
+    /// </summary>
+    public const string PendingPayment = "pending_payment";
+
     /// <summary>Created and awaiting staff confirmation. The initial status of every booking.</summary>
     public const string Booked = "booked";
 
@@ -29,7 +43,8 @@ public static class AppointmentStatuses
     public const string NoShow = "no_show";
 
     /// <summary>Every status the backend can produce, in lifecycle order.</summary>
-    public static readonly IReadOnlyList<string> All = new[] { Booked, Confirmed, Completed, Cancelled, NoShow };
+    public static readonly IReadOnlyList<string> All =
+        new[] { PendingPayment, Booked, Confirmed, Completed, Cancelled, NoShow };
 
     /// <summary>Statuses that end the lifecycle — nothing may follow them.</summary>
     public static readonly IReadOnlyList<string> Terminal = new[] { Completed, Cancelled, NoShow };
@@ -50,6 +65,8 @@ public static class AppointmentStatuses
 ///
 /// <para>Transition table (from → to, and the permission the actor needs):</para>
 /// <code>
+/// pending_payment → confirmed   appointments.confirm   (business/staff — payment verified)
+/// pending_payment → cancelled   appointments.cancel    (business/staff/owning customer)
 /// booked    → confirmed   appointments.confirm   (business/staff)
 /// booked    → cancelled   appointments.cancel    (business/staff/owning customer)
 /// booked    → no_show     appointments.no_show    (business/staff)
@@ -75,6 +92,14 @@ public static class AppointmentStatusMachine
 {
     private static readonly Dictionary<string, string[]> Allowed = new(StringComparer.Ordinal)
     {
+        // A paid-up-front booking is confirmed directly by payment verification, so
+        // it never passes through `booked` — and it is never moved straight to
+        // completed/no-show, because nobody has confirmed the visit will happen.
+        [AppointmentStatuses.PendingPayment] = new[]
+        {
+            AppointmentStatuses.Confirmed,
+            AppointmentStatuses.Cancelled
+        },
         [AppointmentStatuses.Booked] = new[]
         {
             AppointmentStatuses.Confirmed,

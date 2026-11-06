@@ -76,6 +76,14 @@ public class AuthorizationPostureTests
         "Storefront|GET|{businessId:guid}/gallery",
         "Storefront|GET|{businessId:guid}/opening-hours",
         "Storefront|GET|{businessId:guid}/search",
+        // How the business wants to be paid: its manual M-PESA PayBill/Till details
+        // and booking-fee percentage. Anonymous because a visitor must be able to
+        // read the payment instructions before committing to a booking, and the
+        // storefront renders them at checkout. It is a read-only, tenant-narrowed
+        // read of ONE business, and it returns only what a payer needs to make a
+        // transfer — never Daraja credentials. A business with the channel switched
+        // off gets `enabled: false` and no numbers at all.
+        "Storefront|GET|{businessId:guid}/payment-details",
         // Guest booking: the two anonymous steps of the account-free flow. The
         // first sends a one-time code to an address the caller supplies; the
         // second exchanges that code for a short-lived CUSTOMER token. Neither

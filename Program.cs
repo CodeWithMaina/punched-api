@@ -367,6 +367,12 @@ try
     builder.Services.AddScoped<IAdminService, AdminService>();
     builder.Services.AddScoped<AdminNotificationOperationsService>();
     builder.Services.AddScoped<NotificationSuppressionService>();
+
+    // ── Notification management (admin module + business workspace) ──
+    // Both services reuse the existing delivery ledger, template resolver and
+    // provider registrations; they add no second pipeline.
+    builder.Services.AddScoped<AdminNotificationManagementService>();
+    builder.Services.AddScoped<BusinessNotificationSettingsService>();
     builder.Services.AddScoped<IAnalyticsAggregationService, AnalyticsAggregationService>();
     builder.Services.AddScoped<IAnalyticsBackfillRunner, AnalyticsBackfillRunner>();
     builder.Services.AddScoped<ISegmentationService, SegmentationService>();

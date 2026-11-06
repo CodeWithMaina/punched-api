@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Services;
 using PunchedApi.Domain.Interfaces;
 
 namespace PunchedApi.API.Controllers;
@@ -30,15 +31,38 @@ public class StorefrontController : ControllerBase
     private readonly IStorefrontGalleryService _gallery;
     private readonly IStorefrontHoursService _hours;
     private readonly IStorefrontSearchService _search;
+    private readonly IPaymentService _payments;
 
     public StorefrontController(
         IStorefrontGalleryService gallery,
         IStorefrontHoursService hours,
-        IStorefrontSearchService search)
+        IStorefrontSearchService search,
+        IPaymentService payments)
     {
         _gallery = gallery;
         _hours = hours;
         _search = search;
+        _payments = payments;
+    }
+
+    /// <summary>
+    /// How this business wants to be paid: its manual M-PESA PayBill/Till details and
+    /// the booking-fee percentage.
+    ///
+    /// <para>Anonymous and read-only, because a visitor must be able to see the payment
+    /// instructions before they commit to a booking. It returns only what a payer needs
+    /// to make a transfer — never Daraja credentials, never the shortcode's secret
+    /// material. A business with the channel switched off gets <c>enabled: false</c>
+    /// and no numbers, so the storefront cannot render a half-configured instruction.</para>
+    /// </summary>
+    [HttpGet("{businessId:guid}/payment-details")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<PublicPaymentDetailsResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetPublicPaymentDetails(Guid businessId, CancellationToken cancellationToken)
+    {
+        var result = await _payments.GetPublicPaymentDetailsAsync(businessId);
+        return result.Success ? Ok(result) : MapFailure(result);
     }
 
     /// <summary>

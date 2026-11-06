@@ -1726,6 +1726,30 @@ public class AppointmentService : IAppointmentService
     //  PRIVATE HELPERS
     // ═══════════════════════════════════════════════════════════
 
+    /// <summary>
+    /// The status a new booking starts in.
+    ///
+    /// <para>A business that collects a booking fee up front gets
+    /// <see cref="AppointmentStatuses.PendingPayment"/>: the slot is held, but nothing
+    /// is confirmed until the payment is verified. Everyone else keeps the historical
+    /// <see cref="AppointmentStatuses.Booked"/>. The decision is derived from the
+    /// business's own configuration, so a solo business and a staffed business follow
+    /// exactly the same rule.</para>
+    /// </summary>
+    private async Task<string> ResolveInitialStatusAsync(Guid businessId, List<ServiceCatalogItem> services)
+    {
+        var config = await _context.BusinessPaymentConfigs.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.BusinessId == businessId);
+
+        if (config == null || !config.HasManualMpesaDetails)
+            return AppointmentStatuses.Booked;
+
+        var serviceTotal = services.Sum(s => s.Price ?? 0);
+        return config.BookingFeeFor(serviceTotal) > 0
+            ? AppointmentStatuses.PendingPayment
+            : AppointmentStatuses.Booked;
+    }
+
     private async Task<ApiResponse<AppointmentResponse>> InsertAppointmentTransactionallyAsync(
         Guid businessId, Guid customerId, Guid? staffUserId, DateTime scheduledAt, DateTime endAt,
         List<ServiceCatalogItem> services, string? note, Guid changedByUserId, Guid excludeId)
@@ -1771,7 +1795,7 @@ public class AppointmentService : IAppointmentService
                     StaffUserId = staffUserId,
                     ScheduledAt = scheduledAt,
                     EndAt = endAt,
-                    Status = AppointmentStatuses.Booked,
+                    Status = await ResolveInitialStatusAsync(businessId, services),
                     CreatedAt = DateTime.UtcNow
                 };
 
@@ -1797,7 +1821,7 @@ public class AppointmentService : IAppointmentService
             {
                 Id = Guid.NewGuid(),
                 AppointmentId = appointment.Id,
-                Status = "booked",
+                Status = appointment.Status,
                 ChangedAt = DateTime.UtcNow,
                 ChangedByUserId = changedByUserId,
                 Note = note,

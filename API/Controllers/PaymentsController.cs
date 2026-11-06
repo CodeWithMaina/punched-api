@@ -138,12 +138,96 @@ public class PaymentsController : ControllerBase
         return result.Success ? Ok(result) : MapFailure(result);
     }
 
+    // ═══════════════════════════════════════════════════════════
+    //  MANUAL M-PESA
+    // ═══════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Submit the M-PESA confirmation SMS the customer received.
+    ///
+    /// <para>The customer may be signed in or a verified guest — both hold an ordinary
+    /// customer token, and the service derives the payer from that token, never from the
+    /// body. There is no amount field: the amount compared against what is owed is the
+    /// one parsed out of the message.</para>
+    /// </summary>
+    [HttpPost("{id:guid}/mpesa-message")]
+    [Authorize(Policy = MembershipPolicies.Authenticated)]
+    [ProducesResponseType(typeof(ApiResponse<PaymentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> SubmitMpesaMessage(Guid id, [FromBody] SubmitMpesaMessageRequest request)
+    {
+        var (userId, role) = GetIdentity();
+        if (userId == null) return Unauthorized();
+        var result = await _payments.SubmitMpesaMessageAsync(id, request, userId.Value, role!);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// The business's payment-verification queue and history. Defaults to what is
+    /// awaiting a decision; <c>status=all</c> returns the full history.
+    /// </summary>
+    [HttpGet("verification")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaffOrAdmin)]
+    [ProducesResponseType(typeof(ApiResponse<PaymentVerificationQueueResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> VerificationQueue(
+        [FromQuery] string? status, [FromQuery] string? search,
+        [FromQuery] DateTime? from, [FromQuery] DateTime? to,
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 25)
+    {
+        var (userId, role) = GetIdentity();
+        if (userId == null) return Unauthorized();
+        var result = await _payments.GetVerificationQueueAsync(new PaymentVerificationQuery
+        {
+            Status = status, Search = search, From = from, To = to, Page = page, PageSize = pageSize
+        }, userId.Value, role!);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>Mark a submitted payment as being reviewed (non-terminal, idempotent).</summary>
+    [HttpPost("{id:guid}/verification/under-review")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
+    [ProducesResponseType(typeof(ApiResponse<PaymentResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> MarkUnderReview(Guid id)
+    {
+        var (userId, role) = GetIdentity();
+        if (userId == null) return Unauthorized();
+        var result = await _payments.MarkVerificationUnderReviewAsync(id, userId.Value, role!);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>Confirm a submitted payment. The only path from a pasted SMS to a settled payment.</summary>
+    [HttpPost("{id:guid}/verification/approve")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
+    [ProducesResponseType(typeof(ApiResponse<PaymentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Approve(Guid id, [FromBody] VerifyPaymentRequest request)
+    {
+        var (userId, role) = GetIdentity();
+        if (userId == null) return Unauthorized();
+        var result = await _payments.VerifyPaymentAsync(id, request, userId.Value, role!);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>Reject a submitted payment. The reason is mandatory and is shown to the customer.</summary>
+    [HttpPost("{id:guid}/verification/reject")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
+    [ProducesResponseType(typeof(ApiResponse<PaymentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Reject(Guid id, [FromBody] RejectPaymentRequest request)
+    {
+        var (userId, role) = GetIdentity();
+        if (userId == null) return Unauthorized();
+        var result = await _payments.RejectPaymentAsync(id, request, userId.Value, role!);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
     private IActionResult MapFailure<T>(ApiResponse<T> result)
         => result.Error?.Code switch
         {
             "NOT_FOUND" => NotFound(result),
             "FORBIDDEN" => StatusCode(StatusCodes.Status403Forbidden, result),
-            "INVALID_STATUS_TRANSITION" or "PROVIDER_ERROR" => Conflict(result),
+            "INVALID_STATUS_TRANSITION" or "PROVIDER_ERROR" or "MPESA_CODE_ALREADY_USED" => Conflict(result),
             _ => BadRequest(result)
         };
 

@@ -106,6 +106,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<PaymentAttempt> PaymentAttempts => Set<PaymentAttempt>();
     public DbSet<PaymentCallback> PaymentCallbacks => Set<PaymentCallback>();
     public DbSet<BusinessPaymentConfig> BusinessPaymentConfigs => Set<BusinessPaymentConfig>();
+    public DbSet<PaymentVerificationEvent> PaymentVerificationEvents => Set<PaymentVerificationEvent>();
 
     // ── Attendance module ─────────────────────────────────────
     public DbSet<AttendancePolicy> AttendancePolicies => Set<AttendancePolicy>();

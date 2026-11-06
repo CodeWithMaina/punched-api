@@ -22,6 +22,19 @@ public class PaymentConfiguration : IEntityTypeConfiguration<Payment>
         builder.Property(p => p.PhoneNumber).HasMaxLength(20);
         builder.Property(p => p.ReversalReason).HasMaxLength(500);
 
+        // ── Manual M-PESA submission & verification ──
+        builder.Property(p => p.SubmittedMessage).HasMaxLength(1000);
+        builder.Property(p => p.ParsedTransactionCode).HasMaxLength(20);
+        builder.Property(p => p.ParsedRecipient).HasMaxLength(200);
+        builder.Property(p => p.RejectionReason).HasMaxLength(500);
+        builder.Property(p => p.ParsedAmount).HasPrecision(12, 2);
+
+        // A given M-PESA receipt may back exactly one payment. Enforced in the
+        // database, not just in the service, so two concurrent submissions of the
+        // same code cannot both win a race. Nulls are ignored by PostgreSQL's
+        // unique index, so provider-only payments are unaffected.
+        builder.HasIndex(p => p.ParsedTransactionCode).IsUnique();
+
         builder.Property(p => p.Amount).HasPrecision(12, 2);
 
         // C2B confirmation callbacks update ExternalReference; lookup by receipt.
@@ -116,5 +129,31 @@ public class BusinessPaymentConfigConfiguration : IEntityTypeConfiguration<Busin
             .WithMany()
             .HasForeignKey(c => c.BusinessId)
             .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+public class PaymentVerificationEventConfiguration : IEntityTypeConfiguration<PaymentVerificationEvent>
+{
+    public void Configure(Microsoft.EntityFrameworkCore.Metadata.Builders.EntityTypeBuilder<PaymentVerificationEvent> builder)
+    {
+        builder.ToTable("payment_verification_events");
+        builder.HasKey(e => e.Id);
+
+        builder.Property(e => e.Kind).HasMaxLength(20).IsRequired();
+        builder.Property(e => e.ActorName).HasMaxLength(100);
+        builder.Property(e => e.TransactionCode).HasMaxLength(20);
+        builder.Property(e => e.Message).HasMaxLength(1000);
+        builder.Property(e => e.Reason).HasMaxLength(500);
+        builder.Property(e => e.Amount).HasPrecision(12, 2);
+
+        // The business's verification history screen: newest first, per tenant.
+        builder.HasIndex(e => new { e.BusinessId, e.CreatedAt });
+        // One payment's own trail.
+        builder.HasIndex(e => e.PaymentId);
+
+        builder.HasOne(e => e.Payment)
+            .WithMany(p => p.VerificationEvents)
+            .HasForeignKey(e => e.PaymentId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }

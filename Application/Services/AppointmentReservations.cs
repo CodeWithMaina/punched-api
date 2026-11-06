@@ -17,10 +17,15 @@ namespace PunchedApi.Application.Services;
 /// defines as the end of the lifecycle — kept blocking its staff member's interval
 /// even though the appointment no longer occupies any time.</para>
 ///
-/// <para>Only the two live statuses reserve time:</para>
+/// <para>Only the live statuses reserve time:</para>
 /// <list type="bullet">
-///   <item><description><c>booked</c> — the initial status of every booking, so a
-///   pending-but-not-yet-confirmed appointment is a real reservation.</description></item>
+///   <item><description><c>pending_payment</c> — a booking awaiting a verified
+///   booking fee. The slot is held precisely because the customer paid (or is
+///   paying) for it; releasing it here would let a second customer take a time the
+///   first one has already committed money to.</description></item>
+///   <item><description><c>booked</c> — the initial status of a booking that owes
+///   nothing up front, so a pending-but-not-yet-confirmed appointment is a real
+///   reservation.</description></item>
 ///   <item><description><c>confirmed</c> — the business has acknowledged it.</description></item>
 /// </list>
 /// <para><c>cancelled</c>, <c>completed</c> and <c>no_show</c> release the interval:
@@ -33,6 +38,7 @@ public static class AppointmentReservations
     /// <summary>The statuses that hold a staff member's time.</summary>
     public static readonly IReadOnlyList<string> ReservingStatuses = new[]
     {
+        AppointmentStatuses.PendingPayment,
         AppointmentStatuses.Booked,
         AppointmentStatuses.Confirmed
     };
@@ -48,7 +54,7 @@ public static class AppointmentReservations
     /// that (re)creates <c>appointments_no_staff_overlap</c> uses exactly this
     /// text.
     /// </summary>
-    public const string ReservationPredicateSql = "status IN ('booked', 'confirmed')";
+    public const string ReservationPredicateSql = "status IN ('pending_payment', 'booked', 'confirmed')";
 
     /// <summary>
     /// Half-open interval overlap: <c>existingStart &lt; requestedEnd &amp;&amp;

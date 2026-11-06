@@ -43,6 +43,9 @@ public static class NotificationTemplates
         Add(templates, "payment.success", "Payment received", "Payment received", "We received your payment of {{amount}} to {{businessName}}.");
         Add(templates, "security.verification_code", "Your verification code", "Your verification code", "Your verification code is {{code}}. Do not share it with anyone.");
         Add(templates, "storefront.enquiry", "New enquiry from your page", "New storefront enquiry", "{{visitorName}} asked about {{topic}} through your Punched page. Reference {{reference}} — reply on the number they left.");
+        Add(templates, "payment.submitted", "Payment confirmation to review", "A payment is waiting for your review", "{{customerName}} submitted an M-PESA confirmation for {{amount}} (code {{transactionCode}}, reference {{reference}}). Open your payments queue to confirm or reject it.");
+        Add(templates, "payment.verified", "Payment confirmed", "Payment confirmed", "We confirmed your payment of {{amount}} to {{businessName}}. Your booking is confirmed.");
+        Add(templates, "payment.rejected", "Payment could not be confirmed", "Payment not confirmed", "We could not confirm your payment of {{amount}} to {{businessName}}. Reason: {{reason}}. You can pay again and submit the new confirmation.");
         return templates;
     }
 
@@ -67,4 +70,9 @@ public static class NotificationTemplates
 
         throw new ArgumentException($"No {channel} template is registered for '{type}'.", nameof(type));
     }
+
+    /// <summary>Non-throwing lookup for callers that tolerate an unregistered pair.</summary>
+    public static bool TryGet(string type, string channel, out NotificationTemplate template) =>
+        Templates.TryGetValue((type, channel), out template!);
+
 }

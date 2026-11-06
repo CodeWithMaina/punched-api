@@ -32,7 +32,68 @@ public enum PaymentStatus
     Reversed = 7,
 
     /// <summary>Terminal: a refund against a successful payment completed.</summary>
-    Refunded = 8
+    Refunded = 8,
+
+    /// <summary>
+    /// Manual M-PESA: the customer pasted their confirmation SMS. The message has
+    /// been parsed and accepted, and the payment is now queued for the business to
+    /// verify. <b>Never</b> treated as money received.
+    /// </summary>
+    Submitted = 9,
+
+    /// <summary>
+    /// Manual M-PESA: the business has opened the submission for review. A
+    /// non-terminal holding state so a queue can distinguish "untouched" from
+    /// "being looked at" without a second table.
+    /// </summary>
+    UnderReview = 10,
+
+    /// <summary>
+    /// Terminal: the business confirmed the money arrived. This is the manual
+    /// M-PESA equivalent of <see cref="Success"/> — it settles the appointment and
+    /// releases commission exactly as <see cref="Success"/> does.
+    /// </summary>
+    Verified = 11,
+
+    /// <summary>
+    /// Terminal: the business rejected the submitted proof (wrong amount, unknown
+    /// transaction, reused code). The reason is recorded and the customer may
+    /// submit again with a new payment.
+    /// </summary>
+    Rejected = 12
+}
+
+/// <summary>
+/// Status predicates that are easy to get wrong when they are repeated inline.
+/// </summary>
+public static class PaymentStatuses
+{
+    /// <summary>
+    /// True when the business actually holds the money. Both the provider-confirmed
+    /// (<see cref="PaymentStatus.Success"/>) and the owner-verified
+    /// (<see cref="PaymentStatus.Verified"/>) paths count: the customer paid either
+    /// way, and every aggregate, commission release and receipt reads this rule.
+    /// </summary>
+    public static bool IsSettled(PaymentStatus status) =>
+        status is PaymentStatus.Success or PaymentStatus.Verified;
+
+    /// <summary>True while the payment is waiting on a human decision.</summary>
+    public static bool IsAwaitingVerification(PaymentStatus status) =>
+        status is PaymentStatus.Submitted or PaymentStatus.UnderReview;
+
+    /// <summary>True when the customer may paste a (new) M-PESA confirmation for this payment.</summary>
+    public static bool CanAcceptSubmission(PaymentStatus status) =>
+        status is PaymentStatus.Created or PaymentStatus.AwaitingCustomer
+            or PaymentStatus.Failed or PaymentStatus.Rejected;
+
+    /// <summary>Wire value (snake_case) for a status.</summary>
+    public static string ToWire(PaymentStatus status) =>
+        status switch
+        {
+            PaymentStatus.AwaitingCustomer => "awaiting_customer",
+            PaymentStatus.UnderReview => "under_review",
+            _ => status.ToString().ToLowerInvariant()
+        };
 }
 
 /// <summary>What the payment is for.</summary>
@@ -65,5 +126,13 @@ public enum PaymentProviderKind
     DarajaStk = 1,
 
     /// <summary>Daraja C2B — customer pays the business's PayBill/Till from their own M-PESA menu.</summary>
-    DarajaC2B = 2
+    DarajaC2B = 2,
+
+    /// <summary>
+    /// Manual M-PESA — the customer pays the business's PayBill/Till themselves and
+    /// pastes the confirmation SMS. No provider callback exists for this channel:
+    /// the business owner is the authority, which is why a submission can only ever
+    /// reach <see cref="PaymentStatus.Verified"/> through an explicit human decision.
+    /// </summary>
+    ManualMpesa = 3
 }
