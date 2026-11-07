@@ -27,10 +27,12 @@ namespace PunchedApi.API.Controllers;
 public class StorefrontBuilderController : ControllerBase
 {
     private readonly IStorefrontBuilderService _builder;
+    private readonly IStorefrontRevisionService _revisions;
 
-    public StorefrontBuilderController(IStorefrontBuilderService builder)
+    public StorefrontBuilderController(IStorefrontBuilderService builder, IStorefrontRevisionService revisions)
     {
         _builder = builder;
+        _revisions = revisions;
     }
 
     [HttpGet("builder")]
@@ -97,6 +99,109 @@ public class StorefrontBuilderController : ControllerBase
         if (userId == null) return Unauthorized();
         var result = await _builder.ApplyTemplateAsync(userId.Value, templateId);
         return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// The business's storefront revision history, newest first.
+    ///
+    /// <para>Metadata only — a page of history never carries a configuration
+    /// payload, so the feed stays cheap. Filtering, paging and the free-text
+    /// search all run in SQL.</para>
+    /// </summary>
+    [HttpGet("builder/revisions")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
+    [ProducesResponseType(typeof(ApiResponse<StorefrontRevisionListResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> ListRevisions(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] string? type = null,
+        [FromQuery] bool publishedOnly = false,
+        [FromQuery] DateTime? from = null,
+        [FromQuery] DateTime? to = null,
+        [FromQuery] string? q = null,
+        CancellationToken cancellationToken = default)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+        var result = await _revisions.ListAsync(
+            userId.Value,
+            new StorefrontRevisionQuery
+            {
+                Page = page,
+                PageSize = pageSize,
+                Type = type,
+                PublishedOnly = publishedOnly,
+                From = from,
+                To = to,
+                Search = q,
+            },
+            cancellationToken);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// One revision with its complete configuration snapshot. A revision belonging
+    /// to another business is reported as not found.
+    /// </summary>
+    [HttpGet("builder/revisions/{revisionId:guid}")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
+    [ProducesResponseType(typeof(ApiResponse<StorefrontRevisionDetailResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetRevision(Guid revisionId, CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+        var result = await _revisions.GetAsync(userId.Value, revisionId, cancellationToken);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>Structured, human-readable differences between two revisions.</summary>
+    [HttpGet("builder/revisions/compare")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
+    [ProducesResponseType(typeof(ApiResponse<StorefrontRevisionCompareResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> CompareRevisions(
+        [FromQuery] Guid from, [FromQuery] Guid to, CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+        var result = await _revisions.CompareAsync(userId.Value, from, to, cancellationToken);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// Restores a previous revision into the working draft and records the rollback
+    /// as a new revision.
+    ///
+    /// <para>The published storefront is not changed — publishing remains an
+    /// explicit, separate action. <c>expectedVersion</c> guards against replacing
+    /// newer work with a stale rollback, and <c>confirm</c> must be true so a
+    /// destructive restore is never accidental.</para>
+    /// </summary>
+    [HttpPost("builder/revisions/{revisionId:guid}/restore")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
+    [ProducesResponseType(typeof(ApiResponse<RestoreStorefrontRevisionResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> RestoreRevision(
+        Guid revisionId,
+        [FromBody] RestoreStorefrontRevisionRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var restored = await _revisions.RestoreAsync(
+            userId.Value, revisionId, request ?? new RestoreStorefrontRevisionRequest(), cancellationToken);
+        if (!restored.Success) return MapFailure(restored);
+
+        // The editor needs the resulting draft immediately, so the rollback's own
+        // metadata and the refreshed builder state travel together.
+        var state = await _builder.GetForOwnerAsync(userId.Value);
+        if (!state.Success) return MapFailure(state);
+
+        return Ok(ApiResponse<RestoreStorefrontRevisionResponse>.Ok(new RestoreStorefrontRevisionResponse
+        {
+            Revision = restored.Data!,
+            State = state.Data!,
+        }));
     }
 
     /// <summary>The published storefront for a business. Anonymous + tenant-narrowed.</summary>

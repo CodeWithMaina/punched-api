@@ -74,7 +74,10 @@ public sealed class StorefrontRosterEntitlementTests
         var result = await service.GetEligibleStaffAsync(business.Id, Array.Empty<Guid>());
 
         Assert.True(result.Success, result.Error?.Message);
-        Assert.Empty(result.Data!);
+        // The assertion of interest is the gate above: with both modules entitled the
+        // roster is SERVED. It is not empty — a team-less business serves its owner as
+        // the sole bookable provider (the solo model, pinned by SoloBusinessBookingTests).
+        Assert.NotNull(result.Data);
     }
 
     /// <summary>

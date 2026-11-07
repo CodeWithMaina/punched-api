@@ -47,6 +47,15 @@ public class AppointmentService : IAppointmentService
     /// </summary>
     private readonly TimeProvider _time;
 
+    /// <summary>
+    /// Module entitlement resolver. The Staff module is OPTIONAL, so every path
+    /// that could assign a staff member to an appointment (create, on-behalf,
+    /// reschedule, filter) consults this to enforce the entitlement server-side.
+    /// Optional so every existing construction site (including the test suite)
+    /// keeps compiling; when absent the staff module is treated as enabled.
+    /// </summary>
+    private readonly IModuleEntitlementService? _moduleEntitlements;
+
     public AppointmentService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
@@ -58,7 +67,8 @@ public class AppointmentService : IAppointmentService
         ILogger<AppointmentService> logger,
         ITenantContext? tenant = null,
         ICommissionService? commissions = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IModuleEntitlementService? moduleEntitlements = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
@@ -71,6 +81,7 @@ public class AppointmentService : IAppointmentService
         _tenant = tenant;
         _commissions = commissions;
         _time = timeProvider ?? TimeProvider.System;
+        _moduleEntitlements = moduleEntitlements;
     }
 
     /// <summary>Current UTC time, from the injected clock (booking decisions only).</summary>
@@ -78,6 +89,26 @@ public class AppointmentService : IAppointmentService
 
     /// <summary>Active tenant business id, or null on the platform root (legacy scoping).</summary>
     private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
+
+    /// <summary>
+    /// True when the business may use the optional Staff module.
+    ///
+    /// <para>This gates <b>new</b> staff assignment and staff filtering only. It
+    /// never touches historical data: an appointment created while the module was
+    /// enabled keeps its <c>StaffUserId</c>, and the dashboard still resolves the
+    /// assigned member's name/avatar — the requirement is that the module's
+    /// absence removes the *controls*, not the record.</para>
+    ///
+    /// <para>Resolved through the platform's real entitlement system
+    /// (<see cref="IModuleEntitlementService"/>), never a hardcoded flag. When no
+    /// resolver is wired in (unit tests), the module is treated as enabled so the
+    /// pre-existing behaviour is unchanged.</para>
+    /// </summary>
+    private async Task<bool> IsStaffModuleEnabledAsync(Guid businessId)
+    {
+        if (_moduleEntitlements == null) return true;
+        return await _moduleEntitlements.IsModuleEnabledAsync(businessId, "staff");
+    }
 
     /// <summary>True when the identity is ACTIVE staff of the business (membership-sourced).</summary>
     private Task<bool> IsStaffOfBusinessAsync(Guid userId, Guid businessId) =>
@@ -1325,7 +1356,8 @@ public class AppointmentService : IAppointmentService
             query = query.Where(a => a.ScheduledAt >= from.Value);
         if (to.HasValue)
             query = query.Where(a => a.ScheduledAt <= to.Value);
-        if (staffUserId.HasValue)
+        // The Staff filter is honoured only while the optional module is on.
+        if (staffUserId.HasValue && await IsStaffModuleEnabledAsync(business.Id))
             query = query.Where(a => a.StaffUserId == staffUserId.Value);
         if (customerId.HasValue)
             query = query.Where(a => a.CustomerId == customerId.Value);
@@ -1387,6 +1419,11 @@ public class AppointmentService : IAppointmentService
             .Include(a => a.Resources)
             .Where(a => a.BusinessId == business.Id);
 
+        // 2b. Optional Staff module. When it is off, the staff filter/search must
+        // be inert on the server too: a client that sends `staffId` cannot filter
+        // by a control the business no longer has.
+        var staffModuleEnabled = await IsStaffModuleEnabledAsync(business.Id);
+
         // 3. Filters.
         if (!string.IsNullOrWhiteSpace(status))
             query = query.Where(a => a.Status == status);
@@ -1394,7 +1431,7 @@ public class AppointmentService : IAppointmentService
             query = query.Where(a => a.ScheduledAt >= from.Value);
         if (to.HasValue)
             query = query.Where(a => a.ScheduledAt <= to.Value);
-        if (staffUserId.HasValue)
+        if (staffUserId.HasValue && staffModuleEnabled)
             query = query.Where(a => a.StaffUserId == staffUserId.Value);
         if (customerId.HasValue)
             query = query.Where(a => a.CustomerId == customerId.Value);
@@ -1419,12 +1456,16 @@ public class AppointmentService : IAppointmentService
                 .Select(s => s.Id)
                 .ToListAsync();
 
-            var matchingStaffIds = await _context.Users.AsNoTracking()
-                .Where(u => u.FullName.ToLowerInvariant().Contains(lowerTerm) ||
-                            (u.Email ?? string.Empty).ToLowerInvariant().Contains(lowerTerm) ||
-                            (u.PhoneNumber ?? string.Empty).ToLowerInvariant().Contains(lowerTerm))
-                .Select(u => u.Id)
-                .ToListAsync();
+            // Staff is a search criterion only while the module is on. With it off,
+            // a term never matches on a staff member's name.
+            List<Guid> matchingStaffIds = staffModuleEnabled
+                ? await _context.Users.AsNoTracking()
+                    .Where(u => u.FullName.ToLowerInvariant().Contains(lowerTerm) ||
+                                (u.Email ?? string.Empty).ToLowerInvariant().Contains(lowerTerm) ||
+                                (u.PhoneNumber ?? string.Empty).ToLowerInvariant().Contains(lowerTerm))
+                    .Select(u => u.Id)
+                    .ToListAsync()
+                : new List<Guid>();
 
             if (matchingCustomerIds.Any())
                 query = query.Where(a => matchingCustomerIds.Contains(a.CustomerId));
@@ -1455,14 +1496,14 @@ public class AppointmentService : IAppointmentService
 
         var customerLookup = (await _context.Users.AsNoTracking()
             .Where(u => customerIds.Contains(u.Id))
-            .Select(u => new { u.Id, u.FullName, u.Email, u.PhoneNumber })
+            .Select(u => new { u.Id, u.FullName, u.Email, u.PhoneNumber, u.AvatarUrl })
             .ToListAsync())
             .GroupBy(u => u.Id)
             .ToDictionary(g => g.Key, g => g.First());
 
         var staffLookup = (await _context.Users.AsNoTracking()
             .Where(u => staffIds.Contains(u.Id))
-            .Select(u => new { u.Id, u.FullName, u.Email, u.PhoneNumber })
+            .Select(u => new { u.Id, u.FullName, u.Email, u.PhoneNumber, u.AvatarUrl })
             .ToListAsync())
             .GroupBy(u => u.Id)
             .ToDictionary(g => g.Key, g => g.First());
@@ -1492,9 +1533,11 @@ public class AppointmentService : IAppointmentService
             CustomerName = customerLookup.TryGetValue(a.CustomerId, out var c) ? c.FullName : string.Empty,
             CustomerEmail = customerLookup.TryGetValue(a.CustomerId, out c) ? c.Email : null,
             CustomerPhone = customerLookup.TryGetValue(a.CustomerId, out c) ? c.PhoneNumber : null,
+            CustomerAvatarUrl = customerLookup.TryGetValue(a.CustomerId, out c) ? c.AvatarUrl : null,
             StaffUserId = a.StaffUserId,
             StaffName = a.StaffUserId.HasValue && staffLookup.TryGetValue(a.StaffUserId.Value, out var s) ? s.FullName : null,
             StaffEmail = a.StaffUserId.HasValue && staffLookup.TryGetValue(a.StaffUserId.Value, out s) ? s.Email : null,
+            StaffAvatarUrl = a.StaffUserId.HasValue && staffLookup.TryGetValue(a.StaffUserId.Value, out s) ? s.AvatarUrl : null,
             CreatedAt = a.CreatedAt,
             UpdatedAt = a.CreatedAt
         }).ToList();
@@ -1518,6 +1561,7 @@ public class AppointmentService : IAppointmentService
                 FullName = u.FullName,
                 Email = u.Email,
                 PhoneNumber = u.PhoneNumber,
+                AvatarUrl = u.AvatarUrl,
                 EnrolledAt = e.EnrolledAt,
                 Status = e.Status == CustomerBusinessEnrollmentStatus.Active ? "active" : "inactive",
                 TotalStamps = card != null ? card.TotalStamps : 0,
@@ -1526,25 +1570,27 @@ public class AppointmentService : IAppointmentService
             .OrderBy(c => c.FullName)
             .ToListAsync();
 
-        var staffMembershipIds = await _context.BusinessMemberships.AsNoTracking()
-            .Where(m => m.BusinessId == business.Id &&
-                        m.Role == BusinessMembershipRole.Staff &&
-                        m.Status == BusinessMembershipStatus.Active)
-            .Select(m => m.UserId)
-            .ToListAsync();
-
-        var staff = await _context.Users.AsNoTracking()
-            .Where(u => staffMembershipIds.Contains(u.Id))
-            .OrderBy(u => u.FullName)
-            .Select(u => new StaffDashboardItemResponse
-            {
-                UserId = u.Id,
-                FullName = u.FullName,
-                Email = u.Email,
-                AvatarUrl = u.AvatarUrl,
-                PhoneNumber = u.PhoneNumber
-            })
-            .ToListAsync();
+        // Staff reference bucket is only built — and only paid for — when the
+        // optional Staff module is on. With it off the dashboard returns an empty
+        // list, so no staff filter can be rendered from it.
+        var staff = staffModuleEnabled
+            ? await _context.Users.AsNoTracking()
+                .Where(u => _context.BusinessMemberships.Any(m =>
+                    m.UserId == u.Id &&
+                    m.BusinessId == business.Id &&
+                    m.Role == BusinessMembershipRole.Staff &&
+                    m.Status == BusinessMembershipStatus.Active))
+                .OrderBy(u => u.FullName)
+                .Select(u => new StaffDashboardItemResponse
+                {
+                    UserId = u.Id,
+                    FullName = u.FullName,
+                    Email = u.Email,
+                    AvatarUrl = u.AvatarUrl,
+                    PhoneNumber = u.PhoneNumber
+                })
+                .ToListAsync()
+            : new List<StaffDashboardItemResponse>();
 
         var services = await _context.ServiceCatalogItems.AsNoTracking()
             .Where(s => s.BusinessId == business.Id)
@@ -1575,6 +1621,7 @@ public class AppointmentService : IAppointmentService
             Appointments = appointments,
             Customers = customers,
             Staff = staff,
+            StaffModuleEnabled = staffModuleEnabled,
             Services = services
         });
     }
@@ -2432,6 +2479,15 @@ public class AppointmentService : IAppointmentService
         if (!staffUserId.HasValue)
             return (null, null, null);
 
+        // The Staff module is optional. A client that submits a staff id while the
+        // business has the module switched off must be refused here — the frontend
+        // hiding the control is not an authorization boundary.
+        if (!await IsStaffModuleEnabledAsync(businessId))
+        {
+            return (null, "STAFF_MODULE_DISABLED",
+                "The Staff module is not enabled for this business, so a staff member cannot be assigned.");
+        }
+
         // The provider must be the owner or ACTIVE staff of THIS business.
         if (!await IsProviderMemberAsync(staffUserId.Value, businessId))
             return (null, "STAFF_NOT_FOUND", "Staff member not found in this business.");
@@ -2682,6 +2738,41 @@ public class AppointmentService : IAppointmentService
 
         var pending = await LatestPendingRequestAsync(appointment.Id);
         response.PendingReschedule = MapPendingReschedule(pending);
+
+        // The appointment row stores only the two user ids; resolve the people it
+        // names here so the detail response is self-contained. This is what lets
+        // the appointment screen show the customer and staff — name, contact and
+        // photo — without reaching into the customer's or the staff member's other
+        // appointments.
+        var userIds = new List<Guid> { appointment.CustomerId };
+        if (appointment.StaffUserId is Guid staffId && staffId != appointment.CustomerId)
+            userIds.Add(staffId);
+
+        var people = await _context.Users.AsNoTracking()
+            .Where(u => userIds.Contains(u.Id))
+            .Select(u => new { u.Id, u.FullName, u.Email, u.PhoneNumber, u.AvatarUrl })
+            .ToListAsync();
+
+        var customer = people.FirstOrDefault(u => u.Id == appointment.CustomerId);
+        if (customer != null)
+        {
+            response.CustomerName = customer.FullName;
+            response.CustomerEmail = customer.Email;
+            response.CustomerPhone = customer.PhoneNumber;
+            response.CustomerAvatarUrl = customer.AvatarUrl;
+        }
+
+        if (appointment.StaffUserId is Guid assignedStaff)
+        {
+            var staff = people.FirstOrDefault(u => u.Id == assignedStaff);
+            if (staff != null)
+            {
+                response.StaffName = staff.FullName;
+                response.StaffEmail = staff.Email;
+                response.StaffAvatarUrl = staff.AvatarUrl;
+            }
+        }
+
         return response;
     }
 

@@ -61,6 +61,9 @@ public class AppointmentDashboardItemResponse
     [JsonPropertyName("customerPhone")]
     public string? CustomerPhone { get; set; }
 
+    [JsonPropertyName("customerAvatarUrl")]
+    public string? CustomerAvatarUrl { get; set; }
+
     [JsonPropertyName("staffUserId")]
     public Guid? StaffUserId { get; set; }
 
@@ -69,6 +72,9 @@ public class AppointmentDashboardItemResponse
 
     [JsonPropertyName("staffEmail")]
     public string? StaffEmail { get; set; }
+
+    [JsonPropertyName("staffAvatarUrl")]
+    public string? StaffAvatarUrl { get; set; }
 
     [JsonPropertyName("createdAt")]
     public DateTime CreatedAt { get; set; }
@@ -94,6 +100,9 @@ public class CustomerDashboardItemResponse
 
     [JsonPropertyName("phoneNumber")]
     public string? PhoneNumber { get; set; }
+
+    [JsonPropertyName("avatarUrl")]
+    public string? AvatarUrl { get; set; }
 
     [JsonPropertyName("enrolledAt")]
     public DateTime EnrolledAt { get; set; }
@@ -175,6 +184,15 @@ public class AppointmentDashboardResponse
 
     [JsonPropertyName("staff")]
     public List<StaffDashboardItemResponse> Staff { get; set; } = new();
+
+    /// <summary>
+    /// Whether the optional Staff module is entitled for this business. When
+    /// <c>false</c> the caller must not offer staff selection or staff filtering,
+    /// and should not request a staff list at all. Historical appointments still
+    /// carry their assigned staff in <see cref="Appointments"/>.
+    /// </summary>
+    [JsonPropertyName("staffModuleEnabled")]
+    public bool StaffModuleEnabled { get; set; } = true;
 
     [JsonPropertyName("services")]
     public List<ServiceDashboardItemResponse> Services { get; set; } = new();

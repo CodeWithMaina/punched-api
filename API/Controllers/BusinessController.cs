@@ -27,6 +27,7 @@ public partial class BusinessController : ControllerBase
     private readonly IAppointmentService _appointmentService;
     private readonly IAttendanceLocationService _attendanceLocationService;
     private readonly IStorefrontEnquiryService _enquiries;
+    private readonly ICustomerDirectoryService? _customerDirectory;
     private readonly ILogger<BusinessController> _logger;
 
     public BusinessController(
@@ -36,7 +37,8 @@ public partial class BusinessController : ControllerBase
         IAppointmentService appointmentService,
         IAttendanceLocationService attendanceLocationService,
         IStorefrontEnquiryService enquiries,
-        ILogger<BusinessController> logger)
+        ILogger<BusinessController> logger,
+        ICustomerDirectoryService? customerDirectory = null)
     {
         _businessService = businessService;
         _stampService = stampService;
@@ -45,6 +47,7 @@ public partial class BusinessController : ControllerBase
         _attendanceLocationService = attendanceLocationService;
         _enquiries = enquiries;
         _logger = logger;
+        _customerDirectory = customerDirectory;
     }
 
     /// <summary>

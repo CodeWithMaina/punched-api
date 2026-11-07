@@ -22,10 +22,13 @@ public partial class StorefrontBuilderService
         row.IsPublished = false;
         row.UpdatedAt = DateTime.UtcNow;
         await _context.SaveChangesAsync();
-        return ApiResponse<StorefrontBuilderStateResponse>.Ok(BuildState(businessId.Value, row));
+        return ApiResponse<StorefrontBuilderStateResponse>.Ok(await BuildStateAsync(businessId.Value, row));
     }
 
-    public async Task<ApiResponse<StorefrontBuilderStateResponse>> ResetDraftAsync(Guid ownerId)
+    public Task<ApiResponse<StorefrontBuilderStateResponse>> ResetDraftAsync(Guid ownerId)
+        => ExecuteRevisionSafeAsync(() => ResetDraftCoreAsync(ownerId));
+
+    private async Task<ApiResponse<StorefrontBuilderStateResponse>> ResetDraftCoreAsync(Guid ownerId)
     {
         var businessId = await _businessScopeResolver.GetOwnedBusinessIdAsync(ownerId);
         if (businessId == null)
@@ -40,19 +43,43 @@ public partial class StorefrontBuilderService
         if (published == null)
             return ApiResponse<StorefrontBuilderStateResponse>.Fail("NOT_FOUND", "There is no published version to restore.");
 
-        row.DraftConfigJson = JsonSerializer.Serialize(StorefrontBuilderDefaults.Merge(published), JsonOptions);
-        row.Version++;
-        row.UpdatedAt = DateTime.UtcNow;
+        var restored = StorefrontBuilderDefaults.Merge(published);
+        var currentDraft = StorefrontBuilderDefaults.Merge(ParseConfig(row.DraftConfigJson));
+
+        // Discarding a draft that already matches the published version is not an
+        // event: history must never fill up with no-op resets.
+        if (!SameConfig(currentDraft, restored))
+        {
+            row.DraftConfigJson = JsonSerializer.Serialize(restored, JsonOptions);
+            row.TemplateId = restored.TemplateId;
+            row.Version++;
+            row.UpdatedAt = DateTime.UtcNow;
+
+            AppendRevision(
+                businessId.Value,
+                await LatestRevisionNumberAsync(businessId.Value) + 1,
+                restored,
+                StorefrontRevisionType.Reset,
+                ownerId,
+                sourceRevisionId: null,
+                isPublishedSnapshot: false,
+                description: "Draft reset to the published version");
+        }
+
         await _context.SaveChangesAsync();
-        return ApiResponse<StorefrontBuilderStateResponse>.Ok(BuildState(businessId.Value, row));
+        return ApiResponse<StorefrontBuilderStateResponse>.Ok(await BuildStateAsync(businessId.Value, row));
     }
 
-    public async Task<ApiResponse<StorefrontBuilderStateResponse>> ApplyTemplateAsync(Guid ownerId, string templateId)
+    public Task<ApiResponse<StorefrontBuilderStateResponse>> ApplyTemplateAsync(Guid ownerId, string templateId)
+        => ExecuteRevisionSafeAsync(() => ApplyTemplateCoreAsync(ownerId, templateId));
+
+    private async Task<ApiResponse<StorefrontBuilderStateResponse>> ApplyTemplateCoreAsync(Guid ownerId, string templateId)
     {
         var businessId = await _businessScopeResolver.GetOwnedBusinessIdAsync(ownerId);
         if (businessId == null)
             return ApiResponse<StorefrontBuilderStateResponse>.Fail("NOT_FOUND", "No business found for this account.");
-        if (StorefrontTemplates.Find(templateId) == null)
+        var template = StorefrontTemplates.Find(templateId);
+        if (template == null)
             return ApiResponse<StorefrontBuilderStateResponse>.Fail("VALIDATION_ERROR", "Unknown template.");
 
         var row = await _context.BusinessLandingPageConfigs
@@ -62,7 +89,19 @@ public partial class StorefrontBuilderService
             ? StorefrontBuilderDefaults.Create()
             : StorefrontBuilderDefaults.Merge(ParseConfig(row.DraftConfigJson));
 
+        // Snapshot the "before" text first: ApplyTemplate reuses and mutates the
+        // configuration it is handed, so comparing afterwards would always report
+        // "no change".
+        var before = Normalise(current);
+
         var applied = StorefrontBuilderDefaults.ApplyTemplate(current, templateId, preserveContent: true);
+
+        // A template switch changes the design, so it is a real draft event and is
+        // recorded as one. Re-applying the identical result is not.
+        if (row != null && string.Equals(before, Normalise(applied), StringComparison.Ordinal))
+        {
+            return ApiResponse<StorefrontBuilderStateResponse>.Ok(await BuildStateAsync(businessId.Value, row));
+        }
 
         if (row == null)
         {
@@ -86,8 +125,18 @@ public partial class StorefrontBuilderService
         row.TemplateId = applied.TemplateId;
         row.DraftConfigJson = JsonSerializer.Serialize(applied, JsonOptions);
 
+        AppendRevision(
+            businessId.Value,
+            await LatestRevisionNumberAsync(businessId.Value) + 1,
+            applied,
+            StorefrontRevisionType.DraftSave,
+            ownerId,
+            sourceRevisionId: null,
+            isPublishedSnapshot: false,
+            description: $"Template changed to {template.Name}");
+
         await _context.SaveChangesAsync();
-        return ApiResponse<StorefrontBuilderStateResponse>.Ok(BuildState(businessId.Value, row));
+        return ApiResponse<StorefrontBuilderStateResponse>.Ok(await BuildStateAsync(businessId.Value, row));
     }
 
     // ── shared helpers ─────────────────────────────────────────────────────────
@@ -99,8 +148,10 @@ public partial class StorefrontBuilderService
         catch (JsonException) { return null; }
     }
 
-    internal static StorefrontBuilderStateResponse BuildState(Guid businessId, BusinessLandingPageConfig? row)
+    internal async Task<StorefrontBuilderStateResponse> BuildStateAsync(Guid businessId, BusinessLandingPageConfig? row)
     {
+        var latestRevisionNumber = await LatestRevisionNumberAsync(businessId);
+
         if (row == null)
         {
             return new StorefrontBuilderStateResponse
@@ -112,6 +163,8 @@ public partial class StorefrontBuilderService
                 HasUnpublishedChanges = false,
                 Draft = StorefrontBuilderDefaults.Create(),
                 Published = null,
+                DraftVersion = 0,
+                LatestRevisionNumber = latestRevisionNumber,
             };
         }
 
@@ -132,6 +185,8 @@ public partial class StorefrontBuilderService
             HasUnpublishedChanges = hasUnpublishedChanges,
             Draft = draft,
             Published = published == null ? null : StorefrontBuilderDefaults.Merge(published),
+            DraftVersion = row.Version,
+            LatestRevisionNumber = latestRevisionNumber,
         };
     }
 

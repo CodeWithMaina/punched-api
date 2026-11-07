@@ -22,6 +22,16 @@ public class CreatePaymentRequest
     [JsonPropertyName("phoneNumber")]
     public string? PhoneNumber { get; set; }
 
+    /// <summary>
+    /// Optional cash amount (major units), used ONLY for a cash <c>balance_payment</c>:
+    /// the operator states how much cash they actually took, so a partial collection is
+    /// possible. The figure is never trusted — the server rejects it unless it is greater
+    /// than zero and no larger than the balance it computed itself, so overpayment and
+    /// client-invented money are both impossible. Omit it to collect the whole balance.
+    /// </summary>
+    [JsonPropertyName("amount")]
+    public decimal? Amount { get; set; }
+
     /// <summary>Optional idempotency key (client-generated).</summary>
     [JsonPropertyName("idempotencyKey")]
     public string? IdempotencyKey { get; set; }

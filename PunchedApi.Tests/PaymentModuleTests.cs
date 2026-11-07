@@ -197,6 +197,125 @@ public class PaymentModuleTests
         Assert.Equal("INVALID_STATUS_TRANSITION", confirm.Error!.Code);
     }
 
+    // ── Partial cash collection ──────────────────────────────
+
+    [Fact]
+    public async Task C4_PartialCashCollection_RecordsStatedAmount_AndLeavesBalanceRemaining()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (business, owner, customer, appointment) = await SeedAsync(context);
+        var service = CreatePaymentService(context);
+
+        // The operator took 400 of the 1,000 owed. The amount is validated against the
+        // balance the server computed, never taken on trust.
+        var partial = await service.CreatePaymentAsync(
+            new CreatePaymentRequest
+            {
+                AppointmentId = appointment.Id, Method = "cash", Type = "balance_payment", Amount = 400m
+            },
+            owner.Id, "Business");
+        Assert.True(partial.Success, partial.Error?.Message);
+        Assert.Equal(400m, partial.Data!.Amount);
+
+        var confirmed = await service.ConfirmCashAsync(partial.Data.Id, "Part payment at the counter", owner.Id, "Business");
+        Assert.True(confirmed.Success, confirmed.Error?.Message);
+
+        var summary = await service.GetAppointmentPaymentSummaryAsync(appointment.Id, owner.Id, "Business");
+        Assert.True(summary.Success, summary.Error?.Message);
+        Assert.Equal(400m, summary.Data!.AmountPaid);
+        Assert.Equal(600m, summary.Data.Balance);
+        Assert.Equal("partially_paid", summary.Data.PaymentStatus);
+
+        // The remainder is collectable later; only then does the appointment read paid.
+        var rest = await service.CreatePaymentAsync(
+            new CreatePaymentRequest { AppointmentId = appointment.Id, Method = "cash", Type = "balance_payment" },
+            owner.Id, "Business");
+        Assert.True(rest.Success, rest.Error?.Message);
+        Assert.Equal(600m, rest.Data!.Amount);
+        await service.ConfirmCashAsync(rest.Data.Id, "Balance collected", owner.Id, "Business");
+
+        context.ChangeTracker.Clear();
+        var settled = await service.GetAppointmentPaymentSummaryAsync(appointment.Id, owner.Id, "Business");
+        Assert.Equal(2, await context.Payments.CountAsync());
+        Assert.Equal(1000m, settled.Data!.AmountPaid);
+        Assert.Equal(0m, settled.Data.Balance);
+        Assert.Equal("paid", settled.Data.PaymentStatus);
+    }
+
+    [Fact]
+    public async Task C5_CashCollection_AboveOutstandingBalance_IsRejected()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (business, owner, customer, appointment) = await SeedAsync(context);
+        var service = CreatePaymentService(context);
+
+        var over = await service.CreatePaymentAsync(
+            new CreatePaymentRequest
+            {
+                AppointmentId = appointment.Id, Method = "cash", Type = "balance_payment", Amount = 1500m
+            },
+            owner.Id, "Business");
+
+        Assert.False(over.Success);
+        Assert.Equal("VALIDATION_ERROR", over.Error!.Code);
+        Assert.Contains("outstanding", over.Error.Message!);
+        Assert.Equal(0, await context.Payments.CountAsync());
+    }
+
+    [Fact]
+    public async Task C6_CashCollection_NonPositiveAmount_IsRejected()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (business, owner, customer, appointment) = await SeedAsync(context);
+        var service = CreatePaymentService(context);
+
+        foreach (var bad in new[] { 0m, -50m })
+        {
+            var result = await service.CreatePaymentAsync(
+                new CreatePaymentRequest
+                {
+                    AppointmentId = appointment.Id, Method = "cash", Type = "balance_payment", Amount = bad
+                },
+                owner.Id, "Business");
+            Assert.False(result.Success);
+            Assert.Equal("VALIDATION_ERROR", result.Error!.Code);
+        }
+
+        Assert.Equal(0, await context.Payments.CountAsync());
+    }
+
+    [Fact]
+    public async Task C7_StatedAmount_OnANonCashBalancePayment_IsRejected()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (business, owner, customer, appointment) = await SeedAsync(context);
+        var service = CreatePaymentService(context);
+
+        // A full-payment row's amount is the whole balance; a client-stated figure must
+        // not be able to alter it (nor a booking fee).
+        var full = await service.CreatePaymentAsync(
+            new CreatePaymentRequest
+            {
+                AppointmentId = appointment.Id, Method = "cash", Type = "full_payment", Amount = 400m
+            },
+            owner.Id, "Business");
+        Assert.False(full.Success);
+        Assert.Equal("VALIDATION_ERROR", full.Error!.Code);
+
+        var fee = await service.CreatePaymentAsync(
+            new CreatePaymentRequest
+            {
+                AppointmentId = appointment.Id, Method = "cash", Type = "booking_fee", Amount = 400m
+            },
+            owner.Id, "Business");
+        Assert.False(fee.Success);
+        Assert.Equal("VALIDATION_ERROR", fee.Error!.Code);
+    }
+
     // ── Retry rules ──────────────────────────────────────────
 
     [Fact]

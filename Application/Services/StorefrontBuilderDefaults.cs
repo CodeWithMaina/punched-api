@@ -73,28 +73,82 @@ public static partial class StorefrontBuilderDefaults
             merged.Pages = stored.Pages
                 .Where(p => p != null && !string.IsNullOrWhiteSpace(p.Id))
                 .OrderBy(p => p.Order)
+                .Select(MergePage)
                 .ToList();
 
         if (stored.Sections is { Count: > 0 })
-        {
-            var sections = new List<StorefrontSectionDto>();
-            foreach (var section in stored.Sections.Where(s => s != null && StorefrontSectionCatalog.IsKnown(s.Key)))
-            {
-                sections.Add(new StorefrontSectionDto
-                {
-                    Id = string.IsNullOrWhiteSpace(section.Id) ? Guid.NewGuid().ToString("n") : section.Id,
-                    Key = section.Key,
-                    Variant = StorefrontSectionCatalog.NormaliseVariant(section.Key, section.Variant),
-                    Enabled = section.Enabled,
-                    Order = section.Order,
-                    Title = section.Title,
-                    Description = section.Description,
-                    Settings = section.Settings ?? new Dictionary<string, string>(),
-                });
-            }
-            merged.Sections = sections.OrderBy(s => s.Order).ToList();
-        }
+            merged.Sections = MergeSectionList(stored.Sections);
 
         return merged;
+    }
+
+    /// <summary>
+    /// Normalises a section list: unknown types are dropped, an unknown variant
+    /// falls back to the section's default, and every design control is clamped to
+    /// the range its renderer can honour.
+    /// </summary>
+    private static List<StorefrontSectionDto> MergeSectionList(List<StorefrontSectionDto>? stored)
+    {
+        if (stored is not { Count: > 0 }) return new List<StorefrontSectionDto>();
+
+        var sections = new List<StorefrontSectionDto>();
+        foreach (var section in stored.Where(s => s != null && StorefrontSectionCatalog.IsKnown(s.Key)))
+        {
+            sections.Add(new StorefrontSectionDto
+            {
+                Id = string.IsNullOrWhiteSpace(section.Id) ? Guid.NewGuid().ToString("n") : section.Id,
+                Key = section.Key,
+                Variant = StorefrontSectionCatalog.NormaliseVariant(section.Key, section.Variant),
+                Enabled = section.Enabled,
+                Order = section.Order,
+                Title = section.Title,
+                Description = section.Description,
+                Settings = section.Settings ?? new Dictionary<string, string>(),
+                Columns = section.Columns > 0 ? Math.Clamp(section.Columns, 1, 4) : 3,
+                Background = StorefrontLayoutCatalog.FromList(
+                    section.Background, StorefrontLayoutCatalog.SectionBackgrounds, "default"),
+                Padding = StorefrontLayoutCatalog.FromList(
+                    section.Padding, StorefrontLayoutCatalog.SectionPaddings, "normal"),
+                Alignment = section.Alignment is "center" ? "center" : "left",
+                Animation = StorefrontLayoutCatalog.FromList(
+                    section.Animation, StorefrontLayoutCatalog.Animations, "inherit"),
+            });
+        }
+
+        return sections.OrderBy(s => s.Order).ToList();
+    }
+
+    /// <summary>
+    /// Normalises one managed page. The home page never carries its own hero or
+    /// sections — the storefront-wide pair is the single source of truth for it —
+    /// so a design import cannot leave a stale per-page copy behind after a
+    /// template switch.
+    /// </summary>
+    private static StorefrontPageDto MergePage(StorefrontPageDto stored)
+    {
+        var page = new StorefrontPageDto
+        {
+            Id = stored.Id,
+            Title = stored.Title,
+            Slug = stored.Slug ?? string.Empty,
+            Kind = string.IsNullOrWhiteSpace(stored.Kind) ? "custom" : stored.Kind,
+            ShowInNav = stored.ShowInNav,
+            Order = stored.Order,
+            SeoTitle = stored.SeoTitle,
+            SeoDescription = stored.SeoDescription,
+        };
+
+        if (page.Kind.Equals("home", StringComparison.OrdinalIgnoreCase)) return page;
+
+        if (stored.Hero != null)
+        {
+            page.Hero = new StorefrontHeroDto();
+            MergeHero(page.Hero, stored.Hero);
+        }
+
+        if (stored.Sections is { Count: > 0 })
+            page.Sections = MergeSectionList(stored.Sections);
+
+        return page;
     }
 }

@@ -53,10 +53,13 @@ public partial class StorefrontBuilderService : IStorefrontBuilderService
             .AsNoTracking()
             .FirstOrDefaultAsync(x => x.BusinessId == businessId.Value);
 
-        return ApiResponse<StorefrontBuilderStateResponse>.Ok(BuildState(businessId.Value, row));
+        return ApiResponse<StorefrontBuilderStateResponse>.Ok(await BuildStateAsync(businessId.Value, row));
     }
 
-    public async Task<ApiResponse<StorefrontBuilderStateResponse>> SaveDraftAsync(Guid ownerId, SaveStorefrontDraftRequest request)
+    public Task<ApiResponse<StorefrontBuilderStateResponse>> SaveDraftAsync(Guid ownerId, SaveStorefrontDraftRequest request)
+        => ExecuteRevisionSafeAsync(() => SaveDraftCoreAsync(ownerId, request));
+
+    private async Task<ApiResponse<StorefrontBuilderStateResponse>> SaveDraftCoreAsync(Guid ownerId, SaveStorefrontDraftRequest request)
     {
         var businessId = await _businessScopeResolver.GetOwnedBusinessIdAsync(ownerId);
         if (businessId == null)
@@ -69,6 +72,18 @@ public partial class StorefrontBuilderService : IStorefrontBuilderService
 
         var row = await _context.BusinessLandingPageConfigs
             .FirstOrDefaultAsync(x => x.BusinessId == businessId.Value);
+
+        // Optimistic concurrency: an editor that tells us which draft it edited
+        // must never silently overwrite a save it has not seen.
+        if (row != null && request.ExpectedVersion is int expected && expected != row.Version)
+            return ApiResponse<StorefrontBuilderStateResponse>.Fail("STALE_VERSION",
+                "This storefront changed since you opened it. Reload to get the latest version.");
+
+        // The very first save for a business establishes its baseline snapshot, so
+        // history is never empty for a storefront that predates this feature.
+        var isBaseline = row == null || string.IsNullOrWhiteSpace(row.DraftConfigJson);
+        var previousDraft = row == null ? null : StorefrontBuilderDefaults.Merge(ParseConfig(row.DraftConfigJson));
+        var changed = isBaseline || !SameConfig(previousDraft, config);
 
         if (row == null)
         {
@@ -83,21 +98,37 @@ public partial class StorefrontBuilderService : IStorefrontBuilderService
             };
             _context.BusinessLandingPageConfigs.Add(row);
         }
-        else
+        else if (changed)
         {
             row.Version++;
             row.UpdatedAt = DateTime.UtcNow;
         }
 
-        row.TemplateId = config.TemplateId;
-        row.DraftConfigJson = JsonSerializer.Serialize(config, JsonOptions);
-        row.HeroBackgroundMediaId = config.Hero.BackgroundMediaId ?? row.HeroBackgroundMediaId;
+        if (changed)
+        {
+            row.TemplateId = config.TemplateId;
+            row.DraftConfigJson = JsonSerializer.Serialize(config, JsonOptions);
+            row.HeroBackgroundMediaId = config.Hero.BackgroundMediaId ?? row.HeroBackgroundMediaId;
+
+            AppendRevision(
+                businessId.Value,
+                await LatestRevisionNumberAsync(businessId.Value) + 1,
+                config,
+                StorefrontRevisionType.DraftSave,
+                ownerId,
+                sourceRevisionId: null,
+                isPublishedSnapshot: false,
+                description: isBaseline ? "Baseline snapshot" : "Draft saved");
+        }
 
         await _context.SaveChangesAsync();
-        return ApiResponse<StorefrontBuilderStateResponse>.Ok(BuildState(businessId.Value, row));
+        return ApiResponse<StorefrontBuilderStateResponse>.Ok(await BuildStateAsync(businessId.Value, row));
     }
 
-    public async Task<ApiResponse<StorefrontBuilderStateResponse>> PublishAsync(Guid ownerId, PublishStorefrontRequest request)
+    public Task<ApiResponse<StorefrontBuilderStateResponse>> PublishAsync(Guid ownerId, PublishStorefrontRequest request)
+        => ExecuteRevisionSafeAsync(() => PublishCoreAsync(ownerId, request));
+
+    private async Task<ApiResponse<StorefrontBuilderStateResponse>> PublishCoreAsync(Guid ownerId, PublishStorefrontRequest request)
     {
         var businessId = await _businessScopeResolver.GetOwnedBusinessIdAsync(ownerId);
         if (businessId == null)
@@ -108,6 +139,10 @@ public partial class StorefrontBuilderService : IStorefrontBuilderService
         if (row == null)
             return ApiResponse<StorefrontBuilderStateResponse>.Fail("NOT_FOUND", "Save a draft before publishing.");
 
+        if (request.ExpectedVersion is int expected && expected != row.Version)
+            return ApiResponse<StorefrontBuilderStateResponse>.Fail("STALE_VERSION",
+                "This storefront changed since you opened it. Reload to get the latest version.");
+
         var source = request.Config != null
             ? StorefrontBuilderDefaults.Merge(request.Config)
             : StorefrontBuilderDefaults.Merge(ParseConfig(row.DraftConfigJson));
@@ -116,19 +151,45 @@ public partial class StorefrontBuilderService : IStorefrontBuilderService
         if (mediaError != null)
             return ApiResponse<StorefrontBuilderStateResponse>.Fail("MEDIA_NOT_FOUND", mediaError);
 
+        var previousDraft = StorefrontBuilderDefaults.Merge(ParseConfig(row.DraftConfigJson));
+        var previousPublished = ParseConfig(row.PublishedConfigJson);
+        var draftChanged = !SameConfig(previousDraft, source);
+        // A republish of the payload that is already live is not a new publication:
+        // it updates the timestamp but adds no revision and moves no version.
+        var publishedChanged = previousPublished == null || !SameConfig(previousPublished, source);
+
         // Publish is the only write that touches the live config, and it writes the
-        // whole validated payload in one SaveChanges — a failure leaves the
-        // previously published storefront untouched.
-        row.DraftConfigJson = JsonSerializer.Serialize(source, JsonOptions);
-        row.PublishedConfigJson = JsonSerializer.Serialize(source, JsonOptions);
+        // whole validated payload in one SaveChanges — a failed publish leaves the
+        // previously published storefront untouched and creates no revision.
+        if (draftChanged)
+        {
+            row.Version++;
+            row.DraftConfigJson = JsonSerializer.Serialize(source, JsonOptions);
+        }
+
         row.TemplateId = source.TemplateId;
         row.HeroBackgroundMediaId = source.Hero.BackgroundMediaId ?? row.HeroBackgroundMediaId;
         row.IsPublished = true;
         row.PublishedAt = DateTime.UtcNow;
-        row.PublishedVersion = row.Version + 1;
         row.UpdatedAt = DateTime.UtcNow;
 
+        if (publishedChanged)
+        {
+            row.PublishedConfigJson = JsonSerializer.Serialize(source, JsonOptions);
+            row.PublishedVersion = Math.Max(row.PublishedVersion, row.Version) + 1;
+
+            AppendRevision(
+                businessId.Value,
+                await LatestRevisionNumberAsync(businessId.Value) + 1,
+                source,
+                StorefrontRevisionType.Publish,
+                ownerId,
+                sourceRevisionId: null,
+                isPublishedSnapshot: true,
+                description: "Published to the live storefront");
+        }
+
         await _context.SaveChangesAsync();
-        return ApiResponse<StorefrontBuilderStateResponse>.Ok(BuildState(businessId.Value, row));
+        return ApiResponse<StorefrontBuilderStateResponse>.Ok(await BuildStateAsync(businessId.Value, row));
     }
 }

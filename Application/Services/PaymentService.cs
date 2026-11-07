@@ -327,6 +327,28 @@ public partial class PaymentService : IPaymentService
         if (amount <= 0)
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "Appointment is already fully paid.");
 
+        // A cash collection may be partial: the operator states how much cash they took.
+        // The figure is NOT trusted — it is validated against the balance the server just
+        // computed and can never exceed it, so overpayment and client-invented money are
+        // both impossible. An amount on anything else is rejected outright rather than
+        // silently ignored, so a client cannot smuggle money into an M-PESA or fee row.
+        if (request.Amount.HasValue)
+        {
+            if (method != PaymentMethod.Cash || type != PaymentType.BalancePayment)
+                return ApiResponse<PaymentResponse>.Fail(
+                    "VALIDATION_ERROR", "An amount may only be supplied for a cash balance payment.");
+
+            var requested = decimal.Round(request.Amount.Value, 2, MidpointRounding.AwayFromZero);
+            if (requested <= 0)
+                return ApiResponse<PaymentResponse>.Fail(
+                    "VALIDATION_ERROR", "The amount must be greater than zero.");
+            if (requested > amount)
+                return ApiResponse<PaymentResponse>.Fail(
+                    "VALIDATION_ERROR", "The amount exceeds the outstanding balance.");
+
+            amount = requested;
+        }
+
         // Manual M-PESA: the business has published its own PayBill/Till and collects
         // by the customer paying it themselves. No Daraja call happens, so the payment
         // is created Pending and waits for a pasted confirmation + an owner decision.

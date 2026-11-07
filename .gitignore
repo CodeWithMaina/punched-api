@@ -1,6 +1,8 @@
 # Build outputs
 bin/
 obj/
+bin-test/
+.artifacts/
 
 # Local runtime storage (card assets + uploaded media for the filesystem
 # media provider). Never committed: it holds user uploads.

@@ -369,8 +369,35 @@ public class AppointmentResponse
     [JsonPropertyName("customerId")]
     public Guid CustomerId { get; set; }
 
+    /// <summary>
+    /// The customer the appointment is for. Resolved server-side so the detail
+    /// response is self-contained — the screen needs the person it names, not the
+    /// customer's other bookings.
+    /// </summary>
+    [JsonPropertyName("customerName")]
+    public string? CustomerName { get; set; }
+
+    [JsonPropertyName("customerEmail")]
+    public string? CustomerEmail { get; set; }
+
+    [JsonPropertyName("customerPhone")]
+    public string? CustomerPhone { get; set; }
+
+    [JsonPropertyName("customerAvatarUrl")]
+    public string? CustomerAvatarUrl { get; set; }
+
     [JsonPropertyName("staffUserId")]
     public Guid? StaffUserId { get; set; }
+
+    /// <summary>The staff member assigned to this appointment (null when unassigned).</summary>
+    [JsonPropertyName("staffName")]
+    public string? StaffName { get; set; }
+
+    [JsonPropertyName("staffEmail")]
+    public string? StaffEmail { get; set; }
+
+    [JsonPropertyName("staffAvatarUrl")]
+    public string? StaffAvatarUrl { get; set; }
 
     [JsonPropertyName("scheduledAt")]
     public DateTime ScheduledAt { get; set; }

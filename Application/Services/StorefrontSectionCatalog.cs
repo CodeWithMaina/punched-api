@@ -37,7 +37,7 @@ public static class StorefrontSectionCatalog
         new SectionDefinition("team", "Team", "The people behind the business.",
             ["cards", "circles", "showcase", "list"], "cards", null, "Meet the team", null),
         new SectionDefinition("gallery", "Gallery", "A curated image gallery.",
-            ["masonry", "grid", "carousel", "full-width", "editorial"], "masonry",
+            ["masonry", "grid", "carousel", "full-width", "editorial", "feature-first"], "masonry",
             CustomerCapabilityCatalog.Gallery, "Our work", null),
         new SectionDefinition("testimonials", "Testimonials", "Words from your clients.",
             ["cards", "quote", "carousel", "wall"], "cards",

@@ -214,4 +214,44 @@ public partial class BusinessController
         var fileName = $"customers_{DateTime.UtcNow:yyyyMMdd}.csv";
         return File(bytes, "text/csv", fileName);
     }
+
+    /// <summary>
+    /// Owner: quick-add a customer for the booking flow (appointment wizard Step 1).
+    ///
+    /// <para>Creates — or, when the phone/email already matches an existing Customer
+    /// identity, reuses — a customer and enrolls them in the owner's business. The
+    /// response is the compact reference the wizard selects, so the operator can carry
+    /// straight on to service selection without leaving the modal.</para>
+    ///
+    /// <para>No login/credentials are created: a walk-in is an identity the business can
+    /// book for, not an account. Enrollment (and the Customer membership) is written by
+    /// the authoritative enrollment service, so this is not a second customer system.</para>
+    /// </summary>
+    [RequireModule("customers")]
+    [HttpPost("me/customers/quick-add")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
+    [ProducesResponseType(typeof(ApiResponse<CustomerOptionResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> QuickAddCustomer([FromBody] QuickAddCustomerRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        if (_customerDirectory == null)
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                ApiResponse<CustomerOptionResponse>.Fail(
+                    "SERVICE_UNAVAILABLE", "Customer creation is temporarily unavailable."));
+
+        var result = await _customerDirectory.QuickAddAsync(userId.Value, request);
+        return result.Success ? Ok(result) : MapDirectoryFailure(result);
+    }
+
+    private IActionResult MapDirectoryFailure<T>(ApiResponse<T> result)
+        => result.Error?.Code switch
+        {
+            "NOT_FOUND" => NotFound(result),
+            "FORBIDDEN" => StatusCode(StatusCodes.Status403Forbidden, result),
+            "CONFLICT" => Conflict(result),
+            _ => BadRequest(result)
+        };
 }

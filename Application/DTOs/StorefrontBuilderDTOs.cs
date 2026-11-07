@@ -39,6 +39,13 @@ public class StorefrontThemeDto
     [JsonPropertyName("sectionSpacing")] public string SectionSpacing { get; set; } = "comfortable";
     [JsonPropertyName("containerPadding")] public string ContainerPadding { get; set; } = "normal";
     [JsonPropertyName("radius")] public string Radius { get; set; } = "soft";
+
+    /// <summary>
+    /// The corner radius in pixels when it came from the design's numeric control
+    /// (0–28). <see cref="Radius"/> stays the token the renderer uses; this keeps the
+    /// exact number so importing and re-exporting a design is lossless.
+    /// </summary>
+    [JsonPropertyName("radiusPx")] public int? RadiusPx { get; set; }
     [JsonPropertyName("cardStyle")] public string CardStyle { get; set; } = "soft";
     [JsonPropertyName("shadow")] public string Shadow { get; set; } = "soft";
     [JsonPropertyName("imageRatio")] public string ImageRatio { get; set; } = "4:5";
@@ -51,6 +58,42 @@ public class StorefrontThemeDto
     [JsonPropertyName("backgroundImageMediaId")] public Guid? BackgroundImageMediaId { get; set; }
     [JsonPropertyName("gradientFrom")] public string GradientFrom { get; set; } = "#0d3a26";
     [JsonPropertyName("gradientTo")] public string GradientTo { get; set; } = "#1f5c3f";
+
+    // ── Motion & presentation ───────────────────────────────────────────────────
+    // The prototype's Theme tab exposes these next to the colours/fonts; they are
+    // additive so a stored configuration written before they existed resolves to
+    // the documented defaults (see StorefrontBuilderDefaults.Merge).
+
+    /// <summary>`light` | `dark` — the storefront's own presentation mode.</summary>
+    [JsonPropertyName("mode")] public string Mode { get; set; } = "light";
+
+    /// <summary>Default section entrance: none | fade | up | left | zoom | blur.</summary>
+    [JsonPropertyName("animation")] public string Animation { get; set; } = "up";
+
+    /// <summary>Entrance duration in milliseconds (200–1500).</summary>
+    [JsonPropertyName("durationMs")] public int DurationMs { get; set; } = 600;
+
+    /// <summary>Card/button hover: none | lift | glow | zoom.</summary>
+    [JsonPropertyName("hoverEffect")] public string HoverEffect { get; set; } = "lift";
+
+    /// <summary>Page transition: none | fade | slide.</summary>
+    [JsonPropertyName("pageTransition")] public string PageTransition { get; set; } = "fade";
+}
+
+/// <summary>
+/// One header navigation entry. The prototype lets an owner arrange the nav
+/// independently of the page list, with dropdown children and external targets;
+/// the richer production model keeps pages as the source of truth, so when this
+/// list is empty the header falls back to the pages flagged `showInNav`.
+/// </summary>
+public class StorefrontNavItemDto
+{
+    [JsonPropertyName("label")] public string Label { get; set; } = string.Empty;
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; } = true;
+    /// <summary>A page id, or `external` when <see cref="Url"/> is the target.</summary>
+    [JsonPropertyName("destination")] public string Destination { get; set; } = "home";
+    [JsonPropertyName("url")] public string Url { get; set; } = string.Empty;
+    [JsonPropertyName("children")] public List<StorefrontNavItemDto> Children { get; set; } = new();
 }
 
 /// <summary>Header/navigation configuration.</summary>
@@ -76,14 +119,39 @@ public class StorefrontHeaderDto
     [JsonPropertyName("ctaLabel")] public string CtaLabel { get; set; } = "Book now";
     /// <summary>book | services | contact | reviews | directions</summary>
     [JsonPropertyName("ctaType")] public string CtaType { get; set; } = "book";
+
+    // ── Prototype header controls ───────────────────────────────────────────────
+    /// <summary>Independent header navigation. Empty = derive from the page list.</summary>
+    [JsonPropertyName("nav")] public List<StorefrontNavItemDto> Nav { get; set; } = new();
+    /// <summary>Mobile menu presentation: left | right | top | full.</summary>
+    [JsonPropertyName("drawer")] public string Drawer { get; set; } = "left";
+    /// <summary>Link hover treatment: underline | pill | dot | fade.</summary>
+    [JsonPropertyName("linkEffect")] public string LinkEffect { get; set; } = "underline";
+    /// <summary>CTA treatment: solid | outline | soft | dark.</summary>
+    [JsonPropertyName("ctaStyle")] public string CtaStyle { get; set; } = "solid";
+    [JsonPropertyName("uppercaseLinks")] public bool UppercaseLinks { get; set; }
+    /// <summary>Bar height in pixels (6–40).</summary>
+    [JsonPropertyName("height")] public int Height { get; set; } = 18;
+    [JsonPropertyName("shadow")] public bool Shadow { get; set; }
+    [JsonPropertyName("border")] public bool Border { get; set; }
+    /// <summary>Message for the `bar` layout.</summary>
+    [JsonPropertyName("announcement")] public string? Announcement { get; set; }
+    /// <summary>Left cell for the `utility` layout.</summary>
+    [JsonPropertyName("utilityLeft")] public string? UtilityLeft { get; set; }
+    /// <summary>Right cell for the `utility` layout.</summary>
+    [JsonPropertyName("utilityRight")] public string? UtilityRight { get; set; }
+    /// <summary>Show the CTA and contact details inside the mobile drawer.</summary>
+    [JsonPropertyName("showContactInDrawer")] public bool ShowContactInDrawer { get; set; } = true;
 }
 
 /// <summary>Hero section configuration (the storefront's opening statement).</summary>
 public class StorefrontHeroDto
 {
-    /// <summary>full-image | split | centered | video | carousel | editorial | minimal | premium | gradient</summary>
+    /// <summary>full-image | split | centered | video | carousel | editorial | minimal | premium | gradient | overlay | split-reverse | facts | collage | booking</summary>
     [JsonPropertyName("variant")] public string Variant { get; set; } = "full-image";
     [JsonPropertyName("enabled")] public bool Enabled { get; set; } = true;
+    /// <summary>Entrance animation override: inherit | none | fade | up | left | zoom | blur.</summary>
+    [JsonPropertyName("animation")] public string Animation { get; set; } = "inherit";
     [JsonPropertyName("eyebrow")] public string? Eyebrow { get; set; }
     [JsonPropertyName("heading")] public string? Heading { get; set; }
     [JsonPropertyName("subheading")] public string? Subheading { get; set; }
@@ -126,6 +194,18 @@ public class StorefrontSectionDto
     [JsonPropertyName("description")] public string? Description { get; set; }
     /// <summary>Free-form, section-specific settings (kept as JSON to avoid schema churn).</summary>
     [JsonPropertyName("settings")] public Dictionary<string, string> Settings { get; set; } = new();
+
+    // ── Prototype section controls ──────────────────────────────────────────────
+    /// <summary>Columns for grid layouts (1–4).</summary>
+    [JsonPropertyName("columns")] public int Columns { get; set; } = 3;
+    /// <summary>default | surface | primary | accent.</summary>
+    [JsonPropertyName("background")] public string Background { get; set; } = "default";
+    /// <summary>compact | normal | generous.</summary>
+    [JsonPropertyName("padding")] public string Padding { get; set; } = "normal";
+    /// <summary>left | center.</summary>
+    [JsonPropertyName("alignment")] public string Alignment { get; set; } = "left";
+    /// <summary>Entrance override: inherit | none | fade | up | left | zoom | blur.</summary>
+    [JsonPropertyName("animation")] public string Animation { get; set; } = "inherit";
 }
 
 /// <summary>A social profile link.</summary>
@@ -161,6 +241,16 @@ public class StorefrontFooterDto
     [JsonPropertyName("copyright")] public string? Copyright { get; set; }
     [JsonPropertyName("backgroundColor")] public string BackgroundColor { get; set; } = "#12110f";
     [JsonPropertyName("textColor")] public string TextColor { get; set; } = "#efe6d2";
+
+    // ── Prototype footer controls ───────────────────────────────────────────────
+    /// <summary>Vertical padding in pixels (24–120).</summary>
+    [JsonPropertyName("padding")] public int Padding { get; set; } = 72;
+    /// <summary>Headline for the `newsletter` and `split` layouts.</summary>
+    [JsonPropertyName("newsletterHeadline")] public string? NewsletterHeadline { get; set; }
+    [JsonPropertyName("newsletterPlaceholder")] public string NewsletterPlaceholder { get; set; } = "Your email";
+    [JsonPropertyName("newsletterButtonLabel")] public string NewsletterButtonLabel { get; set; } = "Subscribe";
+    /// <summary>Render the oversized business wordmark (the `wordmark` layout).</summary>
+    [JsonPropertyName("showWordmark")] public bool ShowWordmark { get; set; }
 }
 
 /// <summary>One managed storefront page.</summary>
@@ -175,6 +265,17 @@ public class StorefrontPageDto
     [JsonPropertyName("order")] public int Order { get; set; }
     [JsonPropertyName("seoTitle")] public string? SeoTitle { get; set; }
     [JsonPropertyName("seoDescription")] public string? SeoDescription { get; set; }
+
+    // ── Per-page design (the prototype's multi-page model) ──────────────────────
+    /// <summary>
+    /// This page's own hero. Null keeps the storefront-wide hero — which is what
+    /// every configuration written before per-page heroes existed resolves to, so
+    /// an existing storefront renders exactly as it did.
+    /// </summary>
+    [JsonPropertyName("hero")] public StorefrontHeroDto? Hero { get; set; }
+
+    /// <summary>This page's own sections. Null/empty keeps the storefront-wide list.</summary>
+    [JsonPropertyName("sections")] public List<StorefrontSectionDto>? Sections { get; set; }
 }
 
 /// <summary>SEO + social-sharing metadata.</summary>
@@ -215,18 +316,37 @@ public class StorefrontBuilderStateResponse
     [JsonPropertyName("hasUnpublishedChanges")] public bool HasUnpublishedChanges { get; set; }
     [JsonPropertyName("draft")] public StorefrontConfigDto Draft { get; set; } = new();
     [JsonPropertyName("published")] public StorefrontConfigDto? Published { get; set; }
+
+    /// <summary>
+    /// Optimistic-concurrency token for the draft. The editor echoes this back on
+    /// save / publish / restore; a mismatch means someone else saved in between and
+    /// the request is refused with <c>STALE_VERSION</c> rather than clobbering it.
+    /// </summary>
+    [JsonPropertyName("draftVersion")] public int DraftVersion { get; set; }
+
+    /// <summary>Highest revision number recorded for this business (0 = none yet).</summary>
+    [JsonPropertyName("latestRevisionNumber")] public int LatestRevisionNumber { get; set; }
 }
 
 /// <summary>Owner draft save request (whole-config replacement).</summary>
 public class SaveStorefrontDraftRequest
 {
     [JsonPropertyName("config")] public StorefrontConfigDto Config { get; set; } = new();
+
+    /// <summary>
+    /// The <c>draftVersion</c> the editor last saw. Optional for backward
+    /// compatibility; when supplied and stale the save is refused.
+    /// </summary>
+    [JsonPropertyName("expectedVersion")] public int? ExpectedVersion { get; set; }
 }
 
 /// <summary>Owner publish request. Omitted config publishes the current draft.</summary>
 public class PublishStorefrontRequest
 {
     [JsonPropertyName("config")] public StorefrontConfigDto? Config { get; set; }
+
+    /// <summary>See <see cref="SaveStorefrontDraftRequest.ExpectedVersion"/>.</summary>
+    [JsonPropertyName("expectedVersion")] public int? ExpectedVersion { get; set; }
 }
 
 

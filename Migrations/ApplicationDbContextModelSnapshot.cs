@@ -6434,6 +6434,79 @@ namespace PunchedApi.Migrations
                         });
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.StorefrontRevision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<string>("ConfigurationJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("configuration_json");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("description");
+
+                    b.Property<bool>("IsPublishedSnapshot")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_published_snapshot");
+
+                    b.Property<int>("RevisionNumber")
+                        .HasColumnType("integer")
+                        .HasColumnName("revision_number");
+
+                    b.Property<string>("RevisionType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("revision_type");
+
+                    b.Property<Guid?>("SourceRevisionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_revision_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId")
+                        .HasDatabaseName("ix_storefront_revisions_created_by");
+
+                    b.HasIndex("SourceRevisionId")
+                        .HasDatabaseName("ix_storefront_revisions_source");
+
+                    b.HasIndex("BusinessId", "CreatedAt")
+                        .HasDatabaseName("ix_storefront_revisions_business_created");
+
+                    b.HasIndex("BusinessId", "RevisionNumber")
+                        .IsUnique()
+                        .HasDatabaseName("ux_storefront_revisions_business_number");
+
+                    b.HasIndex("BusinessId", "RevisionType")
+                        .HasDatabaseName("ix_storefront_revisions_business_type");
+
+                    b.ToTable("storefront_revisions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_storefront_revisions_number_positive", "\"revision_number\" >= 1");
+                        });
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.SubscriptionAuditLog", b =>
                 {
                     b.Property<Guid>("Id")
@@ -8173,6 +8246,31 @@ namespace PunchedApi.Migrations
                     b.Navigation("EarningRule");
 
                     b.Navigation("Program");
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.StorefrontRevision", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PunchedApi.Domain.Entities.User", "CreatedByUser")
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("PunchedApi.Domain.Entities.StorefrontRevision", "SourceRevision")
+                        .WithMany()
+                        .HasForeignKey("SourceRevisionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Business");
+
+                    b.Navigation("CreatedByUser");
+
+                    b.Navigation("SourceRevision");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.SubscriptionAuditLog", b =>

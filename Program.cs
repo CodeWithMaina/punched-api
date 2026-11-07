@@ -191,6 +191,11 @@ try
     // draft/published configuration, template switching and the public projection.
     builder.Services.AddScoped<IStorefrontBuilderService, StorefrontBuilderService>();
 
+    // Storefront revision history (v1/storefront/builder/revisions*): immutable
+    // snapshots created by draft save / publish / rollback / reset, plus the
+    // structured comparison and the restore operation.
+    builder.Services.AddScoped<IStorefrontRevisionService, StorefrontRevisionService>();
+
     // Storefront enquiries (POST /v1/businesses/{id}/enquiries): recorded against
     // the business and delivered to its owner through the notification pipeline.
     builder.Services.AddScoped<IStorefrontEnquiryService, StorefrontEnquiryService>();
@@ -386,6 +391,8 @@ try
     builder.Services.AddScoped<IReviewService, ReviewService>();
     builder.Services.AddScoped<AppointmentAvailabilityService>();
     builder.Services.AddScoped<IServiceCatalogService, ServiceCatalogService>();
+    // Owner-side customer creation for the booking flow (wizard Step 1).
+    builder.Services.AddScoped<ICustomerDirectoryService, CustomerDirectoryService>();
 
     // ── Attendance module (Phase 2: verification engine + QR credentials) ──
     // Verifiers are registered as IAttendanceVerifier so the engine receives

@@ -97,6 +97,13 @@ public class ApplicationDbContext : DbContext
     public DbSet<LoyaltyProgramMedia> LoyaltyProgramMedia => Set<LoyaltyProgramMedia>();
     public DbSet<ReviewMedia> ReviewMedia => Set<ReviewMedia>();
     public DbSet<BusinessLandingPageConfig> BusinessLandingPageConfigs => Set<BusinessLandingPageConfig>();
+
+    /// <summary>
+    /// Append-only Storefront Builder revision history. Each row is a complete
+    /// configuration snapshot; nothing in the builder updates or deletes one.
+    /// </summary>
+    public DbSet<StorefrontRevision> StorefrontRevisions => Set<StorefrontRevision>();
+
     public DbSet<StampCardRulesChange> StampCardRulesChanges => Set<StampCardRulesChange>();
     public DbSet<CustomerBusinessEnrollment> CustomerBusinessEnrollments => Set<CustomerBusinessEnrollment>();
     public DbSet<CustomerStampCard> CustomerStampCards => Set<CustomerStampCard>();

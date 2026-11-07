@@ -59,15 +59,36 @@ public class StorefrontBuilderTests
     };
 
     [Fact]
-    public void Templates_ExposeEightDistinctDesigns()
+    public void Templates_ExposeTheClassicDefaultAndTheSevenDesigns()
     {
         Assert.Equal(8, StorefrontTemplates.All.Count);
-        // Genuinely different: every template has its own header/hero/footer trio
-        // and a distinct section blueprint — not a recolour of one layout.
-        var signatures = StorefrontTemplates.All
-            .Select(t => $"{t.HeaderVariant}|{t.HeroVariant}|{t.FooterVariant}|{string.Join(',', t.Blueprint.Select(b => b.Key + ':' + b.Variant))}")
+
+        // The default must not move: a business that predates the builder keeps the
+        // storefront it already had.
+        Assert.Equal("classic", StorefrontBuilderDefaults.DefaultTemplateId);
+        Assert.Equal("classic", StorefrontTemplates.All[0].Id);
+
+        // The seven design templates earn their identity from palette, typography,
+        // corner radius and headline — the design shares one layout across them.
+        var designs = StorefrontTemplates.All.Where(t => t.Id != "classic").ToList();
+        Assert.Equal(7, designs.Count);
+
+        var signatures = designs
+            .Select(t =>
+                $"{t.Theme.Primary}|{t.Theme.Accent}|{t.Theme.Background}|{t.Theme.Surface}|" +
+                $"{t.Theme.HeadingFont}|{t.Theme.RadiusPx}|" +
+                t.Pages!.First(p => p.Kind == "home").HeroHeading)
             .ToList();
         Assert.Equal(signatures.Count, signatures.Distinct().Count());
+
+        // Each of them ships the design's whole starting site.
+        Assert.All(designs, template =>
+        {
+            Assert.NotNull(template.Pages);
+            Assert.Equal(5, template.Pages!.Count);
+            Assert.Contains(template.Pages, page => page.Kind == "home");
+            Assert.All(template.Pages, page => Assert.NotEmpty(page.Blueprint));
+        });
     }
 
     [Fact]
@@ -198,8 +219,14 @@ public class StorefrontBuilderTests
 
         Assert.True(applied.Success, applied.Error?.Message);
         Assert.Equal("luxe", applied.Data!.Draft.TemplateId);
-        Assert.Equal("floating", applied.Data.Draft.Header.Variant);
-        Assert.Equal("premium", applied.Data.Draft.Hero.Variant);
+        // Luxe's identity as the design defines it: antique gold on deep lacquer,
+        // a high-contrast serif and near-square corners.
+        Assert.Equal("#1a1712", applied.Data.Draft.Theme.Primary);
+        Assert.Equal("#cbb27a", applied.Data.Draft.Theme.Accent);
+        Assert.Equal("Playfair Display", applied.Data.Draft.Theme.HeadingFont);
+        Assert.Equal(2, applied.Data.Draft.Theme.RadiusPx);
+        Assert.Equal("classic", applied.Data.Draft.Header.Variant);
+        Assert.Equal("overlay", applied.Data.Draft.Hero.Variant);
         // Owner content survives the design switch.
         Assert.Equal("My services heading", applied.Data.Draft.Sections.First(s => s.Key == "services").Title);
     }

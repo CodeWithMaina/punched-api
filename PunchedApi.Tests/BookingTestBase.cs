@@ -55,6 +55,17 @@ internal static class BookingTestBase
     }
 
     public static AppointmentService CreateAppointmentService(ApplicationDbContext context)
+        => CreateAppointmentService(context, moduleEntitlements: null);
+
+    /// <summary>
+    /// Builds an <see cref="AppointmentService"/> with an explicit module-entitlement
+    /// resolver, so tests can assert the optional-Staff-module gate. Passing
+    /// <c>null</c> leaves the staff module treated as enabled (the pre-existing
+    /// behaviour).
+    /// </summary>
+    public static AppointmentService CreateAppointmentService(
+        ApplicationDbContext context,
+        IModuleEntitlementService? moduleEntitlements)
         => new(
             new UnitOfWork(context),
             context,
@@ -67,7 +78,8 @@ internal static class BookingTestBase
                 BusinessOperationsTestBase.CreatePermissionService(context)),
             CreateNotificationService(context),
             new Mock<IDomainEventPublisher>().Object,
-            TestHelpers.CreateLogger<AppointmentService>());
+            TestHelpers.CreateLogger<AppointmentService>(),
+            moduleEntitlements: moduleEntitlements);
 
     public static AppointmentAvailabilityService CreateAvailabilityService(
         ApplicationDbContext context,

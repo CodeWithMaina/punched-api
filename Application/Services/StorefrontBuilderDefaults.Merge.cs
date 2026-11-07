@@ -37,6 +37,20 @@ public static partial class StorefrontBuilderDefaults
         target.BackgroundImageMediaId = source.BackgroundImageMediaId ?? target.BackgroundImageMediaId;
         target.GradientFrom = Pick(source.GradientFrom, target.GradientFrom);
         target.GradientTo = Pick(source.GradientTo, target.GradientTo);
+
+        // Motion & presentation. Each value is clamped to its documented range, so a
+        // hand-edited payload cannot produce an unusable animation.
+        target.RadiusPx = source.RadiusPx ?? target.RadiusPx;
+        target.Mode = StorefrontLayoutCatalog.FromList(source.Mode, StorefrontLayoutCatalog.Modes, target.Mode);
+        target.Animation = StorefrontLayoutCatalog.FromList(
+            source.Animation, StorefrontLayoutCatalog.Animations, target.Animation);
+        target.DurationMs = source.DurationMs > 0
+            ? Math.Clamp(source.DurationMs, 200, 1500)
+            : target.DurationMs;
+        target.HoverEffect = StorefrontLayoutCatalog.FromList(
+            source.HoverEffect, StorefrontLayoutCatalog.HoverEffects, target.HoverEffect);
+        target.PageTransition = StorefrontLayoutCatalog.FromList(
+            source.PageTransition, StorefrontLayoutCatalog.PageTransitions, target.PageTransition);
     }
 
     private static void MergeHeader(StorefrontHeaderDto target, StorefrontHeaderDto? source)
@@ -57,6 +71,21 @@ public static partial class StorefrontBuilderDefaults
         target.CtaEnabled = source.CtaEnabled;
         target.CtaLabel = Pick(source.CtaLabel, target.CtaLabel);
         target.CtaType = Pick(source.CtaType, target.CtaType);
+
+        // Independent navigation and the design's header controls.
+        target.Nav = source.Nav ?? target.Nav;
+        target.Drawer = StorefrontLayoutCatalog.FromList(
+            source.Drawer, StorefrontLayoutCatalog.DrawerStyles, target.Drawer);
+        target.LinkEffect = Pick(source.LinkEffect, target.LinkEffect);
+        target.CtaStyle = Pick(source.CtaStyle, target.CtaStyle);
+        target.UppercaseLinks = source.UppercaseLinks;
+        target.Height = source.Height > 0 ? Math.Clamp(source.Height, 6, 40) : target.Height;
+        target.Shadow = source.Shadow;
+        target.Border = source.Border;
+        target.Announcement = source.Announcement ?? target.Announcement;
+        target.UtilityLeft = source.UtilityLeft ?? target.UtilityLeft;
+        target.UtilityRight = source.UtilityRight ?? target.UtilityRight;
+        target.ShowContactInDrawer = source.ShowContactInDrawer;
     }
 
     private static void MergeHero(StorefrontHeroDto target, StorefrontHeroDto? source)
@@ -104,6 +133,13 @@ public static partial class StorefrontBuilderDefaults
         target.Copyright = source.Copyright ?? target.Copyright;
         target.BackgroundColor = Pick(source.BackgroundColor, target.BackgroundColor);
         target.TextColor = Pick(source.TextColor, target.TextColor);
+
+        // The design's footer controls.
+        target.Padding = source.Padding > 0 ? Math.Clamp(source.Padding, 24, 120) : target.Padding;
+        target.NewsletterHeadline = source.NewsletterHeadline ?? target.NewsletterHeadline;
+        target.NewsletterPlaceholder = Pick(source.NewsletterPlaceholder, target.NewsletterPlaceholder);
+        target.NewsletterButtonLabel = Pick(source.NewsletterButtonLabel, target.NewsletterButtonLabel);
+        target.ShowWordmark = source.ShowWordmark;
     }
 
     private static string Pick(string? value, string fallback) =>
