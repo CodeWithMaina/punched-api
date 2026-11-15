@@ -32,6 +32,10 @@ public static class ModuleSeedData
         new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000016"), Key = "reviews", Name = "Reviews", Description = "Customer reviews and ratings moderation", IsCore = false, IsActive = true },
         new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000017"), Key = "gallery", Name = "Gallery", Description = "Business photo gallery management", IsCore = false, IsActive = true },
         new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000018"), Key = "storefront", Name = "Storefront", Description = "Public business landing page editor", IsCore = false, IsActive = true },
-        new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000019"), Key = "commissions", Name = "Commissions", Description = "Staff commission configuration, ledger and payouts", IsCore = false, IsActive = true, DependenciesJson = "[\"appointments\"]" }
+        new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000019"), Key = "commissions", Name = "Commissions", Description = "Staff commission configuration, ledger and payouts", IsCore = false, IsActive = true, DependenciesJson = "[\"appointments\"]" },
+        // Financial management: the business's own ledger (income from any source, expenses,
+        // refunds), the cashbook, M-Pesa statement reconciliation and financial analytics.
+        // Depends on payments because appointment payments are recognised through the ledger.
+        new Module { Id = Guid.Parse("10000000-0000-0000-0000-000000000020"), Key = "financials", Name = "Finances", Description = "Income, expenses, cashbook, M-Pesa reconciliation and financial analytics", IsCore = false, IsActive = true, DependenciesJson = "[\"payments\"]" }
     };
 }

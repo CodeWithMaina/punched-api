@@ -42,6 +42,13 @@ public partial class PaymentService : IPaymentService
     /// </summary>
     private readonly ICommissionService? _commissions;
 
+    /// <summary>
+    /// Optional financial ledger. Optional so every existing construction site (including the test
+    /// suite) keeps compiling; when present, a settled payment is recognised in the business's books
+    /// exactly once, and a reversal records a linked refund.
+    /// </summary>
+    private readonly IFinancialLedgerService? _ledger;
+
     public PaymentService(
         ApplicationDbContext context,
         IUnitOfWork uow,
@@ -51,7 +58,8 @@ public partial class PaymentService : IPaymentService
         IOptions<PaymentOptions> options,
         INotificationService notifications,
         ILogger<PaymentService> logger,
-        ICommissionService? commissions = null)
+        ICommissionService? commissions = null,
+        IFinancialLedgerService? ledger = null)
     {
         _context = context;
         _uow = uow;
@@ -62,6 +70,7 @@ public partial class PaymentService : IPaymentService
         _notifications = notifications;
         _logger = logger;
         _commissions = commissions;
+        _ledger = ledger;
     }
 
     /// <summary>
@@ -82,6 +91,47 @@ public partial class PaymentService : IPaymentService
             _logger.LogError(ex,
                 "Commission settlement failed for appointment {AppointmentId} after payment {PaymentId}; the payment stands.",
                 id, paymentId);
+        }
+    }
+
+    /// <summary>
+    /// Recognises a settled payment in the business's financial ledger. Idempotent (one row per
+    /// payment) and non-fatal: the money has already moved, so a ledger problem must never undo the
+    /// payment — it is logged and the next settlement of the same payment is a no-op anyway.
+    /// </summary>
+    private async Task RecogniseInLedgerSafelyAsync(Payment payment)
+    {
+        if (_ledger == null || !PaymentStatuses.IsSettled(payment.Status)) return;
+
+        try
+        {
+            await _ledger.EnsureIncomeForPaymentAsync(payment);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Could not recognise payment {PaymentId} in the financial ledger; the payment itself stands.",
+                payment.Id);
+        }
+    }
+
+    /// <summary>
+    /// Records the refund that accompanies a reversal. Linked to the income row, never to the original
+    /// payment record, so the historical receipt stays exactly as it was.
+    /// </summary>
+    private async Task RecordRefundInLedgerSafelyAsync(Payment payment, string reason)
+    {
+        if (_ledger == null) return;
+
+        try
+        {
+            await _ledger.EnsureRefundForReversedPaymentAsync(payment, reason);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Could not record the refund for reversed payment {PaymentId} in the financial ledger.",
+                payment.Id);
         }
     }
 
@@ -155,7 +205,7 @@ public partial class PaymentService : IPaymentService
         if (query.AppointmentId.HasValue) dbQuery = dbQuery.Where(p => p.AppointmentId == query.AppointmentId);
         if (query.CustomerId.HasValue) dbQuery = dbQuery.Where(p => p.CustomerId == query.CustomerId);
         if (!string.IsNullOrWhiteSpace(query.Status) &&
-            Enum.TryParse<PaymentStatus>(query.Status, true, out var status))
+            PaymentStatuses.TryParse(query.Status, out var status))
             dbQuery = dbQuery.Where(p => p.Status == status);
         if (!string.IsNullOrWhiteSpace(query.Method) &&
             Enum.TryParse<PaymentMethod>(query.Method, true, out var method))
@@ -176,12 +226,25 @@ public partial class PaymentService : IPaymentService
             .Include(p => p.Attempts.OrderBy(a => a.AttemptNumber))
             .ToListAsync();
 
+        var responses = items.Select(ToResponse).ToList();
+
+        // Customer names for the visible page only, in one query: the payments register is read
+        // by a person looking for somebody's money, so a column of ids would be useless.
+        var names = await FinancialAccess.ResolveUserNamesAsync(_context, items.Select(p => p.CustomerId));
+        for (var index = 0; index < responses.Count; index++)
+        {
+            responses[index].CustomerName = items[index].CustomerId is Guid customerId
+                ? names.GetValueOrDefault(customerId)
+                : null;
+        }
+
         return ApiResponse<PaymentListResponse>.Ok(new PaymentListResponse
         {
-            Items = items.Select(ToResponse).ToList(),
+            Items = responses,
             Page = page,
             PageSize = pageSize,
-            TotalCount = total
+            TotalCount = total,
+            TotalPages = pageSize <= 0 ? 1 : (int)Math.Ceiling(total / (double)pageSize)
         });
     }
 
@@ -262,7 +325,8 @@ public partial class PaymentService : IPaymentService
         if (request.AppointmentId == Guid.Empty)
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "appointmentId is required.");
 
-        if (!Enum.TryParse<PaymentMethod>(request.Method, true, out var method))
+        if (!Enum.TryParse<PaymentMethod>(request.Method, true, out var method) ||
+            method == PaymentMethod.Unspecified)
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "method must be 'cash' or 'mpesa'.");
 
         // The phone number is only required when the platform drives the handset (an
@@ -300,11 +364,15 @@ public partial class PaymentService : IPaymentService
         var config = await GetOrCreateConfigAsync(appointment.BusinessId);
 
         // Summed in memory: the shared test host runs SQLite, which cannot translate SUM over decimal columns.
-        var paidAmounts = await _context.Payments
-            .Where(p => p.AppointmentId == appointment.Id && p.Status == PaymentStatus.Success)
+        // "Already paid" is every SETTLED payment — provider-confirmed and owner-verified
+        // alike. Counting only Success would let a verified manual M-PESA payment be
+        // charged again, which is exactly the overpayment the balance maths must prevent.
+        var settledAmounts = await _context.Payments
+            .Where(p => p.AppointmentId == appointment.Id &&
+                        (p.Status == PaymentStatus.Success || p.Status == PaymentStatus.Verified))
             .Select(p => p.Amount)
             .ToListAsync();
-        var alreadyPaid = paidAmounts.Sum();
+        var alreadyPaid = settledAmounts.Sum();
 
         var serviceTotal = appointment.Resources.Sum(r => r.Price);
         if (serviceTotal <= 0)
@@ -327,16 +395,29 @@ public partial class PaymentService : IPaymentService
         if (amount <= 0)
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "Appointment is already fully paid.");
 
-        // A cash collection may be partial: the operator states how much cash they took.
-        // The figure is NOT trusted — it is validated against the balance the server just
-        // computed and can never exceed it, so overpayment and client-invented money are
-        // both impossible. An amount on anything else is rejected outright rather than
-        // silently ignored, so a client cannot smuggle money into an M-PESA or fee row.
+        // Manual M-PESA: the business has published its own PayBill/Till and collects
+        // by the customer paying it themselves. No Daraja call happens, so the payment
+        // is created Pending and waits for a pasted confirmation + an owner decision.
+        var manualMpesa = method == PaymentMethod.Mpesa && config.HasManualMpesaDetails;
+
+        if (method == PaymentMethod.Cash && !config.CashEnabled)
+            return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "Cash payments are not enabled for this business.");
+        if (method == PaymentMethod.Mpesa && !manualMpesa && !config.MpesaEnabled)
+            return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "M-PESA payments are not enabled for this business.");
+
+        // A stated amount is a claim about what was handed over, so it is never trusted:
+        // it is validated against the balance the server just computed and can never
+        // exceed it. It is accepted for the two flows where a human states the figure —
+        // a partial cash collection, and a manual M-PESA payment the operator is
+        // recording (the customer's number and the amount they sent). Anywhere else it
+        // is rejected outright rather than silently ignored, so a client cannot smuggle
+        // money into a provider row whose amount is fixed by the request we send Safaricom.
         if (request.Amount.HasValue)
         {
-            if (method != PaymentMethod.Cash || type != PaymentType.BalancePayment)
+            if (!(method == PaymentMethod.Cash && type == PaymentType.BalancePayment) && !manualMpesa)
                 return ApiResponse<PaymentResponse>.Fail(
-                    "VALIDATION_ERROR", "An amount may only be supplied for a cash balance payment.");
+                    "VALIDATION_ERROR",
+                    "An amount may only be supplied for a cash balance payment or a manual M-PESA payment.");
 
             var requested = decimal.Round(request.Amount.Value, 2, MidpointRounding.AwayFromZero);
             if (requested <= 0)
@@ -349,41 +430,93 @@ public partial class PaymentService : IPaymentService
             amount = requested;
         }
 
-        // Manual M-PESA: the business has published its own PayBill/Till and collects
-        // by the customer paying it themselves. No Daraja call happens, so the payment
-        // is created Pending and waits for a pasted confirmation + an owner decision.
-        var manualMpesa = method == PaymentMethod.Mpesa && config.HasManualMpesaDetails;
+        // Duplicate guard. An appointment carries at most ONE open payment of a given
+        // type, and the row a "pay after service" booking created IS that row — so
+        // collecting against it updates it instead of adding a second one, which is how
+        // a booking fee or a balance gets collected twice.
+        var openPayments = await _context.Payments
+            .Include(p => p.Attempts)
+            .Where(p => p.AppointmentId == appointment.Id &&
+                        (p.Status == PaymentStatus.Created ||
+                         p.Status == PaymentStatus.AwaitingCustomer ||
+                         p.Status == PaymentStatus.Processing ||
+                         p.Status == PaymentStatus.Submitted ||
+                         p.Status == PaymentStatus.UnderReview))
+            .ToListAsync();
 
-        if (method == PaymentMethod.Cash && !config.CashEnabled)
-            return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "Cash payments are not enabled for this business.");
-        if (method == PaymentMethod.Mpesa && !manualMpesa && !config.MpesaEnabled)
-            return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "M-PESA payments are not enabled for this business.");
+        // Reusable: the outstanding row ("pay after service") that nothing has touched yet.
+        // A request for the whole appointment or for the balance both settle the SAME
+        // obligation, so both reuse that row; a booking fee is a separate up-front charge
+        // and never hijacks it.
+        var reusable = type is PaymentType.BalancePayment or PaymentType.FullPayment;
+        var outstanding = reusable
+            ? openPayments.FirstOrDefault(p =>
+                p.Type == PaymentType.BalancePayment &&
+                p.Status == PaymentStatus.Created &&
+                p.Method == PaymentMethod.Unspecified &&
+                p.Attempts.Count == 0)
+            : null;
 
-        var payment = new Payment
+        // Anything else already open for the same purpose is an in-flight payment: it has to
+        // be settled, retried or cancelled instead of being silently duplicated.
+        var conflicting = openPayments.FirstOrDefault(p => p.Id != outstanding?.Id && p.Type == type);
+        if (conflicting != null)
+            return ApiResponse<PaymentResponse>.Fail(
+                "DUPLICATE_PAYMENT",
+                $"This appointment already has an open {PaymentTypes.ToWire(type)} payment. " +
+                "Settle, retry or cancel it instead of recording a second one.");
+
+        var payment = outstanding ?? new Payment
         {
             Id = Guid.NewGuid(),
             BusinessId = appointment.BusinessId,
             CustomerId = appointment.CustomerId,
             AppointmentId = appointment.Id,
             Type = type,
-            Method = method,
-            Provider = method == PaymentMethod.Cash
-                ? PaymentProviderKind.Cash
-                : manualMpesa ? PaymentProviderKind.ManualMpesa : PaymentProviderKind.DarajaStk,
             Status = PaymentStatus.Created,
-            Amount = decimal.Round(amount, 2, MidpointRounding.AwayFromZero),
             Currency = "KES",
             Reference = GenerateReference(),
-            // A manual payment is made *from* the customer's own handset, so their
-            // number is recorded but is not a required input for the flow.
-            PhoneNumber = method == PaymentMethod.Mpesa && !string.IsNullOrWhiteSpace(request.PhoneNumber)
-                ? NormalizePhone(request.PhoneNumber!)
-                : null,
-            CreatedByUserId = userId,
             CreatedAt = DateTime.UtcNow
         };
 
-        await _context.Payments.AddAsync(payment);
+        if (outstanding != null)
+        {
+            // Collecting only part of what is owed: the amount that arrived is this row,
+            // and the rest is left as its own outstanding row.
+            var received = decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
+            var owed = outstanding.Amount;
+            if (received < owed)
+            {
+                // Part of the balance is being taken. The amount that arrived is this row;
+                // what is still owed becomes its own outstanding row, so the balance the
+                // business sees is the same figure from every angle.
+                await _context.Payments.AddAsync(PaymentOutstanding.Create(
+                    outstanding.BusinessId,
+                    outstanding.CustomerId ?? Guid.Empty,
+                    outstanding.AppointmentId ?? Guid.Empty,
+                    owed - received,
+                    userId,
+                    DateTime.UtcNow));
+            }
+        }
+
+        // The channel and the figure just chosen are written onto the row. Its amount is
+        // rewritten to the balance that is genuinely outstanding, so an outstanding row
+        // created before an earlier partial collection cannot re-charge the part that has
+        // already been paid.
+        payment.Method = method;
+        payment.Provider = method == PaymentMethod.Cash
+            ? PaymentProviderKind.Cash
+            : manualMpesa ? PaymentProviderKind.ManualMpesa : PaymentProviderKind.DarajaStk;
+        payment.Amount = decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
+        payment.CreatedByUserId = userId;
+        // A manual payment is made *from* the customer's own handset, so their number is
+        // recorded but is not a required input for the flow.
+        if (method == PaymentMethod.Mpesa && !string.IsNullOrWhiteSpace(request.PhoneNumber))
+            payment.PhoneNumber = NormalizePhone(request.PhoneNumber!);
+
+        if (outstanding == null)
+            await _context.Payments.AddAsync(payment);
 
         if (method == PaymentMethod.Mpesa && !manualMpesa)
         {
@@ -408,8 +541,19 @@ public partial class PaymentService : IPaymentService
         return ApiResponse<PaymentResponse>.Ok(ToResponse(payment));
     }
 
-    /// <summary>Authorised staff/business confirms physical cash was received. Audited, idempotent, never backdated.</summary>
-    public async Task<ApiResponse<PaymentResponse>> ConfirmCashAsync(Guid paymentId, string? note, Guid userId, string role, string? idempotencyKey = null)
+    /// <summary>
+    /// Authorised staff/business confirms physical cash was received. Audited, idempotent,
+    /// never backdated.
+    ///
+    /// <para><paramref name="amount"/> is what the operator actually counted, and is only
+    /// honoured when it is smaller than what the row is for: collecting part of an
+    /// outstanding balance leaves the rest as its own outstanding row, so the settled
+    /// total and the remaining balance still add up to the appointment's value. A figure
+    /// larger than the row is refused — the platform never records more cash than it was
+    /// owed.</para>
+    /// </summary>
+    public async Task<ApiResponse<PaymentResponse>> ConfirmCashAsync(
+        Guid paymentId, string? note, Guid userId, string role, string? idempotencyKey = null, decimal? amount = null)
     {
         var payment = await _context.Payments
             .Include(p => p.Attempts.OrderBy(a => a.AttemptNumber))
@@ -424,7 +568,10 @@ public partial class PaymentService : IPaymentService
         if (role == "Staff" && !_permissions.HasPermission(role, "payments.confirm_cash"))
             return ApiResponse<PaymentResponse>.Fail("FORBIDDEN", "You are not allowed to confirm cash payments.");
 
-        if (payment.Method != PaymentMethod.Cash)
+        // A row that has not named its channel yet is an outstanding amount ("pay after
+        // service"), and cash is a valid way to settle it — the act of taking the money is
+        // what names the channel.
+        if (payment.Method is not (PaymentMethod.Cash or PaymentMethod.Unspecified))
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "Only cash payments can be confirmed as cash.");
 
         // Idempotency: confirming twice returns the same success — never creates a second payment.
@@ -437,6 +584,40 @@ public partial class PaymentService : IPaymentService
         // Guardrail: no silent backdating — cash confirmation happens in the present.
         if (payment.CreatedAt > DateTime.UtcNow.Add(CashConfirmGrace))
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "Payment was created in the future; cannot confirm yet.");
+
+        if (amount.HasValue)
+        {
+            var counted = decimal.Round(amount.Value, 2, MidpointRounding.AwayFromZero);
+            if (counted <= 0)
+                return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "The amount received must be greater than zero.");
+            if (counted > payment.Amount)
+                return ApiResponse<PaymentResponse>.Fail(
+                    "VALIDATION_ERROR",
+                    $"The amount received cannot exceed the {payment.Amount:0.00} {payment.Currency} outstanding on this payment.");
+
+            // Part of the balance was taken. The money that arrived is this row; the money
+            // still owed becomes its own outstanding row, so the appointment's balance
+            // stays correct and the remainder is collected (or paid by M-PESA) later.
+            if (counted < payment.Amount)
+            {
+                var remainder = decimal.Round(payment.Amount - counted, 2, MidpointRounding.AwayFromZero);
+                await _context.Payments.AddAsync(PaymentOutstanding.Create(
+                    payment.BusinessId,
+                    payment.CustomerId ?? Guid.Empty,
+                    payment.AppointmentId ?? Guid.Empty,
+                    remainder,
+                    userId,
+                    DateTime.UtcNow));
+                payment.Amount = counted;
+            }
+        }
+
+        // Collecting the cash is what names the channel on a previously unnamed row.
+        if (payment.Method == PaymentMethod.Unspecified)
+        {
+            payment.Method = PaymentMethod.Cash;
+            payment.Provider = PaymentProviderKind.Cash;
+        }
 
         PaymentStateMachine.Transition(payment, PaymentStatus.Success);
         payment.ConfirmedByUserId = userId;
@@ -460,6 +641,10 @@ public partial class PaymentService : IPaymentService
         // The money arrived, so the appointment's accrued commission can be
         // released. Idempotent, and never able to fail the payment itself.
         await SettleCommissionSafelyAsync(payment.BusinessId, payment.AppointmentId, payment.Id);
+
+        // Cash in hand is recognised income: one ledger row, written after the payment committed so a
+        // ledger failure can never roll back money the business is holding.
+        await RecogniseInLedgerSafelyAsync(payment);
 
         _logger.LogInformation(
             "Cash payment {PaymentId} confirmed by user {UserId} (business {BusinessId}), note present: {HasNote}",
@@ -582,6 +767,10 @@ public partial class PaymentService : IPaymentService
             await _uow.SaveChangesAsync();
             await ReverseCommissionSafelyAsync(payment.BusinessId, payment.AppointmentId, payment.Id, reason);
 
+            // A manual M-PESA refund is recorded in the ledger as a refund against the income row, so
+            // the original receipt keeps standing and the money out is separately provable.
+            await RecordRefundInLedgerSafelyAsync(payment, reason);
+
             _logger.LogWarning(
                 "Manual M-PESA payment {PaymentId} refunded (recorded) by owner {UserId}; reason: {Reason}",
                 payment.Id, userId, reason);
@@ -639,6 +828,10 @@ public partial class PaymentService : IPaymentService
         // A refund/reversal must claw the commission back. Idempotent and
         // non-fatal: the financial record of the reversal is what matters.
         await ReverseCommissionSafelyAsync(payment.BusinessId, payment.AppointmentId, payment.Id, reason);
+
+        // The ledger records the refund against the income row it recognises, so "money in" and
+        // "money back out" stay two provable records rather than one rewritten one.
+        await RecordRefundInLedgerSafelyAsync(payment, reason);
 
         _logger.LogWarning(
             "Payment {PaymentId} outcome {Outcome} by business owner {UserId}; reason: {Reason}",
@@ -883,12 +1076,7 @@ public partial class PaymentService : IPaymentService
     }
 
     /// <summary>Generate a unique Punched payment reference: PMT- + 12 hex chars. Used as C2B BillRefNumber / STK AccountReference.</summary>
-    private static string GenerateReference()
-    {
-        Span<byte> bytes = stackalloc byte[6];
-        RandomNumberGenerator.Fill(bytes);
-        return "PMT-" + Convert.ToHexString(bytes);
-    }
+    private static string GenerateReference() => PaymentReferences.New();
 
     /// <summary>Valid Kenyan MSISDN: 07XXXXXXXX, 01XXXXXXXX, 2547/2541…</summary>
     private static bool IsValidKenyanPhone(string phone)
@@ -918,7 +1106,10 @@ public partial class PaymentService : IPaymentService
         Type = PaymentTypes.ToWire(payment.Type),
         Method = payment.Method.ToString().ToLowerInvariant(),
         Provider = payment.Provider.ToString().ToLowerInvariant(),
-        Status = payment.Status.ToString().ToLowerInvariant(),
+        // The wire dialect has to be one dialect: `awaiting_customer` and `under_review` are
+        // written with an underscore everywhere else (the queue, the client's status maps), so
+        // a plain ToLower() would emit `underreview` here and nowhere else.
+        Status = PaymentStatuses.ToWire(payment.Status),
         Amount = payment.Amount,
         Currency = payment.Currency,
         Reference = payment.Reference,

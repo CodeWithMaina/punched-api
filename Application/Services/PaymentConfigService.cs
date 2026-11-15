@@ -40,65 +40,75 @@ public class PaymentConfigService : IPaymentConfigService
     {
         if (request.MpesaEnabled)
         {
-            if (request.MpesaAccountType is not ("paybill" or "till"))
-                return ApiResponse<PaymentConfigResponse>.Fail("VALIDATION_ERROR", "mpesaAccountType must be 'paybill' or 'till'.");
+            // The Daraja STK path can only push to a PayBill or Till — never a phone.
+            if (ManualMpesaMethods.Normalise(request.MpesaAccountType) == ManualMpesaMethods.SendMoney)
+                return ApiResponse<PaymentConfigResponse>.Fail(
+                    "VALIDATION_ERROR", "M-PESA prompts need a PayBill or Till shortcode, not a phone number.");
             if (string.IsNullOrWhiteSpace(request.MpesaShortCode))
                 return ApiResponse<PaymentConfigResponse>.Fail("VALIDATION_ERROR", "mpesaShortCode is required when M-PESA is enabled.");
             if (!request.MpesaShortCode!.All(char.IsDigit) || request.MpesaShortCode.Length is < 5 or > 12)
                 return ApiResponse<PaymentConfigResponse>.Fail("VALIDATION_ERROR", "mpesaShortCode must be a numeric PayBill/Till number.");
         }
 
-        // Manual M-PESA: a half-configured collection account is worse than none, so
-        // the same "must be payable or switched off" rule the Daraja path uses applies.
-        if (request.ManualMpesaEnabled)
-        {
-            var paybill = request.MpesaPaybillNumber?.Trim();
-            var till = request.MpesaTillNumber?.Trim();
-            var hasPaybill = !string.IsNullOrWhiteSpace(paybill);
-            var hasTill = !string.IsNullOrWhiteSpace(till);
-
-            if (!hasPaybill && !hasTill)
-                return ApiResponse<PaymentConfigResponse>.Fail(
-                    "VALIDATION_ERROR",
-                    "Add a PayBill or Till number, or turn manual M-PESA off.");
-
-            if (hasPaybill && paybill is not null)
-            {
-                if (!paybill.All(char.IsDigit) || paybill.Length is < 5 or > 12)
-                    return ApiResponse<PaymentConfigResponse>.Fail(
-                        "VALIDATION_ERROR", "mpesaPaybillNumber must be a numeric PayBill number.");
-                if (string.IsNullOrWhiteSpace(request.MpesaPaybillAccount))
-                    return ApiResponse<PaymentConfigResponse>.Fail(
-                        "VALIDATION_ERROR", "mpesaPaybillAccount is required when a PayBill number is set.");
-            }
-
-            if (hasTill && till is not null && (!till.All(char.IsDigit) || till.Length is < 5 or > 12))
-                return ApiResponse<PaymentConfigResponse>.Fail(
-                    "VALIDATION_ERROR", "mpesaTillNumber must be a numeric Till number.");
-        }
+        // Manual M-PESA: ONE shared definition of a valid configuration, so the form and
+        // the server cannot disagree. A failure carries the offending field(s) so the
+        // owner UI can place each message under its input. Enabling with an incomplete
+        // method is refused rather than silently leaving the business unpayable.
+        var fieldErrors = MpesaDetailsValidation.Validate(request);
+        if (fieldErrors.Count > 0)
+            return ApiResponse<PaymentConfigResponse>.Fail(
+                "VALIDATION_ERROR",
+                fieldErrors.Values.First(),
+                fieldErrors);
 
         if (request.BookingFeePercentage is decimal percent && (percent < 0 || percent > 100))
             return ApiResponse<PaymentConfigResponse>.Fail(
                 "VALIDATION_ERROR", "bookingFeePercentage must be between 0 and 100.");
 
-        var config = await _context.BusinessPaymentConfigs.FirstOrDefaultAsync(c => c.BusinessId == businessId);
+        // ── Storefront payment options ──────────────────────────
+        // Omitted means "keep what is stored" (a client that does not know about these
+        // switches must not be able to turn a business's storefront policy off by staying
+        // silent); a business with no row yet falls back to the defaults — Payment
+        // Included on, Pay After Service off. The pair is validated as a whole BEFORE
+        // anything is written, so a save can never leave the business unbookable.
+        var existing = await _context.BusinessPaymentConfigs.FirstOrDefaultAsync(c => c.BusinessId == businessId);
+        var payUpfront = request.PayUpfrontEnabled ?? existing?.PayUpfrontEnabled ?? true;
+        var payAfterService = request.PayAfterServiceEnabled ?? existing?.PayAfterServiceEnabled ?? false;
+        if (!payUpfront && !payAfterService)
+            return ApiResponse<PaymentConfigResponse>.Fail(
+                "VALIDATION_ERROR",
+                "Keep at least one payment option on: customers can pay during booking, after the service, or both.",
+                new Dictionary<string, string>
+                {
+                    ["payUpfrontEnabled"] = "Turn on Payment Included or Pay After Service.",
+                    ["payAfterServiceEnabled"] = "Turn on Pay After Service or Payment Included."
+                });
+
+        var config = existing;
         if (config == null)
         {
             config = new BusinessPaymentConfig { Id = Guid.NewGuid(), BusinessId = businessId, CreatedAt = DateTime.UtcNow };
             await _context.BusinessPaymentConfigs.AddAsync(config);
         }
 
+        config.PayUpfrontEnabled = payUpfront;
+        config.PayAfterServiceEnabled = payAfterService;
+
         config.CashEnabled = request.CashEnabled;
         config.MpesaEnabled = request.MpesaEnabled;
-        config.MpesaAccountType = request.MpesaAccountType;
+        // Canonicalise so an old client that never sent a type (or sent an alias) still
+        // lands on a known value the DB constraint accepts.
+        config.MpesaAccountType = ManualMpesaMethods.Normalise(request.MpesaAccountType);
         config.MpesaShortCode = string.IsNullOrWhiteSpace(request.MpesaShortCode) ? null : request.MpesaShortCode.Trim();
 
         config.ManualMpesaEnabled = request.ManualMpesaEnabled;
         config.MpesaPaybillNumber = Normalise(request.MpesaPaybillNumber, 20);
         config.MpesaPaybillAccount = Normalise(request.MpesaPaybillAccount, 40);
         config.MpesaTillNumber = Normalise(request.MpesaTillNumber, 20);
-        config.MpesaPayeeName = Normalise(request.MpesaPayeeName, 100);
-        config.MpesaInstructions = Normalise(request.MpesaInstructions, 500);
+        // Stored normalised (254…) so the public payload and the DB CHECK constraint agree.
+        config.MpesaPhoneNumber = MpesaDetailsValidation.NormalisePhone(request.MpesaPhoneNumber);
+        config.MpesaPayeeName = Normalise(request.MpesaPayeeName, 60);
+        config.MpesaInstructions = Normalise(request.MpesaInstructions, 300);
 
         // Omitted means "leave it alone": a client that does not know about this
         // setting must never be able to reset a business's pricing to a default.
@@ -144,10 +154,13 @@ public class PaymentConfigService : IPaymentConfigService
         MpesaPaybillNumber = config.MpesaPaybillNumber,
         MpesaPaybillAccount = config.MpesaPaybillAccount,
         MpesaTillNumber = config.MpesaTillNumber,
+        MpesaPhoneNumber = config.MpesaPhoneNumber,
         MpesaPayeeName = config.MpesaPayeeName,
         MpesaInstructions = config.MpesaInstructions,
         BookingFeePercentage = config.BookingFeePercentage,
-        HasManualMpesaDetails = config.HasManualMpesaDetails
+        HasManualMpesaDetails = config.HasManualMpesaDetails,
+        PayUpfrontEnabled = config.PayUpfrontEnabled,
+        PayAfterServiceEnabled = config.PayAfterServiceEnabled
     };
 
     /// <summary>Trim a value to a column's length, treating blank as "not set".</summary>

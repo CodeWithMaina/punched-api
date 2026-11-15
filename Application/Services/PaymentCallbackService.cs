@@ -33,18 +33,46 @@ public class PaymentCallbackService : IPaymentCallbackService
     /// </summary>
     private readonly ICommissionService? _commissions;
 
+    /// <summary>
+    /// Optional financial ledger, so a provider-confirmed payment is recognised in the business's books
+    /// exactly once. Optional to keep every existing construction site compiling.
+    /// </summary>
+    private readonly IFinancialLedgerService? _ledger;
+
     public PaymentCallbackService(
         ApplicationDbContext context,
         IUnitOfWork uow,
         INotificationService notifications,
         ILogger<PaymentCallbackService> logger,
-        ICommissionService? commissions = null)
+        ICommissionService? commissions = null,
+        IFinancialLedgerService? ledger = null)
     {
         _context = context;
         _uow = uow;
         _notifications = notifications;
         _logger = logger;
         _commissions = commissions;
+        _ledger = ledger;
+    }
+
+    /// <summary>
+    /// Recognises a settled payment in the ledger. Idempotent and non-fatal: a replayed callback calls
+    /// it again and changes nothing, and a ledger failure never undoes money that already moved.
+    /// </summary>
+    private async Task RecogniseInLedgerSafelyAsync(Payment payment)
+    {
+        if (_ledger == null || !PaymentStatuses.IsSettled(payment.Status)) return;
+
+        try
+        {
+            await _ledger.EnsureIncomeForPaymentAsync(payment);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Could not recognise payment {PaymentId} in the financial ledger; the payment itself stands.",
+                payment.Id);
+        }
     }
 
     // ── STK push result callback ────────────────────────────
@@ -193,7 +221,13 @@ public class PaymentCallbackService : IPaymentCallbackService
         // Money is confirmed: release the appointment's accrued commission.
         // Idempotent (a replayed callback changes nothing) and non-fatal.
         if (record.Outcome == "applied" && payment.Status == PaymentStatus.Success)
+        {
             await SettleCommissionSafelyAsync(payment);
+
+            // A provider-confirmed payment is money in the business's account: recognise it in the
+            // ledger exactly once (the unique source_payment_id is what makes a replay a no-op).
+            await RecogniseInLedgerSafelyAsync(payment);
+        }
 
         return (record.Outcome ?? "applied", payment.Id);
     }

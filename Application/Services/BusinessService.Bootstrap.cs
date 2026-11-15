@@ -65,9 +65,22 @@ public partial class BusinessService
             if (business == null)
                 return ApiResponse<StorefrontBootstrapResponse>.Fail("NOT_FOUND", "Business not found.");
             var moduleKeys = await _moduleEntitlementService.GetEffectiveModuleKeysAsync(businessId);
-            var capabilities = CustomerCapabilityCatalog.Resolve(moduleKeys,
+            var capabilities = new Dictionary<string, bool>(CustomerCapabilityCatalog.Resolve(moduleKeys,
                 hasActiveLoyaltyProgram: business.ActiveProgram != null,
-                hasActiveReferralProgram: business.HasReferral);
+                hasActiveReferralProgram: business.HasReferral));
+
+            // `capabilities.payments` means "this business can actually take a payment
+            // now": the module entitlement AND an enabled, complete manual M-PESA method.
+            // The booking wizard reads it to decide whether to show the payment step at
+            // all, so an entitled-but-unconfigured business must read false rather than
+            // render an empty step.
+            if (capabilities.GetValueOrDefault(CustomerCapabilityCatalog.Payments))
+            {
+                var paymentConfig = await _context.BusinessPaymentConfigs.AsNoTracking()
+                    .FirstOrDefaultAsync(c => c.BusinessId == businessId);
+                if (paymentConfig?.HasManualMpesaDetails != true)
+                    capabilities[CustomerCapabilityCatalog.Payments] = false;
+            }
             var galleryMediaIds = await _context.BusinessMedia.AsNoTracking()
                 .Where(x => x.BusinessId == businessId).Select(x => x.MediaId).ToListAsync();
             var readyGalleryIds = galleryMediaIds.Count == 0 ? new List<Guid>()

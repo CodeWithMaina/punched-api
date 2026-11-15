@@ -61,7 +61,9 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
     }
 
 
-    public async Task<ApiResponse<CustomerBusinessDto>> EnrollAsync(Guid customerId, Guid businessId, string? source = null)
+    public async Task<ApiResponse<CustomerBusinessDto>> EnrollAsync(
+        Guid customerId, Guid businessId, string? source = null,
+        CustomerType type = CustomerType.Registered)
     {
         // Tenant narrowing: on a tenant host enrolment may only target the active tenant.
         if (TenantBusinessId is Guid activeTenantId && businessId != activeTenantId)
@@ -76,13 +78,27 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
                 .FirstOrDefaultAsync(e => e.CustomerId == customerId && e.BusinessId == businessId);
             if (existing != null)
             {
+                var changed = false;
                 if (existing.Status != CustomerBusinessEnrollmentStatus.Active)
                 {
                     existing.Status = CustomerBusinessEnrollmentStatus.Active;
                     existing.LeftAt = null;
                     existing.EnrolledAt = DateTime.UtcNow;
-                    existing.UpdatedAt = DateTime.UtcNow;
                     existing.Source = src;
+                    changed = true;
+                }
+
+                // Upgrade only: a guest relationship becomes registered the moment a
+                // real account stands behind it, and never the other way round.
+                if (existing.Type == CustomerType.Guest && type == CustomerType.Registered)
+                {
+                    existing.Type = CustomerType.Registered;
+                    changed = true;
+                }
+
+                if (changed)
+                {
+                    existing.UpdatedAt = DateTime.UtcNow;
                     _unitOfWork.CustomerBusinessEnrollments.Update(existing);
                 }
 
@@ -98,7 +114,7 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
             var enrollment = new CustomerBusinessEnrollment
             {
                 Id = Guid.NewGuid(), CustomerId = customerId, BusinessId = businessId,
-                Status = CustomerBusinessEnrollmentStatus.Active, Source = src,
+                Status = CustomerBusinessEnrollmentStatus.Active, Type = type, Source = src,
                 EnrolledAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
             };
             await _unitOfWork.CustomerBusinessEnrollments.AddAsync(enrollment);
@@ -271,7 +287,9 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
             Id = e.Id, BusinessId = e.BusinessId, BusinessName = b?.Name ?? string.Empty,
             LogoUrl = b?.LogoUrl, Category = b?.Category, Location = b?.Location,
             Status = e.Status == CustomerBusinessEnrollmentStatus.Active ? "active" : e.Status.ToString().ToLowerInvariant(),
-            Source = e.Source, EnrolledAt = e.EnrolledAt
+            Source = e.Source,
+            CustomerType = e.Type == CustomerType.Guest ? "guest" : "registered",
+            EnrolledAt = e.EnrolledAt
         };
     }
 

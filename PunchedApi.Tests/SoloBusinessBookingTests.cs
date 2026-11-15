@@ -136,7 +136,7 @@ public class SoloBusinessBookingTests
     }
 
     [Fact]
-    public async Task Booking_WithAManualMpesaFee_StartsAwaitingPayment()
+    public async Task Booking_WithAManualMpesaFee_IsBookedWithTheFeeOutstanding()
     {
         using var connection = BookingTestBase.CreateConnection();
         using var context = BookingTestBase.CreateContext(connection);
@@ -162,8 +162,10 @@ public class SoloBusinessBookingTests
 
         context.ChangeTracker.Clear();
         var stored = await context.Appointments.SingleAsync();
-        // The slot is held, but nothing is confirmed until the fee is verified.
-        Assert.Equal(AppointmentStatuses.PendingPayment, stored.Status);
+        // The booking is a booking: a business that asks for a fee up front gets a booked visit with
+        // the fee outstanding, not a visit held hostage by an unverified payment. The slot is still
+        // reserved (Booked reserves staff time), so nothing about the fee changes who has the time.
+        Assert.Equal(AppointmentStatuses.Booked, stored.Status);
         Assert.True(AppointmentReservations.ReservesStaffTime(stored.Status));
         Assert.Equal(owner.Id, stored.StaffUserId);
     }

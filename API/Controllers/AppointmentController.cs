@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PunchedApi.API.Filters;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Services;
 using PunchedApi.Domain.Interfaces;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -109,7 +110,13 @@ public class AppointmentController : ControllerBase
         var userId = GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _appointmentService.CreateAppointmentAsync(userId.Value, "Customer", request);
+        // This route is reachable only with a verified signed-in customer session, so
+        // the relationship is always the signed-in one: the service is told the caller
+        // stands behind the account, which is what promotes a Guest enrollment. The
+        // account-free storefront path (`POST /v1/businesses/{id}/public-bookings`)
+        // never comes through here.
+        var result = await _appointmentService.CreateAppointmentAsync(
+            userId.Value, "Customer", request, isGuest: false);
         return result.Success ? Ok(result) : MapFailure(result);
     }
 
@@ -182,6 +189,13 @@ public class AppointmentController : ControllerBase
             "FORBIDDEN" => StatusCode(StatusCodes.Status403Forbidden, result),
             "STAFF_TIME_UNAVAILABLE" or "OVERBOOKING" or "SLOT_UNAVAILABLE"
                 or "CONCURRENT_MODIFICATION" or "INVALID_STATUS_TRANSITION" => Conflict(result),
+            // The request is well-formed but the business does not take bookings on those
+            // terms: booking during payment is switched off, pay-after-service is switched
+            // off, or the business is not taking bookings at all. The customer has to change
+            // something, so it is a 422 rather than a generic 400 — and never a 409, which
+            // the storefront reads as "that time was taken".
+            "PAYMENT_OPTION_DISABLED" or "PAYMENT_OPTION_REQUIRED" or "BOOKING_UNAVAILABLE" =>
+                StatusCode(StatusCodes.Status422UnprocessableEntity, result),
             _ => BadRequest(result)   // STAFF_NOT_AVAILABLE, VALIDATION_ERROR, BUSINESS_NOT_FOUND, fallback
         };
 

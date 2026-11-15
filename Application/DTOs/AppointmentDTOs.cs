@@ -46,6 +46,19 @@ public class CreateAppointmentRequest
 
     [JsonPropertyName("note")]
     public string? Note { get; set; }
+
+    /// <summary>
+    /// How the customer chose to pay, when the business offers a choice:
+    /// <c>pay_upfront</c> (pay during booking — "Payment Included") or
+    /// <c>pay_after_service</c> (book now, settle after the service).
+    ///
+    /// <para>The server validates the choice against this business's own configuration,
+    /// so a client cannot book on terms the owner has switched off. Left out, the single
+    /// enabled option is applied automatically; when both are enabled the choice must be
+    /// made; when neither is enabled the booking is refused outright.</para>
+    /// </summary>
+    [JsonPropertyName("paymentOption")]
+    public string? PaymentOption { get; set; }
 }
 
 /// <summary>
@@ -70,6 +83,15 @@ public class CreateAppointmentOnBehalfRequest
 
     [JsonPropertyName("note")]
     public string? Note { get; set; }
+
+    /// <summary>
+    /// The operator chose "pay after service": nothing is taken now, and the appointment's
+    /// full value is recorded as an outstanding payment against this appointment in the
+    /// same transaction. The row appears in the Payments module immediately and is settled
+    /// (in full or in part) once the customer actually pays.
+    /// </summary>
+    [JsonPropertyName("payAfterService")]
+    public bool PayAfterService { get; set; }
 }
 
 /// <summary>
@@ -385,6 +407,14 @@ public class AppointmentResponse
 
     [JsonPropertyName("customerAvatarUrl")]
     public string? CustomerAvatarUrl { get; set; }
+
+    /// <summary>
+    /// How the customer belongs to this business: <c>guest</c> (booked without an
+    /// account) or <c>registered</c> (a real Punched account). Resolved from the
+    /// authoritative customer↔business enrollment.
+    /// </summary>
+    [JsonPropertyName("customerType")]
+    public string CustomerType { get; set; } = "registered";
 
     [JsonPropertyName("staffUserId")]
     public Guid? StaffUserId { get; set; }

@@ -11,7 +11,12 @@ public interface IPaymentService
     Task<ApiResponse<PaymentListResponse>> ListPaymentsAsync(PaymentListQuery query, Guid userId, string role);
     Task<ApiResponse<AppointmentPaymentSummary>> GetAppointmentPaymentSummaryAsync(Guid appointmentId, Guid userId, string role);
     Task<ApiResponse<PaymentDashboardResponse>> GetDashboardAsync(Guid userId, string role);
-    Task<ApiResponse<PaymentResponse>> ConfirmCashAsync(Guid paymentId, string? note, Guid userId, string role, string? idempotencyKey = null);
+    /// <param name="amount">
+    /// What the operator actually counted, when it differs from the row's own amount.
+    /// Collecting less than the outstanding balance leaves the remainder as its own
+    /// outstanding payment; collecting more is refused.
+    /// </param>
+    Task<ApiResponse<PaymentResponse>> ConfirmCashAsync(Guid paymentId, string? note, Guid userId, string role, string? idempotencyKey = null, decimal? amount = null);
     Task<ApiResponse<PaymentResponse>> RetryPaymentAsync(Guid paymentId, Guid userId, string role, string? idempotencyKey = null);
     Task<ApiResponse<PaymentResponse>> CancelPaymentAsync(Guid paymentId, Guid userId, string role);
     Task<ApiResponse<PaymentResponse>> ReversePaymentAsync(Guid paymentId, string reason, Guid userId);
@@ -35,6 +40,13 @@ public interface IPaymentService
     Task<ApiResponse<PaymentVerificationQueueResponse>> GetVerificationQueueAsync(
         PaymentVerificationQuery query, Guid userId, string role);
 
+    /// <summary>
+    /// One claim in full (customer, appointment, service, money, message and trail),
+    /// tenant-scoped. Used by the reconciliation workspace's detail panel.
+    /// </summary>
+    Task<ApiResponse<PaymentVerificationItemResponse>> GetVerificationItemAsync(
+        Guid paymentId, Guid userId, string role);
+
     /// <summary>Mark a submission as being reviewed (non-terminal, idempotent).</summary>
     Task<ApiResponse<PaymentResponse>> MarkVerificationUnderReviewAsync(Guid paymentId, Guid userId, string role);
 
@@ -44,6 +56,13 @@ public interface IPaymentService
     /// </summary>
     Task<ApiResponse<PaymentResponse>> VerifyPaymentAsync(
         Guid paymentId, VerifyPaymentRequest request, Guid userId, string role);
+
+    /// <summary>
+    /// Set a submission aside for a second look (non-terminal, idempotent). Records the
+    /// internal note; the claim stays unverified and stays in the awaiting queue.
+    /// </summary>
+    Task<ApiResponse<PaymentResponse>> FlagPaymentAsync(
+        Guid paymentId, FlagPaymentRequest request, Guid userId, string role);
 
     /// <summary>Refuse a submission with a reason the customer is shown.</summary>
     Task<ApiResponse<PaymentResponse>> RejectPaymentAsync(

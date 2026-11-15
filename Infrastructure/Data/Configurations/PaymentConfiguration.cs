@@ -119,11 +119,21 @@ public class BusinessPaymentConfigConfiguration : IEntityTypeConfiguration<Busin
 
         builder.Property(c => c.MpesaAccountType).HasMaxLength(10);
         builder.Property(c => c.MpesaShortCode).HasMaxLength(20);
+        // Normalised 254XXXXXXXXX; the DB CHECK (added in the migration) requires it when
+        // the active method is send_money and manual M-PESA is enabled.
+        builder.Property(c => c.MpesaPhoneNumber).HasMaxLength(12);
 
         // One payment configuration per business. Tenant isolation for credentials.
         builder.HasIndex(c => c.BusinessId).IsUnique();
         // C2B tenant resolution by shortcode.
         builder.HasIndex(c => c.MpesaShortCode);
+
+        // Storefront payment policy. The column defaults are what an EXISTING row gets
+        // when the migration adds the columns: Payment Included on (the behaviour every
+        // storefront already had) and Pay After Service off (a choice the owner makes, not
+        // one a migration makes for them).
+        builder.Property(c => c.PayUpfrontEnabled).HasDefaultValue(true);
+        builder.Property(c => c.PayAfterServiceEnabled).HasDefaultValue(false);
 
         builder.HasOne(c => c.Business)
             .WithMany()

@@ -262,12 +262,15 @@ public class AppointmentAvailabilityService
         DateTime scheduledAtUtc,
         int totalMinutes,
         Guid? excludeAppointmentId,
-        bool enforceLeadTime)
+        bool enforceLeadTime,
+        Business? business = null)
     {
         if (totalMinutes <= 0)
             return SlotResolution.Deny("VALIDATION_ERROR", "The selected services have no duration configured.");
 
-        var business = await _context.Businesses.AsNoTracking().FirstOrDefaultAsync(b => b.Id == businessId);
+        // The caller (the on-behalf booking path) has usually read this row already;
+        // taking the pre-loaded one saves a round trip that would return identical data.
+        business ??= await _context.Businesses.AsNoTracking().FirstOrDefaultAsync(b => b.Id == businessId);
         if (business == null)
             return SlotResolution.Deny("NOT_FOUND", "Business not found.");
 

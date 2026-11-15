@@ -22,6 +22,14 @@ public class ApiError
 
     [JsonPropertyName("message")]
     public string Message { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional per-field validation messages, keyed by the request's JSON field name,
+    /// so a form can place each message under the field that caused it. Null when the
+    /// failure is not field-specific.
+    /// </summary>
+    [JsonPropertyName("fields")]
+    public Dictionary<string, string>? Fields { get; set; }
 }
 
 // ═══════════════════════════════════════════════════════════════

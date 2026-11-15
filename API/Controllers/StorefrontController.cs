@@ -62,6 +62,12 @@ public class StorefrontController : ControllerBase
     public async Task<IActionResult> GetPublicPaymentDetails(Guid businessId, CancellationToken cancellationToken)
     {
         var result = await _payments.GetPublicPaymentDetailsAsync(businessId);
+        if (result.Success)
+        {
+            // Short TTL: a settings change must reach the storefront quickly, but a
+            // burst of booking-page loads should still be served from the edge/cache.
+            Response.Headers.CacheControl = "public, max-age=30";
+        }
         return result.Success ? Ok(result) : MapFailure(result);
     }
 

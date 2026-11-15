@@ -141,6 +141,8 @@ public static class PermissionCatalog
                 "serviceCategories.view", "serviceCategories.manage",
                 "attendance.view", "attendance.clock", "attendance.manage",
                 "payments.view", "payments.create", "payments.confirm_cash",
+                "finances.view", "finances.record_income", "finances.manage_expenses",
+                "finances.verify", "finances.refund", "finances.reconcile", "finances.analytics.view",
                 "loyalty.view", "loyalty.stamp", "loyalty.redeem",
                 "stamps.view", "stamps.award", "stamps.adjust",
                 "rewards.view", "redemptions.fulfill",
@@ -165,6 +167,9 @@ public static class PermissionCatalog
                 "serviceCatalog.view", "serviceCategories.view",
                 "attendance.view", "attendance.clock",
                 "payments.view", "payments.create", "payments.confirm_cash",
+                // The front desk may record money that came in and log what it spends from
+                // the drawer, but only an owner verifies, refunds or reconciles.
+                "finances.view", "finances.record_income", "finances.manage_expenses",
                 "notifications.view",
             }),
 
@@ -187,6 +192,9 @@ public static class PermissionCatalog
                 "reviews.view",
                 "notifications.view",
                 "commissions.view",
+                // A service professional sees the books but records nothing: money is the
+                // front desk's or the owner's call, never the chair's.
+                "finances.view",
             }),
     };
 

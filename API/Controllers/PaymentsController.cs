@@ -100,7 +100,7 @@ public class PaymentsController : ControllerBase
     {
         var (userId, role) = GetIdentity();
         if (userId == null) return Unauthorized();
-        var result = await _payments.ConfirmCashAsync(id, request.Note, userId.Value, role!);
+        var result = await _payments.ConfirmCashAsync(id, request.Note, userId.Value, role!, amount: request.Amount);
         return result.Success ? Ok(result) : MapFailure(result);
     }
 
@@ -227,7 +227,7 @@ public class PaymentsController : ControllerBase
         {
             "NOT_FOUND" => NotFound(result),
             "FORBIDDEN" => StatusCode(StatusCodes.Status403Forbidden, result),
-            "INVALID_STATUS_TRANSITION" or "PROVIDER_ERROR" or "MPESA_CODE_ALREADY_USED" => Conflict(result),
+            "INVALID_STATUS_TRANSITION" or "PROVIDER_ERROR" or "MPESA_CODE_ALREADY_USED" or "DUPLICATE_PAYMENT" => Conflict(result),
             _ => BadRequest(result)
         };
 

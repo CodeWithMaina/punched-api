@@ -135,4 +135,43 @@ public class CustomerEnrollmentServiceTests
             Assert.Equal("NOT_FOUND", r.Error?.Code);
         }
     }
+
+    [Fact]
+    public async Task Enroll_defaults_to_registered_and_reports_the_customer_type()
+    {
+        var (ctx, svc, _) = CreateEnv(out var c, out var b);
+        using (ctx)
+        {
+            var r = await svc.EnrollAsync(c.Id, b.Id, "qr");
+
+            Assert.True(r.Success, r.Error?.Message);
+            Assert.Equal("registered", r.Data!.CustomerType);
+            var stored = await ctx.CustomerBusinessEnrollments.AsNoTracking().SingleAsync();
+            Assert.Equal(CustomerType.Registered, stored.Type);
+        }
+    }
+
+    [Fact]
+    public async Task Enroll_records_a_guest_relationship_and_never_downgrades_a_registered_one()
+    {
+        var (ctx, svc, _) = CreateEnv(out var c, out var b);
+        using (ctx)
+        {
+            // A guest booking creates the relationship as Guest.
+            var guest = await svc.EnrollAsync(c.Id, b.Id, "booking", CustomerType.Guest);
+            Assert.True(guest.Success, guest.Error?.Message);
+            Assert.Equal("guest", guest.Data!.CustomerType);
+            Assert.Equal(CustomerType.Guest, (await ctx.CustomerBusinessEnrollments.AsNoTracking().SingleAsync()).Type);
+
+            // A later signed-in relationship upgrades it to Registered...
+            var registered = await svc.EnrollAsync(c.Id, b.Id, "business", CustomerType.Registered);
+            Assert.Equal("registered", registered.Data!.CustomerType);
+            Assert.Equal(CustomerType.Registered, (await ctx.CustomerBusinessEnrollments.AsNoTracking().SingleAsync()).Type);
+
+            // ...and a subsequent guest attempt never demotes it back.
+            var again = await svc.EnrollAsync(c.Id, b.Id, "booking", CustomerType.Guest);
+            Assert.Equal("registered", again.Data!.CustomerType);
+            Assert.Equal(CustomerType.Registered, (await ctx.CustomerBusinessEnrollments.AsNoTracking().SingleAsync()).Type);
+        }
+    }
 }

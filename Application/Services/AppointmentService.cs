@@ -203,7 +203,7 @@ public class AppointmentService : IAppointmentService
     // ═══════════════════════════════════════════════════════════
 
     public async Task<ApiResponse<AppointmentResponse>> CreateAppointmentAsync(
-        Guid callerUserId, string role, CreateAppointmentRequest request)
+        Guid callerUserId, string role, CreateAppointmentRequest request, bool isGuest = false)
     {
         // Tenant narrowing: on a tenant host the request body must target the active tenant.
         if (TenantBusinessId is Guid activeTenantId && request.BusinessId != activeTenantId)
@@ -236,11 +236,45 @@ public class AppointmentService : IAppointmentService
                 return ApiResponse<AppointmentResponse>.Fail("BUSINESS_NOT_FOUND", "Business not found.");
             businessId = business.Id;
             // Database-first enrollment gate: customers book only where enrolled.
-            var enrolled = await _context.CustomerBusinessEnrollments.AnyAsync(e =>
+            var enrollment = await _context.CustomerBusinessEnrollments.FirstOrDefaultAsync(e =>
                 e.CustomerId == callerUserId && e.BusinessId == businessId &&
                 e.Status == CustomerBusinessEnrollmentStatus.Active);
-            if (!enrolled)
+            if (enrollment == null)
                 return ApiResponse<AppointmentResponse>.Fail("NOT_ENROLLED", "Enroll in this business before booking.");
+
+            // A booking made while signed in confirms that a real account stands behind
+            // the relationship, so a guest enrollment becomes Registered. A guest token
+            // (isGuest) never promotes — a guest stays a guest until they sign up.
+            if (!isGuest && enrollment.Type == CustomerType.Guest)
+            {
+                enrollment.Type = CustomerType.Registered;
+                enrollment.UpdatedAt = DateTime.UtcNow;
+                _unitOfWork.CustomerBusinessEnrollments.Update(enrollment);
+                await _unitOfWork.SaveChangesAsync();
+            }
+        }
+
+        // Customer self-service booking is governed by the business's storefront payment
+        // policy. An owner or staff member booking on behalf is not: they are standing at
+        // the counter and decide how money is taken themselves (the on-behalf request's
+        // own `payAfterService`), so this check applies only to the customer path.
+        var payingAfterService = false;
+        if (!IsRole(role, "Business") && !IsRole(role, "Staff"))
+        {
+            // Absent configuration means a business that has never opened the payment
+            // screen: the defaults apply (Payment Included on, Pay After Service off).
+            var policyConfig = await _context.BusinessPaymentConfigs.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.BusinessId == businessId);
+
+            var policy = StorefrontPaymentOptions.Resolve(
+                policyConfig?.PayUpfrontEnabled ?? true,
+                policyConfig?.PayAfterServiceEnabled ?? false,
+                request.PaymentOption);
+
+            if (!policy.Ok)
+                return ApiResponse<AppointmentResponse>.Fail(policy.ErrorCode!, policy.ErrorMessage!);
+
+            payingAfterService = policy.Option == StorefrontPaymentOptions.PayAfterService;
         }
 
         var (services, svcError, svcMsg) = await ValidateServicesAsync(businessId, request.ServiceIds);
@@ -268,7 +302,12 @@ public class AppointmentService : IAppointmentService
         var endAt = scheduledAt.AddMinutes(totalMinutes);
 
         return await InsertAppointmentTransactionallyAsync(
-            businessId, customerId, resolution.StaffUserId, scheduledAt, endAt, services, request.Note, callerUserId, Guid.Empty);
+            businessId, customerId, resolution.StaffUserId, scheduledAt, endAt, services, request.Note,
+            callerUserId, Guid.Empty,
+            // "Pay after service" writes the appointment's outstanding payment inside the
+            // same transaction, so a storefront booking that owes money can never exist
+            // without the payment record that says what it owes.
+            payAfterService: payingAfterService);
     }
 
     public async Task<ApiResponse<AppointmentResponse>> CreateAppointmentOnBehalfAsync(
@@ -279,9 +318,14 @@ public class AppointmentService : IAppointmentService
             return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "This business is not available on this site.");
 
         Guid businessId;
+        Business? business = null;
         if (IsRole(role, "Business"))
         {
-            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == callerUserId);
+            // Loaded once and carried the rest of the way: the availability resolver,
+            // the notification payload and the response all used to re-read this same
+            // row, which on a remote database was three extra round trips per booking.
+            business = await _context.Businesses.AsNoTracking()
+                .FirstOrDefaultAsync(b => b.OwnerId == callerUserId);
             if (business == null)
                 return ApiResponse<AppointmentResponse>.Fail("NOT_FOUND", "No business found for this account.");
             if (business.Id != request.BusinessId)
@@ -308,20 +352,40 @@ public class AppointmentService : IAppointmentService
 
         var totalMinutes = services.Sum(s => s.DurationMinutes);
 
-        // Customer must be a Customer-role, non-deleted user (global filter excludes deleted).
-        var customer = await _unitOfWork.Users.FirstOrDefaultAsync(u => u.Id == request.CustomerId && u.Role == UserRole.Customer);
-        if (customer == null)
+        // Customer and enrollment in ONE query. The customer must be a Customer-role,
+        // non-deleted user (global filter excludes deleted) who holds an active
+        // enrollment in the booked business, so a real customer id from another
+        // business is still refused here (IDOR). The enrollment's `Type` comes back
+        // with the same row, which is what the response needs to say Guest or
+        // Registered without asking again.
+        var customerRow = await _context.Users
+            .AsNoTracking()
+            .Where(u => u.Id == request.CustomerId && u.Role == UserRole.Customer)
+            .Select(u => new
+            {
+                u.Id,
+                u.FullName,
+                u.Email,
+                u.PhoneNumber,
+                u.AvatarUrl,
+                Enrollment = _context.CustomerBusinessEnrollments
+                    .Where(e => e.CustomerId == u.Id && e.BusinessId == businessId)
+                    .Select(e => new { e.Status, e.Type })
+                    .FirstOrDefault()
+            })
+            .FirstOrDefaultAsync();
+
+        if (customerRow?.Enrollment is null ||
+            customerRow.Enrollment.Status != CustomerBusinessEnrollmentStatus.Active)
             return ApiResponse<AppointmentResponse>.Fail("CUSTOMER_NOT_FOUND", "Customer not found.");
 
-        // Strict business-level isolation: the customer must hold an active
-        // enrollment in the booked business. Any real customer id from another
-        // business must never be injectable into an on-behalf booking (IDOR).
-        var enrolled = await _context.CustomerBusinessEnrollments.AnyAsync(e =>
-            e.CustomerId == request.CustomerId &&
-            e.BusinessId == businessId &&
-            e.Status == CustomerBusinessEnrollmentStatus.Active);
-        if (!enrolled)
-            return ApiResponse<AppointmentResponse>.Fail("CUSTOMER_NOT_FOUND", "Customer not found.");
+        var customer = new BookingCustomer(
+            customerRow.Id,
+            customerRow.FullName,
+            customerRow.Email,
+            customerRow.PhoneNumber,
+            customerRow.AvatarUrl,
+            customerRow.Enrollment.Type == CustomerType.Guest ? "guest" : "registered");
 
         var (staff, staffError, staffMsg) = await ResolveStaffAsync(businessId, request.StaffUserId, request.ServiceIds);
         if (staffError != null)
@@ -332,14 +396,16 @@ public class AppointmentService : IAppointmentService
         var scheduledAt = NormalizeUtc(request.ScheduledAt);
         var resolution = await _availability.ResolveBookingStaffAsync(
             businessId, request.ServiceIds, staff?.Id, scheduledAt, totalMinutes,
-            excludeAppointmentId: null, enforceLeadTime: false);
+            excludeAppointmentId: null, enforceLeadTime: false, business: business);
         if (!resolution.Ok)
             return ApiResponse<AppointmentResponse>.Fail(resolution.ErrorCode!, resolution.ErrorMessage!);
 
         var endAt = scheduledAt.AddMinutes(totalMinutes);
 
         return await InsertAppointmentTransactionallyAsync(
-            businessId, request.CustomerId, resolution.StaffUserId, scheduledAt, endAt, services, request.Note, callerUserId, Guid.Empty);
+            businessId, request.CustomerId, resolution.StaffUserId, scheduledAt, endAt, services, request.Note,
+            callerUserId, Guid.Empty, request.PayAfterService,
+            business: business, customer: customer);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -1136,11 +1202,13 @@ public class AppointmentService : IAppointmentService
 
         var latestChanges = await GetLatestStatusChangesAsync(items.Select(a => a.Id));
         var pendingRequests = await GetPendingRescheduleRequestsAsync(items.Select(a => a.Id));
+        var customerTypes = await GetCustomerTypesAsync(items);
 
         var responses = items
             .Select(a =>
             {
                 var r = MapResponse(a, latestChanges);
+                r.CustomerType = customerTypes.GetValueOrDefault((a.CustomerId, a.BusinessId), "registered");
                 r.PendingReschedule = MapPendingReschedule(pendingRequests.GetValueOrDefault(a.Id));
                 return r;
             })
@@ -1373,10 +1441,12 @@ public class AppointmentService : IAppointmentService
 
         var latestChanges = await GetLatestStatusChangesAsync(items.Select(a => a.Id));
         var pendingRequests = await GetPendingRescheduleRequestsAsync(items.Select(a => a.Id));
+        var customerTypes = await GetCustomerTypesAsync(items);
         var responses = items
             .Select(a =>
             {
                 var r = MapResponse(a, latestChanges);
+                r.CustomerType = customerTypes.GetValueOrDefault((a.CustomerId, a.BusinessId), "registered");
                 r.PendingReschedule = MapPendingReschedule(pendingRequests.GetValueOrDefault(a.Id));
                 return r;
             })
@@ -1404,7 +1474,12 @@ public class AppointmentService : IAppointmentService
         string sortBy,
         string sortDirection,
         int page,
-        int pageSize)
+        int pageSize,
+        Guid[]? staffIds = null,
+        Guid[]? customerIds = null,
+        Guid[]? serviceIds = null,
+        string? paymentStatus = null,
+        CancellationToken cancellationToken = default)
     {
         // 1. Resolve the owner's business (server-side scoping only; never trusted from a request DTO).
         var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == ownerUserId);
@@ -1414,8 +1489,11 @@ public class AppointmentService : IAppointmentService
         page = Math.Max(page, 1);
         pageSize = Math.Clamp(pageSize, 1, 100);
 
-        // 2. Base query includes resources so service snapshot names are available.
+        // 2. Base query. Read-only projection work (the rows are mapped by hand below),
+        //    so no change tracker: a page of appointments is cheaper to materialise and
+        //    the identity map is not needed for anything on this path.
         var query = _context.Appointments
+            .AsNoTracking()
             .Include(a => a.Resources)
             .Where(a => a.BusinessId == business.Id);
 
@@ -1424,87 +1502,145 @@ public class AppointmentService : IAppointmentService
         // by a control the business no longer has.
         var staffModuleEnabled = await IsStaffModuleEnabledAsync(business.Id);
 
-        // 3. Filters.
+        // 3. Filters. The multi-select arrays are merged with the single-value
+        //    parameters the older callers still send, so one filter can never be
+        //    silently dropped because a client used the other shape.
         if (!string.IsNullOrWhiteSpace(status))
             query = query.Where(a => a.Status == status);
         if (from.HasValue)
             query = query.Where(a => a.ScheduledAt >= from.Value);
         if (to.HasValue)
             query = query.Where(a => a.ScheduledAt <= to.Value);
-        if (staffUserId.HasValue && staffModuleEnabled)
-            query = query.Where(a => a.StaffUserId == staffUserId.Value);
-        if (customerId.HasValue)
-            query = query.Where(a => a.CustomerId == customerId.Value);
-        if (serviceId.HasValue)
-            query = query.Where(a => a.Resources.Any(r => r.ServiceCatalogItemId == serviceId.Value));
 
-        // 4. Search across customer, staff, and service text fields (SQL-level).
+        var staffFilter = Merge(staffIds, staffUserId);
+        if (staffModuleEnabled && staffFilter.Length > 0)
+            query = query.Where(a => a.StaffUserId != null && staffFilter.Contains(a.StaffUserId.Value));
+
+        var customerFilter = Merge(customerIds, customerId);
+        if (customerFilter.Length > 0)
+            query = query.Where(a => customerFilter.Contains(a.CustomerId));
+
+        var serviceFilter = Merge(serviceIds, serviceId);
+        if (serviceFilter.Length > 0)
+            query = query.Where(a => a.Resources.Any(r => serviceFilter.Contains(r.ServiceCatalogItemId)));
+
+        // 3b. Payment-verification filter. Payment is not a column on the appointment —
+        //     one appointment can hold several rows (an upfront booking fee, a later
+        //     balance, a refund) — so this is answered from the LEDGER. The appointment
+        //     ids are taken first, then only the scalars the rule needs (a booked price,
+        //     a payment status, an amount) are read and summed in ONE pass here in the
+        //     service. No appointment and no payment entity is materialised, and nothing
+        //     is filtered in the browser. (The sum is done in C# rather than SQL because
+        //     SUM over a decimal column is not portable across providers.)
+        var paymentFilter = NormalizePaymentFilter(paymentStatus);
+        if (paymentFilter is not null)
+        {
+            var candidateIds = await query.Select(a => a.Id).ToListAsync(cancellationToken);
+            var ledger = await BuildPaymentTotalsAsync(candidateIds, cancellationToken);
+
+            var matchingIds = ledger
+                .Where(entry => PaymentFilterMatches(
+                    paymentFilter, entry.Value.Expected, entry.Value.Settled,
+                    entry.Value.Awaiting, entry.Value.Failed, entry.Value.Refunded))
+                .Select(entry => entry.Key)
+                .ToList();
+
+            query = query.Where(a => matchingIds.Contains(a.Id));
+        }
+
+        // 4. Search. Everything is decided by the database in ONE round trip: each
+        //    criterion becomes a correlated EXISTS/IN subquery, so no id list is
+        //    pulled into memory (the previous shape fetched every matching user in
+        //    the platform, then sent the ids back as an IN clause).
+        //
+        //    `ToLower().Contains(…)` is used rather than `ToLowerInvariant()`: EF has
+        //    no SQL translation for the invariant overloads, so a search used to throw
+        //    "could not be translated" and fail the whole list request with a 500.
         if (!string.IsNullOrWhiteSpace(search))
         {
             var term = search.Trim();
-            var lowerTerm = term.ToLowerInvariant();
+            var needle = term.ToLowerInvariant();
+            // Phones are stored normalised (2547…), so a term typed the way a Kenyan
+            // number is written ("0712 345 678") has to be compared as digits. Nine or
+            // more digits are matched as a suffix — that covers every national form of
+            // the same number — and shorter digit runs as a substring.
+            var phoneDigits = new string(term.Where(char.IsDigit).ToArray());
+            var phoneContains = phoneDigits.Length is >= 3 and < 9 ? phoneDigits : string.Empty;
+            var phoneSuffix = phoneDigits.Length >= 9 ? phoneDigits[^9..] : string.Empty;
 
-            var matchingCustomerIds = await _context.Users.AsNoTracking()
-                .Where(u => u.FullName.ToLowerInvariant().Contains(lowerTerm) ||
-                            (u.Email ?? string.Empty).ToLowerInvariant().Contains(lowerTerm) ||
-                            (u.PhoneNumber ?? string.Empty).ToLowerInvariant().Contains(lowerTerm))
-                .Select(u => u.Id)
-                .ToListAsync();
+            var exactId = AppointmentReferences.TryParseId(term);
+            var hasPrefixRange = AppointmentReferences.TryParsePrefixRange(term, out var range);
 
-            var matchingServiceIds = await _context.ServiceCatalogItems.AsNoTracking()
-                .Where(s => s.Name.ToLowerInvariant().Contains(lowerTerm))
-                .Select(s => s.Id)
-                .ToListAsync();
-
-            // Staff is a search criterion only while the module is on. With it off,
-            // a term never matches on a staff member's name.
-            List<Guid> matchingStaffIds = staffModuleEnabled
-                ? await _context.Users.AsNoTracking()
-                    .Where(u => u.FullName.ToLowerInvariant().Contains(lowerTerm) ||
-                                (u.Email ?? string.Empty).ToLowerInvariant().Contains(lowerTerm) ||
-                                (u.PhoneNumber ?? string.Empty).ToLowerInvariant().Contains(lowerTerm))
-                    .Select(u => u.Id)
-                    .ToListAsync()
-                : new List<Guid>();
-
-            if (matchingCustomerIds.Any())
-                query = query.Where(a => matchingCustomerIds.Contains(a.CustomerId));
-            if (matchingServiceIds.Any())
-                query = query.Where(a => a.Resources.Any(r => matchingServiceIds.Contains(r.ServiceCatalogItemId)));
-            if (matchingStaffIds.Any())
-                query = query.Where(a => a.StaffUserId != null && matchingStaffIds.Contains(a.StaffUserId.Value));
+            query = query.Where(a =>
+                // The customer on the booking — name, email or phone.
+                _context.Users.Any(u => u.Id == a.CustomerId &&
+                    (u.FullName.ToLower().Contains(needle) ||
+                     (u.Email != null && u.Email.ToLower().Contains(needle)) ||
+                     (u.PhoneNumber != null && (u.PhoneNumber.Contains(term) ||
+                                                (phoneContains != "" && u.PhoneNumber.Contains(phoneContains)) ||
+                                                (phoneSuffix != "" && u.PhoneNumber.EndsWith(phoneSuffix))))))
+                // The booked services, by their snapshot name.
+                || a.Resources.Any(r => r.Name.ToLower().Contains(needle))
+                // The assigned professional. Only a criterion while the Staff module is
+                // on: with it off, a term never matches on a staff member's name.
+                || (staffModuleEnabled && a.StaffUserId != null && _context.Users.Any(u => u.Id == a.StaffUserId &&
+                    (u.FullName.ToLower().Contains(needle) ||
+                     (u.Email != null && u.Email.ToLower().Contains(needle)) ||
+                     (u.PhoneNumber != null && u.PhoneNumber.Contains(term)))))
+                // The appointment's own reference (`AP-3F2A9C41`, or just `3F2A`), or the
+                // whole id when it was pasted.
+                || (exactId != null && a.Id == exactId)
+                || (hasPrefixRange && a.Id >= range.Low && a.Id < range.High));
         }
 
-        // 5. Sorting — scheduledAt (default desc) or status only, both native SQL.
+        // 5. Sorting. `scheduledAt` (the calendar/schedule order) and `createdAt` (the
+        //    "what came in just now" order) are both native SQL. Id breaks ties so a
+        //    page boundary can never repeat or skip a row.
         var direction = sortDirection.Trim().ToLowerInvariant() == "asc" ? "asc" : "desc";
-        query = sortBy.Trim().ToLowerInvariant() switch
+        var sortKey = sortBy.Trim().ToLowerInvariant();
+        query = sortKey switch
         {
-            "status" => direction == "asc" ? query.OrderBy(a => a.Status) : query.OrderByDescending(a => a.Status),
-            _ => direction == "asc" ? query.OrderBy(a => a.ScheduledAt) : query.OrderByDescending(a => a.ScheduledAt)
+            "status" => direction == "asc"
+                ? query.OrderBy(a => a.Status).ThenBy(a => a.Id)
+                : query.OrderByDescending(a => a.Status).ThenByDescending(a => a.Id),
+            "createdat" or "recent" or "created" => direction == "asc"
+                ? query.OrderBy(a => a.CreatedAt).ThenBy(a => a.Id)
+                : query.OrderByDescending(a => a.CreatedAt).ThenByDescending(a => a.Id),
+            _ => direction == "asc"
+                ? query.OrderBy(a => a.ScheduledAt).ThenBy(a => a.Id)
+                : query.OrderByDescending(a => a.ScheduledAt).ThenByDescending(a => a.Id)
         };
 
         // 6. Count + paginated items (with resources and service names already included).
-        var total = await query.CountAsync();
+        var total = await query.CountAsync(cancellationToken);
         var items = await query
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         // 7. Batch resolve customer / staff names (Appointment has no User navigation).
-        var customerIds = items.Select(a => a.CustomerId).Distinct().ToList();
-        var staffIds = items.Select(a => a.StaffUserId).Where(g => g.HasValue).Distinct().ToList();
+        var pageCustomerIds = items.Select(a => a.CustomerId).Distinct().ToList();
+        var pageStaffIds = items.Select(a => a.StaffUserId).Where(g => g.HasValue).Distinct().ToList();
 
         var customerLookup = (await _context.Users.AsNoTracking()
-            .Where(u => customerIds.Contains(u.Id))
+            .Where(u => pageCustomerIds.Contains(u.Id))
             .Select(u => new { u.Id, u.FullName, u.Email, u.PhoneNumber, u.AvatarUrl })
-            .ToListAsync())
+            .ToListAsync(cancellationToken))
             .GroupBy(u => u.Id)
             .ToDictionary(g => g.Key, g => g.First());
 
+        // How each customer belongs to this business — Guest or Registered — in one
+        // query, so the roster rows can show the badge without a per-row lookup.
+        var customerTypeLookup = (await _context.CustomerBusinessEnrollments.AsNoTracking()
+            .Where(e => e.BusinessId == business.Id && pageCustomerIds.Contains(e.CustomerId))
+            .Select(e => new { e.CustomerId, e.Type })
+            .ToListAsync(cancellationToken))
+            .ToDictionary(e => e.CustomerId, e => e.Type == CustomerType.Guest ? "guest" : "registered");
+
         var staffLookup = (await _context.Users.AsNoTracking()
-            .Where(u => staffIds.Contains(u.Id))
+            .Where(u => pageStaffIds.Contains(u.Id))
             .Select(u => new { u.Id, u.FullName, u.Email, u.PhoneNumber, u.AvatarUrl })
-            .ToListAsync())
+            .ToListAsync(cancellationToken))
             .GroupBy(u => u.Id)
             .ToDictionary(g => g.Key, g => g.First());
 
@@ -1515,64 +1651,57 @@ public class AppointmentService : IAppointmentService
                 r => r.ServiceCatalogItemId,
                 s => s.Id,
                 (r, s) => new { r.AppointmentId, s.Name })
-            .ToListAsync())
+            .ToListAsync(cancellationToken))
             .GroupBy(x => x.AppointmentId)
             .ToDictionary(g => g.Key, g => string.Join(", ", g.Select(x => x.Name)));
 
-        // 8. Project the paginated appointment items.
-        var appointments = items.Select(a => new AppointmentDashboardItemResponse
+        // 8b. The page's payment ledger, aggregated for the rows on screen. The booked
+        //     prices are already on the loaded items, so the aggregation does not need to
+        //     read them again — one query fewer per list read. The same ledger rules as
+        //     the filter: settled means provider-confirmed (`Success`) or owner-verified
+        //     (`Verified`); a claim awaiting verification, a failed/expired/cancelled
+        //     attempt, a refund/reversal and an outstanding balance row (`Created`) are
+        //     all excluded.
+        var bookedTotals = items.ToDictionary(a => a.Id, a => a.Resources.Sum(r => r.Price));
+        var paymentTotals = await BuildPaymentTotalsAsync(appointmentIds, cancellationToken, bookedTotals);
+
+        // 8c. Project the paginated appointment items.
+        var appointments = items.Select(a =>
         {
-            Id = a.Id,
-            BusinessId = a.BusinessId,
-            ScheduledAt = a.ScheduledAt,
-            EndAt = a.EndAt,
-            Status = a.Status,
-            ServiceId = a.Resources.FirstOrDefault()?.ServiceCatalogItemId ?? Guid.Empty,
-            ServiceName = a.Resources.FirstOrDefault()?.Name ?? string.Empty,
-            CustomerId = a.CustomerId,
-            CustomerName = customerLookup.TryGetValue(a.CustomerId, out var c) ? c.FullName : string.Empty,
-            CustomerEmail = customerLookup.TryGetValue(a.CustomerId, out c) ? c.Email : null,
-            CustomerPhone = customerLookup.TryGetValue(a.CustomerId, out c) ? c.PhoneNumber : null,
-            CustomerAvatarUrl = customerLookup.TryGetValue(a.CustomerId, out c) ? c.AvatarUrl : null,
-            StaffUserId = a.StaffUserId,
-            StaffName = a.StaffUserId.HasValue && staffLookup.TryGetValue(a.StaffUserId.Value, out var s) ? s.FullName : null,
-            StaffEmail = a.StaffUserId.HasValue && staffLookup.TryGetValue(a.StaffUserId.Value, out s) ? s.Email : null,
-            StaffAvatarUrl = a.StaffUserId.HasValue && staffLookup.TryGetValue(a.StaffUserId.Value, out s) ? s.AvatarUrl : null,
-            CreatedAt = a.CreatedAt,
-            UpdatedAt = a.CreatedAt
+            var totals = paymentTotals.GetValueOrDefault(a.Id);
+            return new AppointmentDashboardItemResponse
+            {
+                Id = a.Id,
+                BusinessId = a.BusinessId,
+                ScheduledAt = a.ScheduledAt,
+                EndAt = a.EndAt,
+                Status = a.Status,
+                ServiceId = a.Resources.FirstOrDefault()?.ServiceCatalogItemId ?? Guid.Empty,
+                ServiceName = a.Resources.FirstOrDefault()?.Name ?? string.Empty,
+                CustomerId = a.CustomerId,
+                CustomerType = customerTypeLookup.GetValueOrDefault(a.CustomerId, "registered"),
+                CustomerName = customerLookup.TryGetValue(a.CustomerId, out var c) ? c.FullName : string.Empty,
+                CustomerEmail = customerLookup.TryGetValue(a.CustomerId, out c) ? c.Email : null,
+                CustomerPhone = customerLookup.TryGetValue(a.CustomerId, out c) ? c.PhoneNumber : null,
+                CustomerAvatarUrl = customerLookup.TryGetValue(a.CustomerId, out c) ? c.AvatarUrl : null,
+                StaffUserId = a.StaffUserId,
+                StaffName = a.StaffUserId.HasValue && staffLookup.TryGetValue(a.StaffUserId.Value, out var s) ? s.FullName : null,
+                StaffEmail = a.StaffUserId.HasValue && staffLookup.TryGetValue(a.StaffUserId.Value, out s) ? s.Email : null,
+                StaffAvatarUrl = a.StaffUserId.HasValue && staffLookup.TryGetValue(a.StaffUserId.Value, out s) ? s.AvatarUrl : null,
+                CreatedAt = a.CreatedAt,
+                UpdatedAt = a.CreatedAt,
+                PaymentStatus = ClassifyPayment(totals.Expected, totals.Settled, totals.Awaiting, totals.Failed, totals.Refunded),
+                AmountPaid = totals.Settled,
+                Balance = Math.Max(0m, totals.Expected - totals.Settled)
+            };
         }).ToList();
 
-        // 9. Reference data (unpaginated, lightweight) for filter dropdowns.
-        var customers = await (
-            from u in _context.Users.AsNoTracking()
-            where _context.BusinessMemberships.Any(m =>
-                m.UserId == u.Id &&
-                m.BusinessId == business.Id &&
-                m.Role == BusinessMembershipRole.Customer &&
-                m.Status == BusinessMembershipStatus.Active)
-            join e in _context.CustomerBusinessEnrollments.AsNoTracking()
-                on new { CustomerId = u.Id, BusinessId = business.Id } equals new { e.CustomerId, e.BusinessId }
-            join lc in _context.LoyaltyCards.AsNoTracking()
-                on new { CustomerId = u.Id, BusinessId = business.Id } equals new { lc.CustomerId, lc.BusinessId } into cards
-            from card in cards.DefaultIfEmpty()
-            select new CustomerDashboardItemResponse
-            {
-                UserId = u.Id,
-                FullName = u.FullName,
-                Email = u.Email,
-                PhoneNumber = u.PhoneNumber,
-                AvatarUrl = u.AvatarUrl,
-                EnrolledAt = e.EnrolledAt,
-                Status = e.Status == CustomerBusinessEnrollmentStatus.Active ? "active" : "inactive",
-                TotalStamps = card != null ? card.TotalStamps : 0,
-                LastStampAt = card != null ? card.LastStampAt : null
-            })
-            .OrderBy(c => c.FullName)
-            .ToListAsync();
-
-        // Staff reference bucket is only built — and only paid for — when the
-        // optional Staff module is on. With it off the dashboard returns an empty
-        // list, so no staff filter can be rendered from it.
+        // 9. Reference data for the filter drawer. Staff and services only: both are bounded by
+        //    what the business sells, and both are needed to render the drawer without a second
+        //    call. Customers are NOT here — that list grows without bound, so the customer
+        //    pickers search it server-side instead (see AppointmentDashboardResponse).
+        //    The staff bucket is only built — and only paid for — when the optional Staff module
+        //    is on. With it off the dashboard returns an empty list.
         var staff = staffModuleEnabled
             ? await _context.Users.AsNoTracking()
                 .Where(u => _context.BusinessMemberships.Any(m =>
@@ -1589,7 +1718,7 @@ public class AppointmentService : IAppointmentService
                     AvatarUrl = u.AvatarUrl,
                     PhoneNumber = u.PhoneNumber
                 })
-                .ToListAsync()
+                .ToListAsync(cancellationToken)
             : new List<StaffDashboardItemResponse>();
 
         var services = await _context.ServiceCatalogItems.AsNoTracking()
@@ -1605,7 +1734,7 @@ public class AppointmentService : IAppointmentService
                 IsActive = s.IsActive,
                 Showcase = s.Showcase
             })
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         // 10. Assemble the response.
         var totalPages = total > 0 ? (int)Math.Ceiling(total / (double)pageSize) : 1;
@@ -1619,7 +1748,6 @@ public class AppointmentService : IAppointmentService
                 TotalPages = totalPages
             },
             Appointments = appointments,
-            Customers = customers,
             Staff = staff,
             StaffModuleEnabled = staffModuleEnabled,
             Services = services
@@ -1686,10 +1814,12 @@ public class AppointmentService : IAppointmentService
 
         var latestChanges = await GetLatestStatusChangesAsync(items.Select(a => a.Id));
         var pendingRequests = await GetPendingRescheduleRequestsAsync(items.Select(a => a.Id));
+        var customerTypes = await GetCustomerTypesAsync(items);
         var responses = items
             .Select(a =>
             {
                 var r = MapResponse(a, latestChanges);
+                r.CustomerType = customerTypes.GetValueOrDefault((a.CustomerId, a.BusinessId), "registered");
                 r.PendingReschedule = MapPendingReschedule(pendingRequests.GetValueOrDefault(a.Id));
                 return r;
             })
@@ -1774,35 +1904,30 @@ public class AppointmentService : IAppointmentService
     // ═══════════════════════════════════════════════════════════
 
     /// <summary>
-    /// The status a new booking starts in.
+    /// The status a new booking starts in: <b>booked</b>.
     ///
-    /// <para>A business that collects a booking fee up front gets
-    /// <see cref="AppointmentStatuses.PendingPayment"/>: the slot is held, but nothing
-    /// is confirmed until the payment is verified. Everyone else keeps the historical
-    /// <see cref="AppointmentStatuses.Booked"/>. The decision is derived from the
-    /// business's own configuration, so a solo business and a staffed business follow
-    /// exactly the same rule.</para>
+    /// <para><b>Why this is no longer conditional.</b> It used to come back
+    /// <see cref="AppointmentStatuses.PendingPayment"/> for a business that collects a booking fee,
+    /// which made the appointment's existence depend on the payment being verified: a booking could
+    /// sit unconfirmed — and eventually be cancelled — because a receipt had not been checked yet.
+    /// That is the wrong way round. A booking is confirmed by the business's own rules about time
+    /// and availability; whether money has been verified is a separate fact about money, reported
+    /// on the payment and shown next to the appointment. So every booking starts Booked, and the
+    /// status machine still carries <see cref="AppointmentStatuses.PendingPayment"/> for a business
+    /// that chooses to hold a slot that way explicitly.</para>
     /// </summary>
-    private async Task<string> ResolveInitialStatusAsync(Guid businessId, List<ServiceCatalogItem> services)
-    {
-        var config = await _context.BusinessPaymentConfigs.AsNoTracking()
-            .FirstOrDefaultAsync(c => c.BusinessId == businessId);
-
-        if (config == null || !config.HasManualMpesaDetails)
-            return AppointmentStatuses.Booked;
-
-        var serviceTotal = services.Sum(s => s.Price ?? 0);
-        return config.BookingFeeFor(serviceTotal) > 0
-            ? AppointmentStatuses.PendingPayment
-            : AppointmentStatuses.Booked;
-    }
+    private static string InitialStatusFor() => AppointmentStatuses.Booked;
 
     private async Task<ApiResponse<AppointmentResponse>> InsertAppointmentTransactionallyAsync(
         Guid businessId, Guid customerId, Guid? staffUserId, DateTime scheduledAt, DateTime endAt,
-        List<ServiceCatalogItem> services, string? note, Guid changedByUserId, Guid excludeId)
+        List<ServiceCatalogItem> services, string? note, Guid changedByUserId, Guid excludeId,
+        bool payAfterService = false,
+        Business? business = null,
+        BookingCustomer? customer = null)
     {
         var reservingStatuses = AppointmentReservations.ReservingStatuses.ToArray();
         Guid appointmentId;
+        DateTime statusChangedAt = DateTime.UtcNow;
 
         await using (var transaction = await _context.Database.BeginTransactionAsync())
         {
@@ -1842,7 +1967,7 @@ public class AppointmentService : IAppointmentService
                     StaffUserId = staffUserId,
                     ScheduledAt = scheduledAt,
                     EndAt = endAt,
-                    Status = await ResolveInitialStatusAsync(businessId, services),
+                    Status = InitialStatusFor(),
                     CreatedAt = DateTime.UtcNow
                 };
 
@@ -1864,26 +1989,46 @@ public class AppointmentService : IAppointmentService
 
             await _unitOfWork.Appointments.AddAsync(appointment);
 
+            // "Pay after service": the appointment's whole value becomes an outstanding
+            // payment, written inside the SAME transaction as the row it belongs to. If it
+            // cannot be written, the booking does not exist either — the two can never
+            // disagree about what is owed. Because the amount is the server's own sum of the
+            // service snapshots, the operator cannot set it.
+            if (payAfterService)
+            {
+                var outstandingAmount = services.Sum(s => s.Price ?? 0);
+                if (outstandingAmount > 0)
+                    await _context.Payments.AddAsync(PaymentOutstanding.Create(
+                        businessId,
+                        customerId,
+                        appointment.Id,
+                        outstandingAmount,
+                        changedByUserId == Guid.Empty ? null : changedByUserId,
+                        DateTime.UtcNow));
+            }
+
+            var historyChangedAt = DateTime.UtcNow;
             await _unitOfWork.AppointmentStatusHistory.AddAsync(new AppointmentStatusHistory
             {
                 Id = Guid.NewGuid(),
                 AppointmentId = appointment.Id,
                 Status = appointment.Status,
-                ChangedAt = DateTime.UtcNow,
+                ChangedAt = historyChangedAt,
                 ChangedByUserId = changedByUserId,
                 Note = note,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = historyChangedAt
             });
 
             // Phase 1: the booking-confirmation intent joins this transaction — it exists
             // if and only if the appointment row does (intent-level outbox).
+            var businessName = business?.Name ?? await GetBusinessNameAsync(appointment.BusinessId);
             await QueueNotificationSafelyAsync(new NotificationRequest(
                 "appointment.booked",
                 appointment.CustomerId,
                 appointment.BusinessId,
                 new Dictionary<string, object?>
                 {
-                    ["businessName"] = await GetBusinessNameAsync(appointment.BusinessId),
+                    ["businessName"] = businessName,
                     ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
                     ["appointmentId"] = appointment.Id
                 },
@@ -1891,10 +2036,7 @@ public class AppointmentService : IAppointmentService
 
             // Phase 2: the durable created-event and the reminder ladder join the same
             // transaction — a crash can delay reminders but never lose them.
-            var createdBusiness = await _context.Businesses
-                .AsNoTracking()
-                .FirstOrDefaultAsync(b => b.Id == appointment.BusinessId);
-            await PublishAppointmentCreatedAsync(appointment, createdBusiness, default);
+            await PublishAppointmentCreatedAsync(appointment, business, default);
             await CreatePendingReminderJobsAsync(appointment, _context, default);
 
             // The assigned professional is told the slot is theirs. Same
@@ -1907,7 +2049,7 @@ public class AppointmentService : IAppointmentService
                     appointment.BusinessId,
                     new Dictionary<string, object?>
                     {
-                        ["businessName"] = createdBusiness?.Name ?? "your business",
+                        ["businessName"] = businessName,
                         ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
                         ["appointmentId"] = appointment.Id
                     },
@@ -1923,6 +2065,7 @@ public class AppointmentService : IAppointmentService
                 await transaction.CommitAsync();
 
                 appointmentId = appointment.Id;
+                statusChangedAt = historyChangedAt;
             }
             catch (Exception ex) when (AppointmentConflicts.IsSlotConflict(ex))
             {
@@ -1945,9 +2088,78 @@ public class AppointmentService : IAppointmentService
         // Built AFTER the transaction closed on purpose: a failure while shaping the
         // response can no longer be reported as a booking failure, because the
         // booking is already committed.
-        var committed = await LoadAsync(appointmentId);
-        return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(committed!));
+        //
+        // Shaped from what the request already resolved — the appointment entity the
+        // context still tracks (with its service lines), the business and the customer
+        // read on the way in — instead of re-reading the row, its history, its pending
+        // reschedule, its people and its enrollment. Six round trips that told the
+        // caller nothing it had not just written.
+        if (customer != null)
+        {
+            var committed = _context.Appointments.Local.FirstOrDefault(a => a.Id == appointmentId);
+            if (committed != null)
+                return ApiResponse<AppointmentResponse>.Ok(await BuildCreatedResponseAsync(
+                    committed, customer, statusChangedAt));
+        }
+
+        var reloaded = await LoadAsync(appointmentId);
+        return ApiResponse<AppointmentResponse>.Ok(await ToResponseAsync(reloaded!));
     }
+
+    /// <summary>
+    /// The response for an appointment the caller just created, assembled from data
+    /// already in hand.
+    /// </summary>
+    /// <remarks>
+    /// Two fields are derived rather than queried, and deliberately so:
+    /// <c>UpdatedAt</c> is the status-history row written moments ago in the same
+    /// transaction, and <c>PendingReschedule</c> is empty because an appointment that
+    /// did not exist a moment ago cannot have a pending reschedule proposal — the
+    /// query that looks for one could only ever return nothing.
+    /// </remarks>
+    private async Task<AppointmentResponse> BuildCreatedResponseAsync(
+        Appointment appointment, BookingCustomer customer, DateTime statusChangedAt)
+    {
+        var response = _mapper.Map<AppointmentResponse>(appointment);
+        response.UpdatedAt = statusChangedAt;
+        response.PendingReschedule = null;
+
+        response.CustomerName = customer.FullName;
+        response.CustomerEmail = customer.Email;
+        response.CustomerPhone = customer.PhoneNumber;
+        response.CustomerAvatarUrl = customer.AvatarUrl;
+        response.CustomerType = customer.CustomerType;
+
+        // An assigned professional who is not the customer is the only person this
+        // response still has to look up, and only when the request did not already
+        // load them (a caller-supplied staff member is tracked; a resolver-picked one
+        // is not). One targeted query, or none at all.
+        if (appointment.StaffUserId is Guid staffId && staffId != appointment.CustomerId)
+        {
+            var tracked = _context.Users.Local.FirstOrDefault(u => u.Id == staffId);
+            var staff = tracked ?? await _context.Users
+                .AsNoTracking()
+                .FirstOrDefaultAsync(u => u.Id == staffId);
+
+            if (staff != null)
+            {
+                response.StaffName = staff.FullName;
+                response.StaffEmail = staff.Email;
+                response.StaffAvatarUrl = staff.AvatarUrl;
+            }
+        }
+
+        return response;
+    }
+
+    /// <summary>The party data a caller already resolved for a booking.</summary>
+    private sealed record BookingCustomer(
+        Guid Id,
+        string? FullName,
+        string? Email,
+        string? PhoneNumber,
+        string? AvatarUrl,
+        string CustomerType);
 
     /// <summary>
     /// Rolls back without masking the original failure. A transaction that already
@@ -2124,17 +2336,36 @@ public class AppointmentService : IAppointmentService
             ?? new BusinessReminderPolicy();
         var offsets = ParseOffsetMinutes(policy.OffsetMinutesJson);
         var now = DateTime.UtcNow;
-        var created = false;
+
+        // The due times this appointment wants, before anything is asked of the
+        // database, so the "is it already queued?" question is ONE query for the whole
+        // ladder instead of one per rung.
+        var wanted = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         foreach (var offsetMinutes in offsets)
         {
             var due = appointment.ScheduledAt.AddMinutes(-offsetMinutes);
             if (due <= now.AddMinutes(5)) continue; // minimum lead time: skip stale slots
-            var key = $"appt:{appointment.Id}:r-{offsetMinutes}m";
-            var existing = await context.ScheduledJobs
-                .CountAsync(j => j.DedupeKey == key && j.AggregateType == "appointment" && j.AggregateId == appointment.Id && j.Status == "pending", ct);
-            if (existing > 0) continue;
+            wanted[$"appt:{appointment.Id}:r-{offsetMinutes}m"] = due;
+        }
 
-            var job = new ScheduledJob
+        if (wanted.Count == 0) return false;
+
+        var keys = wanted.Keys.ToList();
+        var queued = (await context.ScheduledJobs
+            .AsNoTracking()
+            .Where(j => keys.Contains(j.DedupeKey) &&
+                        j.AggregateType == "appointment" &&
+                        j.AggregateId == appointment.Id &&
+                        j.Status == "pending")
+            .Select(j => j.DedupeKey)
+            .ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
+
+        var created = false;
+        foreach (var (key, due) in wanted)
+        {
+            if (queued.Contains(key)) continue;
+
+            await context.ScheduledJobs.AddAsync(new ScheduledJob
             {
                 JobType = "appointment.reminder",
                 DedupeKey = key,
@@ -2147,8 +2378,7 @@ public class AppointmentService : IAppointmentService
                 Attempts = 0,
                 CreatedAt = now,
                 UpdatedAt = now
-            };
-            await context.ScheduledJobs.AddAsync(job, ct);
+            }, ct);
             created = true;
         }
 
@@ -2762,6 +2992,14 @@ public class AppointmentService : IAppointmentService
             response.CustomerAvatarUrl = customer.AvatarUrl;
         }
 
+        // How the customer belongs to this business — Guest or Registered — read from
+        // the authoritative enrollment row so the appointment detail can say which.
+        var customerType = await _context.CustomerBusinessEnrollments.AsNoTracking()
+            .Where(e => e.CustomerId == appointment.CustomerId && e.BusinessId == appointment.BusinessId)
+            .Select(e => (CustomerType?)e.Type)
+            .FirstOrDefaultAsync();
+        response.CustomerType = customerType == CustomerType.Guest ? "guest" : "registered";
+
         if (appointment.StaffUserId is Guid assignedStaff)
         {
             var staff = people.FirstOrDefault(u => u.Id == assignedStaff);
@@ -2806,6 +3044,179 @@ public class AppointmentService : IAppointmentService
             ? latest
             : appointment.CreatedAt;
         return response;
+    }
+
+    /// <summary>
+    /// (customerId, businessId) → <c>"guest" | "registered"</c> for a batch of
+    /// appointments, read in one query so a list never N+1s to learn each customer's
+    /// type. Any pair without an enrollment row falls back to <c>registered</c> — the
+    /// pre-guest default, so an unexpected gap never mislabels a real account.
+    /// </summary>
+    private async Task<Dictionary<(Guid CustomerId, Guid BusinessId), string>> GetCustomerTypesAsync(
+        IEnumerable<Appointment> appointments)
+    {
+        var pairs = appointments.Select(a => new { a.CustomerId, a.BusinessId }).Distinct().ToList();
+        if (pairs.Count == 0) return new Dictionary<(Guid, Guid), string>();
+
+        var customerIds = pairs.Select(p => p.CustomerId).Distinct().ToList();
+        var businessIds = pairs.Select(p => p.BusinessId).Distinct().ToList();
+
+        var rows = await _context.CustomerBusinessEnrollments.AsNoTracking()
+            .Where(e => customerIds.Contains(e.CustomerId) && businessIds.Contains(e.BusinessId))
+            .Select(e => new { e.CustomerId, e.BusinessId, e.Type })
+            .ToListAsync();
+
+        var types = new Dictionary<(Guid, Guid), string>();
+        foreach (var row in rows)
+            types[(row.CustomerId, row.BusinessId)] =
+                row.Type == CustomerType.Guest ? "guest" : "registered";
+        return types;
+    }
+
+    /// <summary>
+    /// Merges a multi-select filter with the single-value parameter older callers still
+    /// send, dropping blanks and duplicates. Empty means "no filter", so a selector that
+    /// cleared all of its chips widens the list rather than matching nothing.
+    /// </summary>
+    private static Guid[] Merge(Guid[]? ids, Guid? single)
+    {
+        var set = new HashSet<Guid>();
+        if (ids is { Length: > 0 })
+            foreach (var id in ids)
+                if (id != Guid.Empty) set.Add(id);
+        if (single.HasValue && single.Value != Guid.Empty) set.Add(single.Value);
+        return set.ToArray();
+    }
+
+    /// <summary>
+    /// An appointment's payment ledger, summed down to just what a filter or a badge
+    /// needs. Built from the appointment's booked prices and its payment rows (never
+    /// stored on the appointment), so it cannot disagree with the payments module.
+    /// </summary>
+    private readonly record struct PaymentTotals(
+        decimal Expected, decimal Settled, bool Awaiting, bool Failed, bool Refunded);
+
+    /// <summary>
+    /// The payment ledger for a set of appointments, reduced to the five facts a
+    /// payment filter or a row badge needs.
+    ///
+    /// <para>Two lean reads — the booked prices and the payments — then a single pass
+    /// here in the service. Only scalars cross out of the database (an id, a price, a
+    /// status, an amount); no appointment and no payment entity is materialised, and
+    /// nothing is filtered in the browser. The arithmetic is done in C# rather than SQL
+    /// because SUM over a decimal column is not portable across database providers.</para>
+    /// </summary>
+    private async Task<Dictionary<Guid, PaymentTotals>> BuildPaymentTotalsAsync(
+        List<Guid> appointmentIds,
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<Guid, decimal>? bookedTotals = null)
+    {
+        // The read runs even for an empty page, so a list read costs the same number of
+        // statements whatever the page holds — the property the query-count guard
+        // asserts. An empty `IN` list simply returns no rows.
+        var result = new Dictionary<Guid, PaymentTotals>();
+
+        // The caller often already holds the booked prices — the paged items include
+        // their service resources — in which case that read is skipped entirely.
+        Dictionary<Guid, decimal> expectedByAppointment;
+        if (bookedTotals is not null)
+        {
+            expectedByAppointment = new Dictionary<Guid, decimal>(bookedTotals);
+        }
+        else
+        {
+            expectedByAppointment = (await _context.AppointmentResources.AsNoTracking()
+                    .Where(r => appointmentIds.Contains(r.AppointmentId))
+                    .Select(r => new { r.AppointmentId, r.Price })
+                    .ToListAsync(cancellationToken))
+                .GroupBy(r => r.AppointmentId)
+                .ToDictionary(g => g.Key, g => g.Sum(r => r.Price));
+        }
+
+        var paymentsByAppointment = (await _context.Payments.AsNoTracking()
+                .Where(p => p.AppointmentId != null && appointmentIds.Contains(p.AppointmentId.Value))
+                .Select(p => new { p.AppointmentId, p.Status, p.Amount })
+                .ToListAsync(cancellationToken))
+            .GroupBy(p => p.AppointmentId!.Value)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        foreach (var id in appointmentIds)
+        {
+            var rows = paymentsByAppointment.GetValueOrDefault(id) ?? [];
+            result[id] = new PaymentTotals(
+                Expected: expectedByAppointment.GetValueOrDefault(id),
+                // Only genuinely settled money counts: provider-confirmed or
+                // owner-verified. A claim awaiting verification is NOT money.
+                Settled: rows.Where(p => PaymentStatuses.IsSettled(p.Status)).Sum(p => p.Amount),
+                Awaiting: rows.Any(p => PaymentStatuses.IsAwaitingVerification(p.Status)),
+                Failed: rows.Any(p => p.Status is PaymentStatus.Failed or PaymentStatus.Expired or PaymentStatus.Cancelled),
+                Refunded: rows.Any(p => p.Status is PaymentStatus.Refunded or PaymentStatus.Reversed));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Canonicalises an incoming payment-filter value to the six the ledger supports,
+    /// or null when the caller asked for no payment filter at all (`all`/blank/unknown).
+    /// Accepts the snake_case the queue uses as well as the terse client names.
+    /// </summary>
+    private static string? NormalizePaymentFilter(string? paymentStatus)
+    {
+        if (string.IsNullOrWhiteSpace(paymentStatus)) return null;
+        var key = paymentStatus.Trim().ToLowerInvariant().Replace('-', '_');
+        return key switch
+        {
+            "verified" or "paid" or "fully_paid" => "verified",
+            "partial" or "partially_paid" or "part_paid" => "partial",
+            "awaiting" or "awaiting_verification" or "pending" or "submitted" => "awaiting",
+            "unpaid" => "unpaid",
+            "failed" or "expired" or "failed_expired" => "failed",
+            "refunded" or "reversed" or "refunded_reversed" => "refunded",
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// Does one appointment's ledger match the requested payment filter?
+    ///
+    /// The six states partition cleanly, so each option answers a distinct question:
+    /// <list type="bullet">
+    /// <item><c>verified</c> — the settled amount covers the expected total.</item>
+    /// <item><c>partial</c> — some money settled, but less than the total.</item>
+    /// <item><c>awaiting</c> — a real claim is queued for verification.</item>
+    /// <item><c>unpaid</c> — nothing settled, nothing awaiting, nothing failed or refunded.</item>
+    /// <item><c>failed</c> — a failed/expired/cancelled attempt exists.</item>
+    /// <item><c>refunded</c> — a refund or reversal exists.</item>
+    /// </list>
+    /// </summary>
+    private static bool PaymentFilterMatches(
+        string filter, decimal expected, decimal settled, bool awaiting, bool failed, bool refunded) =>
+        filter switch
+        {
+            "verified" => expected > 0 && settled >= expected,
+            "partial" => settled > 0 && settled < expected,
+            "awaiting" => awaiting,
+            "unpaid" => settled <= 0 && !awaiting && !failed && !refunded,
+            "failed" => failed,
+            "refunded" => refunded,
+            _ => true
+        };
+
+    /// <summary>
+    /// The payment state shown on the row, derived from the ledger. Refunds and
+    /// reversals win because they describe money that left; otherwise the state is
+    /// full / partial / awaiting-verification / unpaid, with a failed attempt noted.
+    /// </summary>
+    private static string ClassifyPayment(
+        decimal expected, decimal settled, bool awaiting, bool failed, bool refunded)
+    {
+        if (refunded) return "refunded";
+        if (expected > 0 && settled >= expected) return "paid";
+        if (settled > 0) return "partially_paid";
+        if (awaiting) return "awaiting_verification";
+        if (failed) return "failed";
+        return "unpaid";
     }
 
     private static bool IsRole(string value, string expected) =>

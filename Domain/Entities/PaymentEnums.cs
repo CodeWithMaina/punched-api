@@ -60,7 +60,17 @@ public enum PaymentStatus
     /// transaction, reused code). The reason is recorded and the customer may
     /// submit again with a new payment.
     /// </summary>
-    Rejected = 12
+    Rejected = 12,
+
+    /// <summary>
+    /// Manual M-PESA: the business set the submission aside for a second look
+    /// (a receipt that appears elsewhere, a payer it cannot place, an amount it
+    /// cannot explain). Flagging is NOT a decision about the money: the claim is
+    /// still unverified, still counted in the awaiting queue, and can be un-flagged
+    /// back to <see cref="UnderReview"/> or decided directly. The internal note is
+    /// recorded on the verification trail.
+    /// </summary>
+    Flagged = 13
 }
 
 /// <summary>
@@ -77,9 +87,13 @@ public static class PaymentStatuses
     public static bool IsSettled(PaymentStatus status) =>
         status is PaymentStatus.Success or PaymentStatus.Verified;
 
-    /// <summary>True while the payment is waiting on a human decision.</summary>
+    /// <summary>
+    /// True while the payment is waiting on a human decision. A flagged claim is
+    /// still awaiting verification — flagging moves the claim aside, it does not
+    /// settle or refuse it.
+    /// </summary>
     public static bool IsAwaitingVerification(PaymentStatus status) =>
-        status is PaymentStatus.Submitted or PaymentStatus.UnderReview;
+        status is PaymentStatus.Submitted or PaymentStatus.UnderReview or PaymentStatus.Flagged;
 
     /// <summary>True when the customer may paste a (new) M-PESA confirmation for this payment.</summary>
     public static bool CanAcceptSubmission(PaymentStatus status) =>
@@ -92,8 +106,40 @@ public static class PaymentStatuses
         {
             PaymentStatus.AwaitingCustomer => "awaiting_customer",
             PaymentStatus.UnderReview => "under_review",
+            PaymentStatus.Flagged => "flagged",
             _ => status.ToString().ToLowerInvariant()
         };
+
+    /// <summary>
+    /// Parses a status the way a client actually sends it: any spelling of a wire name
+    /// (<c>under_review</c>, <c>UnderReview</c>, <c>under-review</c>) resolves to the same
+    /// status.
+    ///
+    /// <para>Why this exists: the client answers with the value it was given, which is the wire
+    /// name. A plain <c>Enum.TryParse</c> cannot read <c>under_review</c>, so a filtered list
+    /// would quietly return EVERY payment while appearing to be filtered — the one failure mode a
+    /// money screen must never have.</para>
+    /// </summary>
+    public static bool TryParse(string? value, out PaymentStatus status)
+    {
+        status = default;
+
+        if (string.IsNullOrWhiteSpace(value)) return false;
+
+        var folded = new string(value.Where(c => c is not ('_' or '-' or ' ')).ToArray());
+
+        if (folded.Length == 0) return false;
+
+        if (Enum.TryParse(folded, true, out status) && Enum.IsDefined(typeof(PaymentStatus), status))
+            return true;
+
+        status = default;
+        return false;
+    }
+
+    /// <summary>Statuses the "requires attention" reconciliation lens shows.</summary>
+    public static bool RequiresAttention(PaymentStatus status) =>
+        status is PaymentStatus.Flagged or PaymentStatus.UnderReview;
 }
 
 /// <summary>What the payment is for.</summary>
@@ -113,7 +159,17 @@ public enum PaymentType
 public enum PaymentMethod
 {
     Cash = 0,
-    Mpesa = 1
+    Mpesa = 1,
+
+    /// <summary>
+    /// The channel is not known yet. An appointment booked "pay after service" owes
+    /// money before anybody has decided how it will be handed over, so its outstanding
+    /// row starts here rather than pretending to be cash. Collecting settles the
+    /// question: confirming cash (or recording a pasted M-PESA confirmation) names the
+    /// channel on the row at the moment the money is actually taken, so no payment is
+    /// ever reported as a channel it was not.
+    /// </summary>
+    Unspecified = 2
 }
 
 /// <summary>The concrete provider channel used for an attempt.</summary>

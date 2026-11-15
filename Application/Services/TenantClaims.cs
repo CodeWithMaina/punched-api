@@ -24,3 +24,4 @@ public static class TenantClaimNames
     /// <summary>Enrolled customer of a business.</summary>
     public const string RoleCustomer = "Customer";
 }
+

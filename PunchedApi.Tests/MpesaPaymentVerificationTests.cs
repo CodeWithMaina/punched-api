@@ -712,7 +712,7 @@ public class MpesaPaymentVerificationTests
     // ═══════════════════════════════════════════════════════════
 
     [Fact]
-    public async Task E1_AStaleSubmission_LapsesAndReleasesTheSlot()
+    public async Task E1_AStaleSubmission_LapsesWithoutCancellingTheBooking()
     {
         using var connection = BookingTestBase.CreateConnection();
         using var context = BookingTestBase.CreateContext(connection);
@@ -734,9 +734,21 @@ public class MpesaPaymentVerificationTests
 
         context.ChangeTracker.Clear();
         Assert.Equal(PaymentStatus.Expired, (await context.Payments.SingleAsync()).Status);
-        // The slot the abandoned booking was holding is released.
-        Assert.Equal(AppointmentStatuses.Cancelled,
+
+        // The booking is NOT cancelled, and its status is not otherwise touched: a submission nobody
+        // decided in time means the money is unverified, not that the customer's appointment was
+        // invalid. Cancelling it would let a business's backlog delete a customer's booking.
+        //
+        // Stated as "unchanged" rather than "== Booked" on purpose: this fixture models an
+        // appointment created while the old hold-the-slot rule was in force, and what has to hold for
+        // both is that the money's fate never moves the appointment.
+        Assert.Equal(AppointmentStatuses.PendingPayment,
             (await context.Appointments.SingleAsync(a => a.Id == appointment.Id)).Status);
+        Assert.Equal(1, await context.Appointments.CountAsync(a => a.Id == appointment.Id));
+
+        // The slot it holds is still held, so the customer's booking stands and the owner sees an
+        // outstanding fee to chase or waive.
+        Assert.True(AppointmentReservations.ReservesStaffTime(AppointmentStatuses.PendingPayment));
     }
 
     [Fact]
@@ -753,5 +765,255 @@ public class MpesaPaymentVerificationTests
 
         Assert.Equal(0, await service.ExpireStaleVerificationsAsync());
         Assert.Equal(PaymentStatus.Submitted, (await context.Payments.AsNoTracking().SingleAsync()).Status);
+    }
+    // ═══════════════════════════════════════════════════════════
+    //  FLAGGING (the reconciliation board's third decision)
+    // ═══════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task F1_Flag_MovesTheClaimAsideWithoutSettlingIt()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (_, owner, customer, appointment) = await SeedAsync(context);
+        var service = CreateService(context);
+        var payment = await CreateBookingFeeAsync(context, service, appointment.Id, customer.Id);
+        await service.SubmitMpesaMessageAsync(
+            payment.Id, new SubmitMpesaMessageRequest { Message = MessageWith("QJK42NUM30", 500m) },
+            customer.Id, "Customer");
+
+        var flagged = await service.FlagPaymentAsync(
+            payment.Id,
+            new FlagPaymentRequest { Note = "Payer name does not match the booking." },
+            owner.Id, "Business");
+
+        Assert.True(flagged.Success, flagged.Error?.Message);
+        Assert.Equal("flagged", flagged.Data!.Status);
+
+        context.ChangeTracker.Clear();
+        var stored = await context.Payments.SingleAsync();
+        Assert.Equal(PaymentStatus.Flagged, stored.Status);
+        // Flagging is not a decision about the money: the fee is still unverified.
+        Assert.False(PaymentStatuses.IsSettled(stored.Status));
+        Assert.True(PaymentStatuses.IsAwaitingVerification(stored.Status));
+
+        // The appointment is untouched — a doubtful claim must not move the booking.
+        Assert.Equal(AppointmentStatuses.PendingPayment,
+            (await context.Appointments.SingleAsync(a => a.Id == appointment.Id)).Status);
+
+        var note = await context.PaymentVerificationEvents
+            .Where(e => e.PaymentId == payment.Id && e.Kind == "flagged")
+            .Select(e => e.Reason).SingleAsync();
+        Assert.Equal("Payer name does not match the booking.", note);
+    }
+
+    [Fact]
+    public async Task F2_AFlaggedClaim_CanStillBeVerified()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (_, owner, customer, appointment) = await SeedAsync(context);
+        var service = CreateService(context);
+        var payment = await CreateBookingFeeAsync(context, service, appointment.Id, customer.Id);
+        await service.SubmitMpesaMessageAsync(
+            payment.Id, new SubmitMpesaMessageRequest { Message = MessageWith("QJK42NUM31", 500m) },
+            customer.Id, "Customer");
+        await service.FlagPaymentAsync(
+            payment.Id, new FlagPaymentRequest { Note = "Checking with the till." }, owner.Id, "Business");
+
+        // Flagged is a holding state, not a verdict: the owner can resolve the doubt and confirm.
+        var approved = await service.VerifyPaymentAsync(
+            payment.Id, new VerifyPaymentRequest(), owner.Id, "Business");
+
+        Assert.True(approved.Success, approved.Error?.Message);
+        Assert.Equal("verified", approved.Data!.Status);
+
+        var kinds = await context.PaymentVerificationEvents
+            .Where(e => e.PaymentId == payment.Id).Select(e => e.Kind).ToListAsync();
+        Assert.Equal(new[] { "submitted", "flagged", "verified" }, kinds);
+    }
+
+    [Fact]
+    public async Task F3_FlaggingTwice_KeepsTheStatusAndRecordsBothNotes()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (_, owner, customer, appointment) = await SeedAsync(context);
+        var service = CreateService(context);
+        var payment = await CreateBookingFeeAsync(context, service, appointment.Id, customer.Id);
+        await service.SubmitMpesaMessageAsync(
+            payment.Id, new SubmitMpesaMessageRequest { Message = MessageWith("QJK42NUM32", 500m) },
+            customer.Id, "Customer");
+
+        await service.FlagPaymentAsync(
+            payment.Id, new FlagPaymentRequest { Note = "First look." }, owner.Id, "Business");
+        var second = await service.FlagPaymentAsync(
+            payment.Id, new FlagPaymentRequest { Note = "Second look, same doubt." }, owner.Id, "Business");
+
+        Assert.True(second.Success, second.Error?.Message);
+        Assert.Equal("flagged", second.Data!.Status);
+
+        // Re-flagging appends the reason rather than stacking a second verdict.
+        var notes = await context.PaymentVerificationEvents
+            .Where(e => e.PaymentId == payment.Id && e.Kind == "flagged")
+            .Select(e => e.Reason).ToListAsync();
+        Assert.Equal(new[] { "First look.", "Second look, same doubt." }, notes);
+    }
+
+
+    [Fact]
+    public async Task F4_ClearingAFlag_ReturnsTheClaimToAnOrdinaryReview()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (_, owner, customer, appointment) = await SeedAsync(context);
+        var service = CreateService(context);
+        var payment = await CreateBookingFeeAsync(context, service, appointment.Id, customer.Id);
+        await service.SubmitMpesaMessageAsync(
+            payment.Id, new SubmitMpesaMessageRequest { Message = MessageWith("QJK42NUM33", 500m) },
+            customer.Id, "Customer");
+        await service.FlagPaymentAsync(
+            payment.Id, new FlagPaymentRequest { Note = "Look into it." }, owner.Id, "Business");
+
+        var cleared = await service.MarkVerificationUnderReviewAsync(payment.Id, owner.Id, "Business");
+
+        Assert.True(cleared.Success, cleared.Error?.Message);
+        Assert.Equal("under_review", cleared.Data!.Status);
+    }
+
+    [Fact]
+    public async Task F5_ADecidedClaim_CannotBeFlagged()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (_, owner, customer, appointment) = await SeedAsync(context);
+        var service = CreateService(context);
+        var payment = await CreateBookingFeeAsync(context, service, appointment.Id, customer.Id);
+        await service.SubmitMpesaMessageAsync(
+            payment.Id, new SubmitMpesaMessageRequest { Message = MessageWith("QJK42NUM34", 500m) },
+            customer.Id, "Customer");
+        await service.VerifyPaymentAsync(payment.Id, new VerifyPaymentRequest(), owner.Id, "Business");
+
+        var flagged = await service.FlagPaymentAsync(
+            payment.Id, new FlagPaymentRequest { Note = "Too late." }, owner.Id, "Business");
+
+        Assert.False(flagged.Success);
+        Assert.Equal("INVALID_STATUS_TRANSITION", flagged.Error?.Code);
+    }
+
+    [Fact]
+    public async Task F6_ADeclaredReceivedAmountAboveTheClaim_IsRefusedAndChangesNothing()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (_, owner, customer, appointment) = await SeedAsync(context);
+        var service = CreateService(context);
+        var payment = await CreateBookingFeeAsync(context, service, appointment.Id, customer.Id);
+        await service.SubmitMpesaMessageAsync(
+            payment.Id, new SubmitMpesaMessageRequest { Message = MessageWith("QJK42NUM35", 500m) },
+            customer.Id, "Customer");
+
+        var approved = await service.VerifyPaymentAsync(
+            payment.Id, new VerifyPaymentRequest { ReceivedAmount = 5_000m }, owner.Id, "Business");
+
+        Assert.False(approved.Success);
+        Assert.Equal("VALIDATION_ERROR", approved.Error?.Code);
+
+        context.ChangeTracker.Clear();
+        Assert.Equal(PaymentStatus.Submitted, (await context.Payments.SingleAsync()).Status);
+    }
+
+
+    [Fact]
+    public async Task F7_VerifyingRecordsWhatTheOwnerConfirmed()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (_, owner, customer, appointment) = await SeedAsync(context);
+        var service = CreateService(context);
+        var payment = await CreateBookingFeeAsync(context, service, appointment.Id, customer.Id);
+        await service.SubmitMpesaMessageAsync(
+            payment.Id, new SubmitMpesaMessageRequest { Message = MessageWith("QJK42NUM36", 500m) },
+            customer.Id, "Customer");
+
+        await service.VerifyPaymentAsync(
+            payment.Id,
+            new VerifyPaymentRequest
+            {
+                Note = "Found it on the till.",
+                ReceivedAmount = 500m,
+                TransactionReference = "QJK42NUM36",
+                TransactionExists = true,
+                AmountMatches = true,
+                CodeMatches = true,
+                BelongsToBusiness = true
+            },
+            owner.Id, "Business");
+
+        var reason = await context.PaymentVerificationEvents
+            .Where(e => e.PaymentId == payment.Id && e.Kind == "verified")
+            .Select(e => e.Reason).SingleAsync();
+
+        Assert.NotNull(reason);
+        Assert.Contains("Found it on the till.", reason);
+        Assert.Contains("Confirmed:", reason);
+        Assert.Contains("paid into this business", reason);
+        Assert.Contains("Received 500.00", reason);
+    }
+
+    [Fact]
+    public async Task F8_TheAttentionLensShowsFlaggedClaimsAndCountsThem()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (_, owner, customer, appointment) = await SeedAsync(context);
+        var service = CreateService(context);
+        var payment = await CreateBookingFeeAsync(context, service, appointment.Id, customer.Id);
+        await service.SubmitMpesaMessageAsync(
+            payment.Id, new SubmitMpesaMessageRequest { Message = MessageWith("QJK42NUM37", 500m) },
+            customer.Id, "Customer");
+        await service.FlagPaymentAsync(
+            payment.Id, new FlagPaymentRequest { Note = "Needs a second look." }, owner.Id, "Business");
+
+        var attention = await service.GetVerificationQueueAsync(
+            new PaymentVerificationQuery { Status = "attention" }, owner.Id, "Business");
+        var flagged = await service.GetVerificationQueueAsync(
+            new PaymentVerificationQuery { Status = "flagged" }, owner.Id, "Business");
+        var awaiting = await service.GetVerificationQueueAsync(
+            new PaymentVerificationQuery { Status = "awaiting" }, owner.Id, "Business");
+
+        Assert.True(attention.Success, attention.Error?.Message);
+        Assert.Single(attention.Data!.Items);
+        Assert.Single(flagged.Data!.Items);
+        // A flagged claim is still awaiting a decision, so it never leaves the pending queue.
+        Assert.Single(awaiting.Data!.Items);
+        Assert.Equal(1, awaiting.Data.FlaggedCount);
+        Assert.Equal(1, awaiting.Data.AwaitingCount);
+        Assert.Equal(0, awaiting.Data.UnderReviewCount);
+        // The board surfaces the internal note with the claim.
+        Assert.Equal("Needs a second look.", flagged.Data.Items[0].FlagNote);
+        Assert.NotNull(flagged.Data.Items[0].OutstandingAmount);
+    }
+
+    [Fact]
+    public async Task F9_AnotherBusinessCannotReadTheClaim()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (_, _, customer, appointment) = await SeedAsync(context);
+        var service = CreateService(context);
+        var payment = await CreateBookingFeeAsync(context, service, appointment.Id, customer.Id);
+        await service.SubmitMpesaMessageAsync(
+            payment.Id, new SubmitMpesaMessageRequest { Message = MessageWith("QJK42NUM38", 500m) },
+            customer.Id, "Customer");
+
+        var rivalOwner = BookingTestBase.CreateOwner("rival2@test.com");
+        var rivalBusiness = BookingTestBase.CreateBusiness(rivalOwner.Id, "Rival Studio 2");
+        await BookingTestBase.SeedAsync(context, rivalOwner, rivalBusiness);
+
+        var read = await service.GetVerificationItemAsync(payment.Id, rivalOwner.Id, "Business");
+
+        Assert.False(read.Success);
+        Assert.Equal("NOT_FOUND", read.Error?.Code);
     }
 }

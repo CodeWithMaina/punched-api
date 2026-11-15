@@ -344,6 +344,32 @@ public static class ModuleCatalog
                 new PermissionDefinition("storefront.view",   new[] { "Business" }),
                 new PermissionDefinition("storefront.manage", new[] { "Business" }),
             }),
+        // ── Finances (ledger, cashbook, reconciliation, financial analytics) ───
+        new ModuleDefinition(
+            Key: "financials", Name: "Finances",
+            Description: "Income, expenses, cashbook, M-Pesa reconciliation and financial analytics",
+            Version: "1.0.0", Visibility: ModuleVisibility.Standard,
+            // Must stay in sync with ModuleSeedData.DependenciesJson (["payments"]):
+            // appointment payments are recognised in the ledger, so the module is
+            // meaningless without the payments it reads.
+            Dependencies: new[] { "payments" },
+            RequiredRoles: new[] { "Business", "Staff" },
+            // Business-internal: the owner's books. Customers never see the ledger —
+            // their view of money is the payment request for their own appointment.
+            CustomerCapability: null,
+            Permissions: new[]
+            {
+                new PermissionDefinition("finances.view",           new[] { "Business", "Staff" }),
+                new PermissionDefinition("finances.record_income",  new[] { "Business", "Staff" }),
+                new PermissionDefinition("finances.manage_expenses", new[] { "Business", "Staff" }),
+                // Verifying or rejecting a recorded claim, refunding money and reconciling
+                // the books are owner-level decisions about money that has moved.
+                new PermissionDefinition("finances.verify",         new[] { "Business" }),
+                new PermissionDefinition("finances.refund",         new[] { "Business" }),
+                new PermissionDefinition("finances.reconcile",      new[] { "Business" }),
+                new PermissionDefinition("finances.analytics.view", new[] { "Business" }),
+            }),
+
         // ── Commissions ────────────────────────────────────────
         // Depends on appointments because commission is earned from
         // appointment service lines: a business without the appointments

@@ -29,11 +29,22 @@ public static class PlanModuleSeedData
         // granted explicitly in the same plan.
         ("growth", "commissions"),
 
+        // Finances: the ledger/cashbook/reconciliation capability, granted from Growth up.
+        // Its "payments" dependency is granted explicitly in every plan that gets it.
+        //
+        // "Enabled by default" means exactly this: no override is needed, so a business whose
+        // plan grants Finance sees it from its first login. It is deliberately NOT granted on
+        // the entry tier, because Finance's ledger is fed by appointment payments — granting it
+        // would drag the appointments module (and a booking funnel the entry tier does not
+        // sell) into that plan. The owner switch in Settings turns it off per business without
+        // deleting a record; turning it back on is instant wherever the plan grants it.
+        ("growth", "financials"),
+
         // Pro
         ("pro", "customers"), ("pro", "staff"), ("pro", "settings"),
         ("pro", "appointments"), ("pro", "stamps"), ("pro", "notifications"),
         ("pro", "loyalty"), ("pro", "analytics"), ("pro", "referral"), ("pro", "serviceCatalog"),
-        ("pro", "attendance"), ("pro", "payments"), ("pro", "commissions"),
+        ("pro", "attendance"), ("pro", "payments"), ("pro", "commissions"), ("pro", "financials"),
         ("pro", "reviews"), ("pro", "gallery"), ("pro", "storefront"),
 
         // Enterprise — the only tier that includes the optional Custom Card
@@ -44,6 +55,7 @@ public static class PlanModuleSeedData
         ("enterprise", "loyalty"), ("enterprise", "rewards"), ("enterprise", "analytics"), ("enterprise", "programs"),
         ("enterprise", "referral"), ("enterprise", "serviceCatalog"), ("enterprise", "attendance"),
         ("enterprise", "customCardDesign"), ("enterprise", "payments"), ("enterprise", "commissions"),
+        ("enterprise", "financials"),
         ("enterprise", "reviews"), ("enterprise", "gallery"), ("enterprise", "storefront")
     };
 }

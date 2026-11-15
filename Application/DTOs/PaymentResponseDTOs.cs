@@ -13,6 +13,13 @@ public class PaymentResponse
     [JsonPropertyName("customerId")]
     public Guid? CustomerId { get; set; }
 
+    /// <summary>
+    /// The customer's display name, resolved for the payments register (one query per page,
+    /// never one per row). Null for a payment with no customer attached.
+    /// </summary>
+    [JsonPropertyName("customerName")]
+    public string? CustomerName { get; set; }
+
     [JsonPropertyName("appointmentId")]
     public Guid? AppointmentId { get; set; }
 
@@ -170,6 +177,10 @@ public class PaymentListResponse
 
     [JsonPropertyName("totalCount")]
     public int TotalCount { get; set; }
+
+    /// <summary>Total pages for the filtered result set.</summary>
+    [JsonPropertyName("totalPages")]
+    public int TotalPages { get; set; }
 }
 
 /// <summary>Per-appointment payment summary computed server-side from services + payments.</summary>
@@ -249,6 +260,10 @@ public class PaymentConfigResponse
     [JsonPropertyName("mpesaTillNumber")]
     public string? MpesaTillNumber { get; set; }
 
+    /// <summary>The Send Money route's M-PESA number, normalised to 254XXXXXXXXX. Null when unused.</summary>
+    [JsonPropertyName("mpesaPhoneNumber")]
+    public string? MpesaPhoneNumber { get; set; }
+
     [JsonPropertyName("mpesaPayeeName")]
     public string? MpesaPayeeName { get; set; }
 
@@ -261,6 +276,14 @@ public class PaymentConfigResponse
     /// <summary>True when the manual channel is switched on AND fully configured — what the storefront keys off.</summary>
     [JsonPropertyName("hasManualMpesaDetails")]
     public bool HasManualMpesaDetails { get; set; }
+
+    /// <summary>"Payment Included": customers may pay during booking.</summary>
+    [JsonPropertyName("payUpfrontEnabled")]
+    public bool PayUpfrontEnabled { get; set; } = true;
+
+    /// <summary>"Pay After Service": customers may book now and pay later.</summary>
+    [JsonPropertyName("payAfterServiceEnabled")]
+    public bool PayAfterServiceEnabled { get; set; }
 }
 
 /// <summary>
@@ -286,7 +309,7 @@ public class PublicPaymentDetailsResponse
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; }
 
-    /// <summary>"paybill" | "till" | null — which shape the customer should use.</summary>
+    /// <summary>"paybill" | "till" | "send_money" | null — the one method the customer should use.</summary>
     [JsonPropertyName("accountType")]
     public string? AccountType { get; set; }
 
@@ -298,6 +321,10 @@ public class PublicPaymentDetailsResponse
 
     [JsonPropertyName("tillNumber")]
     public string? TillNumber { get; set; }
+
+    /// <summary>Send Money only: the business's M-PESA number, normalised to 254XXXXXXXXX.</summary>
+    [JsonPropertyName("phoneNumber")]
+    public string? PhoneNumber { get; set; }
 
     [JsonPropertyName("payeeName")]
     public string? PayeeName { get; set; }
@@ -312,6 +339,33 @@ public class PublicPaymentDetailsResponse
     /// <summary>Cash collected at the appointment is still offered.</summary>
     [JsonPropertyName("cashEnabled")]
     public bool CashEnabled { get; set; }
+
+    /// <summary>
+    /// "Payment Included" — the customer may pay during the booking. Reported to the
+    /// storefront so it offers exactly what this business allows, never a control that
+    /// would be refused on submit.
+    /// </summary>
+    [JsonPropertyName("payUpfrontEnabled")]
+    public bool PayUpfrontEnabled { get; set; } = true;
+
+    /// <summary>"Pay After Service" — the customer may book now and settle later.</summary>
+    [JsonPropertyName("payAfterServiceEnabled")]
+    public bool PayAfterServiceEnabled { get; set; }
+
+    /// <summary>
+    /// True when the business takes storefront bookings at all. False only when BOTH
+    /// options are off, which the settings screen refuses to save — the storefront still
+    /// reads this flag so a business changed outside the app is told, not mis-booked.
+    /// </summary>
+    [JsonPropertyName("bookingAvailable")]
+    public bool BookingAvailable { get; set; } = true;
+
+    /// <summary>
+    /// True when the customer must choose between the two options (both are enabled).
+    /// With one option enabled the storefront applies it without asking.
+    /// </summary>
+    [JsonPropertyName("offersPaymentChoice")]
+    public bool OffersPaymentChoice { get; set; }
 }
 
 /// <summary>Aggregate figures for the business payments dashboard (only real recorded payments — no invented metrics).</summary>
@@ -380,12 +434,39 @@ public class PaymentVerificationItemResponse
     [JsonPropertyName("customerPhone")]
     public string? CustomerPhone { get; set; }
 
+    /// <summary>Customer email when the claim is tied to a registered customer.</summary>
+    [JsonPropertyName("customerEmail")]
+    public string? CustomerEmail { get; set; }
+
+    /// <summary>
+    /// True when the payer is a registered customer, false for a guest checkout. The
+    /// owner sees which, because a guest has no account to chase.
+    /// </summary>
+    [JsonPropertyName("isRegisteredCustomer")]
+    public bool IsRegisteredCustomer { get; set; }
+
+    /// <summary>The staff member the appointment is assigned to, when there is one.</summary>
+    [JsonPropertyName("assignedStaffName")]
+    public string? AssignedStaffName { get; set; }
+
     [JsonPropertyName("serviceNames")]
     public List<string> ServiceNames { get; set; } = new();
 
     /// <summary>What the business is owed for this payment (server-computed).</summary>
     [JsonPropertyName("expectedAmount")]
     public decimal ExpectedAmount { get; set; }
+
+    /// <summary>
+    /// The appointment's total value, when the claim is tied to one. Distinct from
+    /// <see cref="ExpectedAmount"/> (this payment's slice) so the owner can see the
+    /// bigger picture on a partial/booking-fee claim.
+    /// </summary>
+    [JsonPropertyName("bookingAmount")]
+    public decimal? BookingAmount { get; set; }
+
+    /// <summary>What is still owed on the appointment after this payment settles (0 when none).</summary>
+    [JsonPropertyName("outstandingAmount")]
+    public decimal? OutstandingAmount { get; set; }
 
     /// <summary>What the pasted message says was paid (server-parsed).</summary>
     [JsonPropertyName("submittedAmount")]
@@ -429,8 +510,37 @@ public class PaymentVerificationItemResponse
     [JsonPropertyName("duplicateOfPaymentId")]
     public Guid? DuplicateOfPaymentId { get; set; }
 
+    /// <summary>The internal note recorded by the last "flag for review" action, when the claim is flagged.</summary>
+    [JsonPropertyName("flagNote")]
+    public string? FlagNote { get; set; }
+
+    /// <summary>UTC time the claim was last flagged (null when it never was).</summary>
+    [JsonPropertyName("flaggedAt")]
+    public DateTime? FlaggedAt { get; set; }
+
+    /// <summary>UTC time the owner verified the claim (null until verified).</summary>
+    [JsonPropertyName("verifiedAt")]
+    public DateTime? VerifiedAt { get; set; }
+
+    /// <summary>UTC time the owner rejected the claim (null until rejected).</summary>
+    [JsonPropertyName("rejectedAt")]
+    public DateTime? RejectedAt { get; set; }
+
+    /// <summary>Why the claim was rejected, when it was. Shown to the customer too.</summary>
+    [JsonPropertyName("rejectionReason")]
+    public string? RejectionReason { get; set; }
+
     [JsonPropertyName("verificationEvents")]
     public List<PaymentVerificationEventResponse> VerificationEvents { get; set; } = new();
+
+    /// <summary>
+    /// The ledger row this claim was recognised as, once it has been verified (null while the
+    /// claim still awaits a decision, and null after a rejection). This is what lets an owner
+    /// follow a claim through to the money it became in one click, instead of searching the
+    /// ledger for the receipt code.
+    /// </summary>
+    [JsonPropertyName("financialTransactionId")]
+    public Guid? FinancialTransactionId { get; set; }
 }
 
 /// <summary>The owner's verification queue plus the counters the screen shows.</summary>
@@ -448,12 +558,26 @@ public class PaymentVerificationQueueResponse
     [JsonPropertyName("totalCount")]
     public int TotalCount { get; set; }
 
-    /// <summary>Payments waiting on a decision (Submitted or UnderReview).</summary>
+    /// <summary>Total pages for the filtered queue.</summary>
+    [JsonPropertyName("totalPages")]
+    public int TotalPages { get; set; }
+
+    /// <summary>Payments waiting on a decision (Submitted, UnderReview or Flagged).</summary>
     [JsonPropertyName("awaitingCount")]
     public int AwaitingCount { get; set; }
 
     [JsonPropertyName("awaitingAmount")]
     public decimal AwaitingAmount { get; set; }
+
+    [JsonPropertyName("submittedCount")]
+    public int SubmittedCount { get; set; }
+
+    /// <summary>Claims set aside for a second look (status Flagged).</summary>
+    [JsonPropertyName("flaggedCount")]
+    public int FlaggedCount { get; set; }
+
+    [JsonPropertyName("underReviewCount")]
+    public int UnderReviewCount { get; set; }
 
     [JsonPropertyName("verifiedCount")]
     public int VerifiedCount { get; set; }

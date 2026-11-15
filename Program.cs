@@ -208,11 +208,12 @@ try
     builder.Services.AddScoped<IStorefrontHoursService, StorefrontHoursService>();
     builder.Services.AddScoped<IStorefrontSearchService, StorefrontSearchService>();
 
-    // Guest booking (POST /v1/businesses/{id}/guest-booking/{start,verify}): a
-    // visitor proves control of an inbox with a one-time code and receives a
-    // short-lived customer token, so the booking itself goes through the ordinary
-    // customer appointment API rather than a parallel path.
-    builder.Services.AddScoped<IGuestBookingService, GuestBookingService>();
+    // Public storefront booking (POST /v1/businesses/{id}/public-bookings[/{appointmentId}/payment-proof]):
+    // the account-free path that does not require proving ownership of anything. It resolves the
+    // business-specific customer record from the details the customer typed, books the appointment
+    // immediately, and records any pasted M-PESA confirmation as evidence awaiting the business's
+    // verification.
+    builder.Services.AddScoped<IPublicBookingService, PublicBookingService>();
 
     // Business subdomain URLs (java-house.punched.app): slug generation,
     // validation, and the one-time-per-boot legacy backfill.
@@ -434,6 +435,17 @@ try
     builder.Services.AddScoped<IPaymentService, PaymentService>();
     builder.Services.AddScoped<IPaymentConfigService, PaymentConfigService>();
     builder.Services.AddScoped<IPaymentCallbackService, PaymentCallbackService>();
+
+    // ── Financial management (ledger, expenses, cashbook, reconciliation, analytics) ──
+    // The ledger service is the payment module's only coupling to the books: it recognises a settled
+    // payment exactly once. It is registered before PaymentService/PaymentCallbackService resolve it
+    // through their optional constructor parameter, so a settlement writes the ledger without the
+    // payment code carrying any financial rules of its own.
+    builder.Services.AddScoped<IFinancialLedgerService, FinancialLedgerService>();
+    builder.Services.AddScoped<IFinancialService, FinancialService>();
+    builder.Services.AddScoped<IExpenseService, ExpenseService>();
+    builder.Services.AddScoped<IFinancialAnalyticsService, FinancialAnalyticsService>();
+    builder.Services.AddScoped<IMpesaReconciliationService, MpesaReconciliationService>();
 builder.Services.Configure<BillingOptions>(builder.Configuration.GetSection(BillingOptions.SectionName));
 builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisioningService>();
 
@@ -794,33 +806,17 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
                 });
         });
 
-        // Guest booking: the two anonymous steps of the account-free booking
-        // flow. Partitioned per IP because the identity being protected is in the
-        // request body; the per-identity limits (resend cooldown, code expiry,
-        // attempt ceiling) are enforced on the row itself.
-        options.AddPolicy("guest-booking-start", httpContext =>
+        // Public storefront booking. Partitioned per IP because the identity is in the
+        // request body and this endpoint creates records; the appointment itself proves
+        // nothing about who is asking.
+        options.AddPolicy("public-booking", httpContext =>
         {
             var partitionKey = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
             return RateLimitPartition.GetFixedWindowLimiter(
                 partitionKey,
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = RateLimit("guest-booking-start", 10),
-                    Window = TimeSpan.FromHours(1),
-                    QueueLimit = 0
-                });
-        });
-
-        // Verifying is allowed more attempts than starting (a mistyped digit is
-        // normal) but is still bounded, and the code itself caps wrong guesses.
-        options.AddPolicy("guest-booking-verify", httpContext =>
-        {
-            var partitionKey = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            return RateLimitPartition.GetFixedWindowLimiter(
-                partitionKey,
-                _ => new FixedWindowRateLimiterOptions
-                {
-                    PermitLimit = RateLimit("guest-booking-verify", 30),
+                    PermitLimit = RateLimit("public-booking", 30),
                     Window = TimeSpan.FromHours(1),
                     QueueLimit = 0
                 });
@@ -1154,6 +1150,29 @@ var databaseUrl = configuration["DATABASE_URL"]
         var resolvedHost = builder.Host;
         var resolvedDatabase = builder.Database;
         Log.Information("Database connection resolved: host={Host}, database={Database}", resolvedHost, resolvedDatabase);
+
+        // ── Pool behaviour on a remote database ─────────────────────────────
+        // Measured against the hosted database this deployment uses: opening a
+        // connection (TCP + TLS + auth) costs ~1.6 s, while a query on an already-open
+        // connection costs ~220 ms. The pool is therefore the single most valuable
+        // thing to keep warm — an idle pool turns every request into a fresh handshake.
+        //
+        //   Minimum Pool Size  keeps N connections open, so the first request after a
+        //                      quiet period does not pay the handshake.
+        //   Connection Idle    is deliberately longer than the idle window that made
+        //   Lifetime           connections disappear in the first place.
+        //   Keepalive          holds the pooled socket open across NAT/proxy timeouts.
+        //   Timeout            fails fast on a dead link instead of stalling a request.
+        //
+        // Every value is overridable from configuration, so a deployment next to its
+        // database can set Minimum Pool Size to 0 and pay nothing.
+        var minimumPoolSize = int.TryParse(configuration["Database:MinimumPoolSize"], out var configuredMin)
+            ? configuredMin
+            : 2;
+        builder.MinPoolSize = Math.Clamp(minimumPoolSize, 0, 100);
+        builder.ConnectionIdleLifetime = 300;
+        builder.KeepAlive = 30;
+        builder.Timeout = 15;
 
         return builder.ConnectionString;
     }

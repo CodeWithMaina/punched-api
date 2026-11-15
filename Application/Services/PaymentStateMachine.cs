@@ -24,12 +24,18 @@ using PunchedApi.Domain.Entities;
 /// FAILED → SUBMITTED           Manual M-PESA: customer pastes a confirmation after a failure
 /// EXPIRED → AWAITING_CUSTOMER  Retry after expiry — not terminal
 /// SUBMITTED → UNDER_REVIEW     Owner opens the submission — non-terminal holding state
+/// SUBMITTED → FLAGGED          Owner sets it aside for a second look (note recorded) — non-terminal
 /// SUBMITTED → VERIFIED         Owner confirms the money arrived — terminal, reversible
 /// SUBMITTED → REJECTED         Owner refuses the proof — terminal until a new submission
 /// SUBMITTED → EXPIRED          Nobody acted within the verification window — terminal
+/// UNDER_REVIEW → FLAGGED       Owner flags it after opening it — non-terminal
 /// UNDER_REVIEW → VERIFIED      Owner confirms after reviewing — terminal, reversible
 /// UNDER_REVIEW → REJECTED      Owner refuses after reviewing — terminal until a new submission
 /// UNDER_REVIEW → EXPIRED       Review window elapsed — terminal
+/// FLAGGED → UNDER_REVIEW       Owner clears the flag, back to an ordinary open review — non-terminal
+/// FLAGGED → VERIFIED           Owner resolves the doubt and confirms the money — terminal, reversible
+/// FLAGGED → REJECTED           Owner resolves the doubt and refuses the proof — terminal, reversible-by-new-submission
+/// FLAGGED → EXPIRED            Nobody acted within the verification window — terminal
 /// REJECTED → SUBMITTED         Customer pastes a NEW confirmation for the same payment
 /// SUCCESS → REVERSED           Daraja reversal applied (authorised only) — terminal
 /// SUCCESS → REFUNDED           Refund completed (authorised only) — terminal
@@ -59,11 +65,18 @@ public static class PaymentStateMachine
         // a submission is a claim, and a claim must be able to be decided.
         [PaymentStatus.Submitted] = new HashSet<PaymentStatus>
         {
-            PaymentStatus.UnderReview, PaymentStatus.Verified, PaymentStatus.Rejected, PaymentStatus.Expired
+            PaymentStatus.UnderReview, PaymentStatus.Flagged, PaymentStatus.Verified,
+            PaymentStatus.Rejected, PaymentStatus.Expired
         },
         [PaymentStatus.UnderReview] = new HashSet<PaymentStatus>
         {
-            PaymentStatus.Verified, PaymentStatus.Rejected, PaymentStatus.Expired
+            PaymentStatus.Flagged, PaymentStatus.Verified, PaymentStatus.Rejected, PaymentStatus.Expired
+        },
+        // Flagged is a holding state, not a verdict: the owner can clear the flag
+        // (back to an ordinary open review) or decide straight from it.
+        [PaymentStatus.Flagged] = new HashSet<PaymentStatus>
+        {
+            PaymentStatus.UnderReview, PaymentStatus.Verified, PaymentStatus.Rejected, PaymentStatus.Expired
         },
         // A rejected payment may be re-submitted with a different receipt — the
         // customer paid again, and refusing to record it would lose the money.

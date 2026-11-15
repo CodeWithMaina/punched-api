@@ -33,5 +33,18 @@ namespace PunchedApi.Application.DTOs
             Data = default,
             Error = new ApiError { Code = code, Message = message }
         };
+
+        /// <summary>Creates a failure response carrying per-field validation messages.</summary>
+        public static ApiResponse<T> Fail(string code, string message, IReadOnlyDictionary<string, string> fields) => new()
+        {
+            Success = false,
+            Data = default,
+            Error = new ApiError
+            {
+                Code = code,
+                Message = message,
+                Fields = new Dictionary<string, string>(fields)
+            }
+        };
     }
 }

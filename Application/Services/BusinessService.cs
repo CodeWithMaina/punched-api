@@ -662,9 +662,21 @@ public partial class BusinessService : IBusinessService
             "name" => descending
                 ? query.OrderByDescending(x => x.e.Customer.FullName)
                 : query.OrderBy(x => x.e.Customer.FullName),
-            _ => descending
+            // "Most recently active" — the ordering the list used to apply by default. Kept
+            // as an explicit choice, because "who was in last" is a real question, but it is
+            // no longer what a plain list means.
+            "last-stamp" or "laststamp" or "active" => descending
                 ? query.OrderByDescending(x => (DateTime?)(x.c != null ? x.c.LastStampAt : null) ?? x.e.EnrolledAt)
+                    .ThenBy(x => x.e.Customer.FullName)
                 : query.OrderBy(x => (DateTime?)(x.c != null ? x.c.LastStampAt : null) ?? x.e.EnrolledAt)
+                    .ThenBy(x => x.e.Customer.FullName),
+            // Default ("recent"): newest record first, so a customer who has just been
+            // added is at the top of the list. EnrolledAt is when they became a customer
+            // of THIS business, which is the creation date the list shows; the name is a
+            // deterministic tiebreaker so a page boundary can never repeat or skip a row.
+            _ => descending
+                ? query.OrderByDescending(x => x.e.EnrolledAt).ThenBy(x => x.e.Customer.FullName)
+                : query.OrderBy(x => x.e.EnrolledAt).ThenBy(x => x.e.Customer.FullName)
         };
 
         var totalCount = await query.CountAsync();
@@ -684,6 +696,7 @@ public partial class BusinessService : IBusinessService
                 EnrollmentStatus = x.e.Status == CustomerBusinessEnrollmentStatus.Active
                     ? "active"
                     : x.e.Status.ToString().ToLowerInvariant(),
+                CustomerType = x.e.Type == CustomerType.Guest ? "guest" : "registered",
                 TotalStamps = x.c != null ? x.c.TotalStamps : 0,
                 LifetimeStamps = x.c != null ? x.c.LifetimeStamps : 0,
                 TotalRedemptions = x.c != null ? x.c.TotalRedemptions : 0,
@@ -741,6 +754,7 @@ public partial class BusinessService : IBusinessService
             EnrollmentStatus = enrollment.Status == CustomerBusinessEnrollmentStatus.Active
                 ? "active"
                 : enrollment.Status.ToString().ToLowerInvariant(),
+            CustomerType = enrollment.Type == CustomerType.Guest ? "guest" : "registered",
             TotalStamps = card?.TotalStamps ?? 0,
             LifetimeStamps = card?.LifetimeStamps ?? 0,
             TotalRedemptions = card?.TotalRedemptions ?? 0,
@@ -778,6 +792,7 @@ public partial class BusinessService : IBusinessService
                 .Select(e => new
                 {
                     e.Status,
+                    e.Type,
                     e.EnrolledAt,
                     CustomerFullName = e.Customer.FullName,
                     CustomerEmail = e.Customer.Email,
@@ -931,6 +946,7 @@ public partial class BusinessService : IBusinessService
                 {
                     EnrollmentStatus = enrollment.Status == CustomerBusinessEnrollmentStatus.Active
                         ? "active" : enrollment.Status.ToString().ToLowerInvariant(),
+                    CustomerType = enrollment.Type == CustomerType.Guest ? "guest" : "registered",
                     HasLoyaltyCard = loyaltyRow != null,
                 },
                 Metrics = metrics,
@@ -987,6 +1003,7 @@ public partial class BusinessService : IBusinessService
                 Gender = e.Customer.Gender,
                 AvatarUrl = e.Customer.AvatarUrl,
                 CardId = c != null ? (Guid?)c.Id : null,
+                CustomerType = e.Type,
                 TotalStamps = c != null ? c.TotalStamps : 0,
                 LifetimeStamps = c != null ? c.LifetimeStamps : 0,
                 TotalRedemptions = c != null ? c.TotalRedemptions : 0,
@@ -1012,6 +1029,7 @@ public partial class BusinessService : IBusinessService
                     AvatarUrl = best.AvatarUrl,
                     CardId = best.CardId,
                     EnrollmentStatus = "active",
+                    CustomerType = best.CustomerType == CustomerType.Guest ? "guest" : "registered",
                     TotalStamps = best.TotalStamps,
                     LifetimeStamps = best.LifetimeStamps,
                     TotalRedemptions = best.TotalRedemptions,
@@ -1516,8 +1534,13 @@ public partial class BusinessService : IBusinessService
         }
     }
 
-    /// <summary>Shared loyalty-card → BusinessCustomerResponse projection.</summary>
-    private static BusinessCustomerResponse MapCustomerCard(LoyaltyCard card, int? stampsRequired) => new()
+    /// <summary>
+    /// Shared loyalty-card → BusinessCustomerResponse projection. <paramref name="type"/>
+    /// records how the customer belongs to the business (Guest or Registered); it
+    /// defaults to Registered because a card-holder relationship predates the guest flow.
+    /// </summary>
+    private static BusinessCustomerResponse MapCustomerCard(
+        LoyaltyCard card, int? stampsRequired, CustomerType type = CustomerType.Registered) => new()
     {
         UserId = card.CustomerId,
         FullName = card.Customer.FullName,
@@ -1527,6 +1550,7 @@ public partial class BusinessService : IBusinessService
         Gender = card.Customer.Gender,
         AvatarUrl = card.Customer.AvatarUrl,
         CardId = card.Id,
+        CustomerType = type == CustomerType.Guest ? "guest" : "registered",
         TotalStamps = card.TotalStamps,
         LifetimeStamps = card.LifetimeStamps,
         TotalRedemptions = card.TotalRedemptions,
@@ -1603,7 +1627,17 @@ public partial class BusinessService : IBusinessService
                 .Take(pageSize)
                 .ToListAsync();
 
-            var items = cards.Select(c => MapCustomerCard(c, stampsRequired)).ToList();
+            var servedCustomerIds = cards.Select(c => c.CustomerId).Distinct().ToList();
+            var enrollmentTypes = await _context.CustomerBusinessEnrollments.AsNoTracking()
+                .Where(e => e.BusinessId == businessId && servedCustomerIds.Contains(e.CustomerId))
+                .Select(e => new { e.CustomerId, e.Type })
+                .ToListAsync();
+            var enrollmentTypeMap = enrollmentTypes.ToDictionary(e => e.CustomerId, e => e.Type);
+
+            var items = cards
+                .Select(c => MapCustomerCard(
+                    c, stampsRequired, enrollmentTypeMap.GetValueOrDefault(c.CustomerId, CustomerType.Registered)))
+                .ToList();
             return ApiResponse<PaginatedResponse<BusinessCustomerResponse>>.Ok(new PaginatedResponse<BusinessCustomerResponse>
             {
                 Items = items,
@@ -1648,6 +1682,10 @@ public partial class BusinessService : IBusinessService
                 var customer = await _unitOfWork.Users.GetByIdAsync(customerId);
                 if (customer == null)
                     return ApiResponse<BusinessCustomerResponse>.Fail("NOT_FOUND", "Customer not found.");
+                var appointmentCustomerType = await _context.CustomerBusinessEnrollments.AsNoTracking()
+                    .Where(e => e.BusinessId == businessId && e.CustomerId == customerId)
+                    .Select(e => (CustomerType?)e.Type)
+                    .FirstOrDefaultAsync();
                 return ApiResponse<BusinessCustomerResponse>.Ok(new BusinessCustomerResponse
                 {
                     UserId = customer.Id,
@@ -1658,6 +1696,7 @@ public partial class BusinessService : IBusinessService
                     Gender = customer.Gender,
                     AvatarUrl = customer.AvatarUrl,
                     CardId = Guid.Empty,
+                    CustomerType = appointmentCustomerType == CustomerType.Guest ? "guest" : "registered",
                     TotalStamps = 0,
                     LifetimeStamps = 0,
                     EnrolledAt = DateTime.UtcNow,
@@ -1665,7 +1704,12 @@ public partial class BusinessService : IBusinessService
                 });
             }
 
-            return ApiResponse<BusinessCustomerResponse>.Ok(MapCustomerCard(card, stampsRequired));
+            var cardCustomerType = await _context.CustomerBusinessEnrollments.AsNoTracking()
+                .Where(e => e.BusinessId == businessId && e.CustomerId == customerId)
+                .Select(e => (CustomerType?)e.Type)
+                .FirstOrDefaultAsync();
+            return ApiResponse<BusinessCustomerResponse>.Ok(
+                MapCustomerCard(card, stampsRequired, cardCustomerType ?? CustomerType.Registered));
         }
         catch (Exception ex)
         {
@@ -1752,6 +1796,17 @@ public partial class BusinessService : IBusinessService
                 .Where(s => s.AwardedByUserId == u.Id && s.Card.BusinessId == business.Id)
                 .Max(s => (DateTime?)s.StampedAt),
 
+            // When this person joined THIS business — the membership row's own `joined_at`,
+            // the canonical answer to "since when is this person on the team". It is what
+            // "Recently added" sorts by, and it is deliberately not `created_at`: a member who
+            // left and was re-added joins the team again today, and their row's creation date
+            // would sort them as if they had never left. A member with no usable membership
+            // timestamp falls back to the account's creation time rather than DateTime.MinValue,
+            // which would sort a real person to the very bottom of the list.
+            JoinedAt = _context.BusinessMemberships
+                .Where(m => m.UserId == u.Id && m.BusinessId == business.Id && m.Role == BusinessMembershipRole.Staff)
+                .Max(m => (DateTime?)m.JoinedAt) ?? u.CreatedAt,
+
             // The position (job title) is resolved in the same statement — a
             // correlated subquery per row, no N+1 and no second round trip.
             // A position never grants a permission, so it is display metadata only.
@@ -1817,17 +1872,27 @@ public partial class BusinessService : IBusinessService
             projected = projected.Where(s => s.DailyGoal == null);
 
         // Server-side sorting.
+        //
+        // "Recently added" is the membership's own `joined_at` — when this person joined THIS
+        // business. It used to sort by UserId, which is a random identifier and therefore not
+        // a date at all: the order looked plausible and was meaningless. The joined-at time is
+        // read per row as a correlated scalar, so the sort stays in SQL.
+        //
+        // Every ordering ends with the member's name so it is deterministic: without a
+        // tiebreaker two members added in the same tick could swap places between requests,
+        // and a page boundary would then repeat one and skip the other.
         var descending = sortDirection?.Trim().ToLowerInvariant() == "desc";
         projected = (sortBy?.Trim().ToLowerInvariant(), descending) switch
         {
             ("name", true) => projected.OrderByDescending(s => s.FullName),
-            ("stamps", true) => projected.OrderByDescending(s => s.StampsIssued),
-            ("stamps", false) => projected.OrderBy(s => s.StampsIssued),
-            ("recent", false) => projected.OrderBy(s => s.LastActivityAt ?? DateTime.MinValue),
-            ("recent", true) => projected.OrderByDescending(s => s.LastActivityAt ?? DateTime.MinValue),
-            ("goal", true) => projected.OrderByDescending(s => s.DailyGoal == null ? 0m : Math.Min(1m * s.StampsToday / s.DailyGoal.Value, 2m)),
-            ("goal", false) => projected.OrderBy(s => s.DailyGoal == null ? 0m : Math.Min(1m * s.StampsToday / s.DailyGoal.Value, 2m)),
-            ("added", true) => projected.OrderByDescending(s => s.UserId),
+            ("stamps", true) => projected.OrderByDescending(s => s.StampsIssued).ThenBy(s => s.FullName),
+            ("stamps", false) => projected.OrderBy(s => s.StampsIssued).ThenBy(s => s.FullName),
+            ("recent", false) => projected.OrderBy(s => s.LastActivityAt ?? DateTime.MinValue).ThenBy(s => s.FullName),
+            ("recent", true) => projected.OrderByDescending(s => s.LastActivityAt ?? DateTime.MinValue).ThenBy(s => s.FullName),
+            ("goal", true) => projected.OrderByDescending(s => s.DailyGoal == null ? 0m : Math.Min(1m * s.StampsToday / s.DailyGoal.Value, 2m)).ThenBy(s => s.FullName),
+            ("goal", false) => projected.OrderBy(s => s.DailyGoal == null ? 0m : Math.Min(1m * s.StampsToday / s.DailyGoal.Value, 2m)).ThenBy(s => s.FullName),
+            ("added", true) => projected.OrderByDescending(s => s.JoinedAt).ThenBy(s => s.FullName),
+            ("added", false) => projected.OrderBy(s => s.JoinedAt).ThenBy(s => s.FullName),
             _ => descending ? projected.OrderByDescending(s => s.FullName) : projected.OrderBy(s => s.FullName),
         };
 

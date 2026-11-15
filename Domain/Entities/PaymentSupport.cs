@@ -55,6 +55,39 @@ public class PaymentCallback : BaseEntity
 }
 
 /// <summary>
+/// The three manual M-PESA routes a business may offer, in ONE place so the DB
+/// column, the validation and the public API cannot drift apart.
+/// </summary>
+public static class ManualMpesaMethods
+{
+    /// <summary>Business number + account number.</summary>
+    public const string Paybill = "paybill";
+
+    /// <summary>Till number (Buy Goods and Services).</summary>
+    public const string Till = "till";
+
+    /// <summary>A plain M-PESA phone number (Send Money).</summary>
+    public const string SendMoney = "send_money";
+
+    /// <summary>All known values, for validation and constraint checks.</summary>
+    public static readonly string[] All = [Paybill, Till, SendMoney];
+
+    public static bool IsKnown(string? value) => value is Paybill or Till or SendMoney;
+
+    /// <summary>
+    /// Canonicalises a stored or client value. Historical aliases ("phone") and casing
+    /// fold to the canonical value; anything unknown defaults to PayBill, which is the
+    /// column's own default and keeps an old client that never sent a type working.
+    /// </summary>
+    public static string Normalise(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        Till => Till,
+        "send_money" or "sendmoney" or "phone" => SendMoney,
+        _ => Paybill
+    };
+}
+
+/// <summary>
 /// Per-business payment configuration. One row per business (unique index).
 /// M-PESA credentials are stored AES-GCM encrypted at rest and NEVER returned
 /// to the browser or written to logs.
@@ -70,7 +103,12 @@ public class BusinessPaymentConfig : BaseEntity
     /// <summary>M-PESA payments enabled for this business.</summary>
     public bool MpesaEnabled { get; set; }
 
-    /// <summary>M-PESA account type: "paybill" or "till" (drives STK TransactionType).</summary>
+    /// <summary>
+    /// M-PESA account type: "paybill", "till" or "send_money". Selects the single
+    /// method the business accepts on its storefront (only that method's fields are
+    /// ever exposed publicly) and, for "paybill"/"till", drives the Daraja STK
+    /// TransactionType.
+    /// </summary>
     [MaxLength(10)]
     public string MpesaAccountType { get; set; } = "paybill";
 
@@ -112,6 +150,14 @@ public class BusinessPaymentConfig : BaseEntity
     [MaxLength(20)]
     public string? MpesaTillNumber { get; set; }
 
+    /// <summary>
+    /// M-PESA mobile number (Send Money) customers send to. Stored normalised in
+    /// E.164 digits form without the plus: <c>2547XXXXXXXX</c> / <c>2541XXXXXXXX</c>.
+    /// Null when the business collects on a PayBill or a Till.
+    /// </summary>
+    [MaxLength(12)]
+    public string? MpesaPhoneNumber { get; set; }
+
     /// <summary>The name the customer should see on their M-PESA confirmation, so they can check it matches.</summary>
     [MaxLength(100)]
     public string? MpesaPayeeName { get; set; }
@@ -129,15 +175,81 @@ public class BusinessPaymentConfig : BaseEntity
     [Range(0, 100)]
     public decimal BookingFeePercentage { get; set; } = 50m;
 
+    // ── Storefront payment options ──────────────────────────
+    // Two independent policy switches that decide what a customer is offered when
+    // booking from the storefront. They are deliberately separate from the channel
+    // configuration above: a business chooses WHEN money is taken (up front or after the
+    // service), and separately HOW it can be taken (cash at the desk, Daraja, manual
+    // M-PESA). Conflating the two would make turning off a channel silently change the
+    // booking policy.
+
+    /// <summary>
+    /// "Payment Included": the customer pays during the booking. On by default — that is
+    /// the behaviour every existing storefront already had, so a migration must not change
+    /// what a live booking page does.
+    /// </summary>
+    public bool PayUpfrontEnabled { get; set; } = true;
+
+    /// <summary>
+    /// "Pay After Service": the customer books now and settles when the service is done.
+    /// Off by default: it changes what the customer is asked for up front, and an
+    /// appointment booked this way immediately carries an outstanding payment — so it is
+    /// an explicit decision by the owner rather than something a migration imposes.
+    /// </summary>
+    public bool PayAfterServiceEnabled { get; set; }
+
+    /// <summary>
+    /// True when the storefront must ask the customer which option they want. With one
+    /// option enabled the flow applies it without asking; with both it has to ask; with
+    /// neither the business is not taking bookings.
+    /// </summary>
+    public bool OffersPaymentChoice => PayUpfrontEnabled && PayAfterServiceEnabled;
+
+    /// <summary>
+    /// True while the business takes storefront bookings at all. The settings endpoint
+    /// refuses to save a configuration where this would be false, so a false value means
+    /// the row was changed outside the app (see the booking-time guard, which still
+    /// refuses such a booking rather than silently picking an option).
+    /// </summary>
+    public bool BookingAvailable => PayUpfrontEnabled || PayAfterServiceEnabled;
+
+    /// <summary>
+    /// The single manual M-PESA route this business actually exposes, or null when
+    /// none is complete. Only one method is ever active, so the storefront can never
+    /// show an inactive method's saved values or a half-configured instruction.
+    ///
+    /// <para>The explicitly selected <see cref="MpesaAccountType"/> wins when its own
+    /// fields are complete (so switching methods does not require deleting the other
+    /// method's saved values — the owner can toggle back). When the stored type has no
+    /// complete configuration, the single complete method is used instead, so PayBill
+    /// and Till rows created before the method selector existed behave exactly as
+    /// before.</para>
+    /// </summary>
+    public string? ActiveManualMethod()
+    {
+        var type = ManualMpesaMethods.Normalise(MpesaAccountType);
+        var hasPaybill = !string.IsNullOrWhiteSpace(MpesaPaybillNumber)
+                         && !string.IsNullOrWhiteSpace(MpesaPaybillAccount);
+        var hasTill = !string.IsNullOrWhiteSpace(MpesaTillNumber);
+        var hasPhone = !string.IsNullOrWhiteSpace(MpesaPhoneNumber);
+
+        if (type == ManualMpesaMethods.SendMoney && hasPhone) return ManualMpesaMethods.SendMoney;
+        if (type == ManualMpesaMethods.Till && hasTill) return ManualMpesaMethods.Till;
+        if (type == ManualMpesaMethods.Paybill && hasPaybill) return ManualMpesaMethods.Paybill;
+
+        // Legacy rows: the stored type predates the selector, so fall back to the one
+        // method that is actually complete.
+        if (hasPaybill) return ManualMpesaMethods.Paybill;
+        if (hasTill) return ManualMpesaMethods.Till;
+        return null;
+    }
+
     /// <summary>
     /// True when the business can actually be paid on this channel: manual M-PESA is
-    /// on and at least one of a PayBill (with its account number) or a Till is
-    /// configured. A half-configured PayBill is not payable, so it does not count.
+    /// on and the active method resolves to a complete configuration. A half-configured
+    /// method is not payable, so it does not count.
     /// </summary>
-    public bool HasManualMpesaDetails =>
-        ManualMpesaEnabled &&
-        ((!string.IsNullOrWhiteSpace(MpesaPaybillNumber) && !string.IsNullOrWhiteSpace(MpesaPaybillAccount))
-         || !string.IsNullOrWhiteSpace(MpesaTillNumber));
+    public bool HasManualMpesaDetails => ManualMpesaEnabled && ActiveManualMethod() != null;
 
     /// <summary>Resolves the booking fee for a service total, rounded to 2dp (banker-free, away-from-zero).</summary>
     public decimal BookingFeeFor(decimal serviceTotal)

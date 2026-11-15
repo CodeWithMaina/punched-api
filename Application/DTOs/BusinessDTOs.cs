@@ -665,6 +665,10 @@ public class CustomerBusinessDto
     [JsonPropertyName("source")]
     public string Source { get; set; } = "discovery";
 
+    /// <summary>`guest` | `registered` — how this customer came to belong to the business.</summary>
+    [JsonPropertyName("customerType")]
+    public string CustomerType { get; set; } = "registered";
+
     [JsonPropertyName("enrolledAt")]
     public DateTime EnrolledAt { get; set; }
 }
@@ -1092,6 +1096,10 @@ public class BusinessCustomerResponse
     [JsonPropertyName("enrollmentStatus")]
     public string EnrollmentStatus { get; set; } = "active";
 
+    /// <summary>`guest` | `registered` — how this customer belongs to the business.</summary>
+    [JsonPropertyName("customerType")]
+    public string CustomerType { get; set; } = "registered";
+
     [JsonPropertyName("totalStamps")]
     public int TotalStamps { get; set; }
 
@@ -1426,6 +1434,15 @@ public class StaffMemberResponse
 
     [JsonPropertyName("avatarUrl")]
     public string? AvatarUrl { get; set; }
+
+    /// <summary>
+    /// When this person joined <b>this</b> business — their membership row's creation
+    /// time, which is what "Recently added" sorts by. Distinct from the account's own
+    /// creation: someone who was a customer for a year before joining the team joined the
+    /// team today.
+    /// </summary>
+    [JsonPropertyName("joinedAt")]
+    public DateTime JoinedAt { get; set; }
 
     /// <summary>
     /// The service categories this member specialises in — the source of their
@@ -1843,6 +1860,10 @@ public class CustomerDetailsStatusBlock
 {
     [JsonPropertyName("enrollmentStatus")]
     public string EnrollmentStatus { get; set; } = "active";
+
+    /// <summary>`guest` | `registered` — how this customer belongs to the business.</summary>
+    [JsonPropertyName("customerType")]
+    public string CustomerType { get; set; } = "registered";
 
     [JsonPropertyName("hasLoyaltyCard")]
     public bool HasLoyaltyCard { get; set; }

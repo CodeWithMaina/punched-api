@@ -18,8 +18,17 @@ public interface IAppointmentService
     /// </summary>
     Task<ApiResponse<AvailabilityCalendarResponse>> GetAvailabilityCalendarAsync(Guid userId, string role, Guid businessId, AvailabilityQueryRequest request);
 
-    /// <summary>Customer self-service booking. CustomerId is forced to the caller.</summary>
-    Task<ApiResponse<AppointmentResponse>> CreateAppointmentAsync(Guid callerUserId, string role, CreateAppointmentRequest request);
+    /// <summary>
+    /// Customer self-service booking. CustomerId is forced to the caller.
+    ///
+    /// <para><paramref name="isGuest"/> is true only when no session stands behind the
+    /// booking — the account-free storefront path, where the customer's details came out
+    /// of a form rather than out of an authenticated account. A signed-in booking
+    /// confirms a real account exists, so a Guest enrollment is upgraded to Registered;
+    /// an anonymous booking leaves the relationship as Guest.</para>
+    /// </summary>
+    Task<ApiResponse<AppointmentResponse>> CreateAppointmentAsync(
+        Guid callerUserId, string role, CreateAppointmentRequest request, bool isGuest = false);
 
     /// <summary>Business/Staff booking on behalf of a customer.</summary>
     Task<ApiResponse<AppointmentResponse>> CreateAppointmentOnBehalfAsync(Guid callerUserId, string role, CreateAppointmentOnBehalfRequest request);
@@ -105,6 +114,15 @@ public interface IAppointmentService
     /// staff/service names server-side; only the requested page plus the
     /// reference buckets are returned.
     /// </summary>
+    /// <param name="staffIds">Multi-select staff filter. Honoured only while the Staff module is on.</param>
+    /// <param name="customerIds">Multi-select customer filter (applied together with <paramref name="customerId"/>).</param>
+    /// <param name="serviceIds">Multi-select service filter (applied together with <paramref name="serviceId"/>).</param>
+    /// <param name="paymentStatus">
+    /// Payment-verification filter, answered from the payment ledger:
+    /// `verified` | `partial` | `awaiting` | `unpaid` | `failed` | `refunded`.
+    /// Null or `all` means "no payment filter".
+    /// </param>
+    /// <param name="cancellationToken">Request cancellation, so an abandoned list request stops the query.</param>
     Task<ApiResponse<AppointmentDashboardResponse>> GetAppointmentDashboardAsync(
         Guid ownerUserId,
         DateTime? from,
@@ -117,7 +135,12 @@ public interface IAppointmentService
         string sortBy,
         string sortDirection,
         int page,
-        int pageSize);
+        int pageSize,
+        Guid[]? staffIds = null,
+        Guid[]? customerIds = null,
+        Guid[]? serviceIds = null,
+        string? paymentStatus = null,
+        CancellationToken cancellationToken = default);
 
     Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetBusinessAppointmentsAsync(Guid ownerUserId, string? status, DateTime? from, DateTime? to, Guid? staffUserId, Guid? customerId, Guid? serviceId, int page, int pageSize);
 

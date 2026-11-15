@@ -159,7 +159,23 @@ public class ModuleAdoptionAcceptanceTests
                     continue;
                 if (IsAcceptanceTestFile(file)) // this file mentions the key in its assertions
                     continue;
-                if (File.ReadAllText(file).Contains("EnforcementEnabled"))
+                // A file that cannot be read is not a source file that mentions the key: a dev
+                // server's redirected log or a database file can be locked while this runs, and
+                // that must not be reported as a violation. Readable source is still checked.
+                string content;
+                try
+                {
+                    content = File.ReadAllText(file);
+                }
+                catch (IOException)
+                {
+                    continue;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    continue;
+                }
+                if (content.Contains("EnforcementEnabled"))
                     offenders.Add(file);
             }
         }

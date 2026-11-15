@@ -15,6 +15,9 @@ public class CustomerBusinessEnrollmentConfiguration : IEntityTypeConfiguration<
         builder.Property(e => e.CustomerId).IsRequired().HasColumnName("customer_id");
         builder.Property(e => e.BusinessId).IsRequired().HasColumnName("business_id");
         builder.Property(e => e.Status).IsRequired().HasColumnName("status").HasDefaultValue(CustomerBusinessEnrollmentStatus.Active);
+        // Default Registered so every pre-existing row keeps its meaning: a relationship
+        // that predates the guest flow was, by definition, held by a real account.
+        builder.Property(e => e.Type).IsRequired().HasColumnName("type").HasDefaultValue(CustomerType.Registered);
         builder.Property(e => e.Source).IsRequired().HasMaxLength(20).HasColumnName("source").HasDefaultValue("discovery");
         builder.Property(e => e.EnrolledAt).IsRequired().HasColumnName("enrolled_at");
         builder.Property(e => e.LeftAt).HasColumnName("left_at");

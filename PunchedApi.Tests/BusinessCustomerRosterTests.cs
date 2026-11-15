@@ -160,6 +160,65 @@ public class BusinessCustomerRosterTests
         env.Svc.GetBusinessCustomersAsync(env.OwnerId, null, null, programId, null, null, "recent", "desc", 1, 25);
 
     [Fact]
+    public async Task Roster_Default_Order_Puts_The_Newest_Customer_First()
+    {
+        var env = CreateEnv();
+        using (env.Ctx)
+        {
+            // Enrolment is the customer's creation date within this business, so the three
+            // rows are given distinct ones: Carol joined most recently.
+            var now = DateTime.UtcNow;
+            foreach (var enrollment in env.Ctx.CustomerBusinessEnrollments
+                         .Where(e => e.BusinessId == env.ProgramA.BusinessId))
+            {
+                enrollment.EnrolledAt = enrollment.CustomerId == env.Carol.Id
+                    ? now
+                    : now.AddDays(-2);
+            }
+
+            await env.Ctx.SaveChangesAsync();
+
+            var res = await QueryAsync(env, null);
+
+            Assert.True(res.Success);
+            // A newly added customer is at the top of the roster, not buried by activity.
+            Assert.Equal(env.Carol.FullName, res.Data!.Items[0].FullName);
+        }
+    }
+
+    [Fact]
+    public async Task Roster_Can_Still_Be_Ordered_By_Most_Recently_Active()
+    {
+        var env = CreateEnv();
+        using (env.Ctx)
+        {
+            // Enrolment alone would put Alice last; the activity order must ignore it.
+            var now = DateTime.UtcNow;
+            foreach (var enrollment in env.Ctx.CustomerBusinessEnrollments
+                         .Where(e => e.BusinessId == env.ProgramA.BusinessId))
+            {
+                enrollment.EnrolledAt = enrollment.CustomerId == env.Alice.Id
+                    ? now.AddDays(-9)
+                    : now;
+                enrollment.Status = CustomerBusinessEnrollmentStatus.Active;
+            }
+
+            foreach (var card in env.Ctx.LoyaltyCards.Where(c => c.BusinessId == env.ProgramA.BusinessId))
+            {
+                card.LastStampAt = card.CustomerId == env.Alice.Id ? now : now.AddDays(-5);
+            }
+
+            await env.Ctx.SaveChangesAsync();
+
+            var res = await env.Svc.GetBusinessCustomersAsync(
+                env.OwnerId, null, null, null, null, null, "last-stamp", "desc", 1, 25);
+
+            Assert.True(res.Success);
+            Assert.Equal(env.Alice.FullName, res.Data!.Items[0].FullName);
+        }
+    }
+
+    [Fact]
     public async Task Program_Scope_Returns_Only_Business_Customers_Who_Joined_That_Program()
     {
         var env = CreateEnv();

@@ -48,6 +48,13 @@ public class AppointmentConfiguration : IEntityTypeConfiguration<Appointment>
         // Customer-details Appointments tab: paginated per-customer history
         // within one business, newest first.
         builder.HasIndex(x => new { x.BusinessId, x.CustomerId, x.ScheduledAt });
+        // The appointments list's "recently created / oldest created" order and the
+        // newest-first page: created_at is the sort key, so it must be indexed or a
+        // business with a long history sorts the whole table on every page.
+        builder.HasIndex(x => new { x.BusinessId, x.CreatedAt });
+        // The status filter (and the status count behind it) is always scoped to one
+        // business — the composite keeps that filter an index seek per status.
+        builder.HasIndex(x => new { x.BusinessId, x.Status });
 
         builder.HasMany(x => x.Resources)
             .WithOne()

@@ -151,6 +151,12 @@ public class ApplicationDbContext : DbContext
     public DbSet<BusinessRolePermission> BusinessRolePermissions => Set<BusinessRolePermission>();
     public DbSet<BusinessMembershipRoleAssignment> BusinessMembershipRoleAssignments => Set<BusinessMembershipRoleAssignment>();
 
+    // ── Financial management: the business ledger, audit trail and M-Pesa reconciliation ──
+    public DbSet<FinancialTransaction> FinancialTransactions => Set<FinancialTransaction>();
+    public DbSet<FinancialAuditLog> FinancialAuditLogs => Set<FinancialAuditLog>();
+    public DbSet<MpesaStatementImport> MpesaStatementImports => Set<MpesaStatementImport>();
+    public DbSet<MpesaStatementLine> MpesaStatementLines => Set<MpesaStatementLine>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

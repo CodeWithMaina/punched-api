@@ -52,6 +52,10 @@ public class AppointmentDashboardItemResponse
     [JsonPropertyName("customerId")]
     public Guid CustomerId { get; set; }
 
+    /// <summary>`guest` | `registered` — how the customer belongs to this business.</summary>
+    [JsonPropertyName("customerType")]
+    public string CustomerType { get; set; } = "registered";
+
     [JsonPropertyName("customerName")]
     public string CustomerName { get; set; } = string.Empty;
 
@@ -81,6 +85,26 @@ public class AppointmentDashboardItemResponse
 
     [JsonPropertyName("updatedAt")]
     public DateTime UpdatedAt { get; set; }
+
+    /// <summary>
+    /// Derived payment state, aggregated from the payment ledger (never a column on
+    /// the appointment): <c>paid</c>, <c>partially_paid</c>, <c>awaiting_verification</c>,
+    /// <c>unpaid</c>, <c>failed</c> or <c>refunded</c>.
+    /// </summary>
+    [JsonPropertyName("paymentStatus")]
+    public string PaymentStatus { get; set; } = "unpaid";
+
+    /// <summary>
+    /// Genuinely settled amount — provider-confirmed (<c>Success</c>) plus
+    /// owner-verified (<c>Verified</c>) rows only. Awaiting claims, failed attempts,
+    /// refunds and outstanding-balance rows are all excluded.
+    /// </summary>
+    [JsonPropertyName("amountPaid")]
+    public decimal AmountPaid { get; set; }
+
+    /// <summary>Still owed: the expected total minus what settled, never negative.</summary>
+    [JsonPropertyName("balance")]
+    public decimal Balance { get; set; }
 }
 
 /// <summary>
@@ -179,8 +203,13 @@ public class AppointmentDashboardResponse
     [JsonPropertyName("appointments")]
     public List<AppointmentDashboardItemResponse> Appointments { get; set; } = new();
 
-    [JsonPropertyName("customers")]
-    public List<CustomerDashboardItemResponse> Customers { get; set; } = new();
+    // ── Staff and services only ─────────────────────────────
+    // There is deliberately NO customer bucket. It used to ship every active customer of
+    // the business with every page of appointments, which is the one thing that grows
+    // without bound: a salon with 5,000 customers paid for all 5,000 rows on every keystroke
+    // of a phone number. Both consumers that used it (the booking and rebook drawers) now
+    // search customers server-side through the paginated search route, which is the same
+    // picker the booking wizard uses.
 
     [JsonPropertyName("staff")]
     public List<StaffDashboardItemResponse> Staff { get; set; } = new();

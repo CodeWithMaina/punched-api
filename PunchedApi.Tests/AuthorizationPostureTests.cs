@@ -84,15 +84,17 @@ public class AuthorizationPostureTests
         // transfer — never Daraja credentials. A business with the channel switched
         // off gets `enabled: false` and no numbers at all.
         "Storefront|GET|{businessId:guid}/payment-details",
-        // Guest booking: the two anonymous steps of the account-free flow. The
-        // first sends a one-time code to an address the caller supplies; the
-        // second exchanges that code for a short-lived CUSTOMER token. Neither
-        // creates an appointment or reads any customer's data: the booking itself
-        // goes through POST /v1/appointments, which still requires the Customer
-        // role. Both are rate-limited per IP, and the code has its own resend
-        // cooldown, expiry and attempt ceiling.
-        "GuestBooking|POST|{businessId:guid}/guest-booking/start",
-        "GuestBooking|POST|{businessId:guid}/guest-booking/verify",
+        // Public storefront booking. Anonymous because a storefront visitor is not required to hold an
+        // account, to prove they own one, or to belong to this business — a customer of another
+        // business and a business's own owner booking their own page go through the same door. The
+        // customer cannot be named by the caller: the request carries their details and the server
+        // resolves the business-specific customer record, so a booking cannot be made in the name of
+        // an account the caller does not hold. Both routes are rate-limited per IP
+        // (`public-booking`), and the payment-proof route can only reach an appointment that belongs
+        // to the business in the route. Verifying or rejecting a payment is NOT here: those stay
+        // behind owner/staff policies.
+        "PublicBooking|POST|{businessId:guid}/public-bookings",
+        "PublicBooking|POST|{businessId:guid}/public-bookings/{appointmentId:guid}/payment-proof",
         // Public storefront catalogue grouped by ACTIVE category. Same
         // visibility rules as the flat public list above (active + showcased
         // services only) plus the serviceCatalog entitlement check performed

@@ -40,7 +40,21 @@ public partial class BusinessController
         [FromQuery] Guid? staffId,
         [FromQuery] Guid? customerId,
         [FromQuery] Guid? serviceId,
-        [FromQuery] string sortBy = "scheduledAt",
+        // Multi-select filters (repeated keys: ?serviceIds=a&serviceIds=b). Merged with
+        // the single-value parameters above, so a client may send either shape.
+        [FromQuery] Guid[]? staffIds = null,
+        [FromQuery] Guid[]? customerIds = null,
+        [FromQuery] Guid[]? serviceIds = null,
+        // Payment-verification filter, answered from the payment ledger:
+        // `verified` | `partial` | `awaiting` | `unpaid` | `failed` | `refunded`.
+        // Omitted or `all` means no payment filter.
+        [FromQuery] string? paymentStatus = null,
+        // Default order: the most recently CREATED appointment first — not the soonest
+        // scheduled one. A booking taken this morning for next month belongs above a
+        // booking taken yesterday for tomorrow, because the list answers "what just came
+        // in?" by default. A caller that names a sort still gets exactly what it asked
+        // for; the calendar and the timeline name `scheduledAt` explicitly.
+        [FromQuery] string sortBy = "createdAt",
         [FromQuery] string sortDirection = "desc",
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20)
@@ -49,7 +63,8 @@ public partial class BusinessController
         if (userId == null) return Unauthorized();
 
         var result = await _appointmentService.GetAppointmentDashboardAsync(
-            userId.Value, from, to, staffId, customerId, serviceId, status, search, sortBy, sortDirection, page, pageSize);
+            userId.Value, from, to, staffId, customerId, serviceId, status, search, sortBy, sortDirection,
+            page, pageSize, staffIds, customerIds, serviceIds, paymentStatus, HttpContext.RequestAborted);
 
         return result.Success ? Ok(result) : MapFailure(result);
     }

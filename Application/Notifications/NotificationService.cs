@@ -40,6 +40,14 @@ public sealed class NotificationService : INotificationService
     /// </summary>
     private readonly INotificationChannelAvailability? _channelAvailability;
 
+    /// <summary>
+    /// Answers that cannot change within one request, remembered so a booking that
+    /// queues several notifications for the same person does not re-ask the same
+    /// question — and pay another database round trip — for each of them.
+    /// </summary>
+    private readonly HashSet<(Guid RecipientUserId, Guid BusinessId)> _verifiedRecipients = new();
+    private readonly Dictionary<(Guid RecipientUserId, Guid BusinessId, string Channel), string?> _suppressionReasons = new();
+
     public NotificationService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
@@ -82,9 +90,18 @@ public sealed class NotificationService : INotificationService
         var definition = NotificationTypes.Get(request.Type);
 
         // 2. Tenant guard — the tenant comes from the caller's context, never from
-        //    client input; a mismatched recipient writes nothing.
+        //    client input; a mismatched recipient writes nothing. Memoised per
+        //    (recipient, business): one appointment queues several notifications for
+        //    the same pair, and the guard's answer cannot change mid-request.
         if (request.BusinessId.HasValue)
-            await EnsureRecipientBelongsToBusinessAsync(request.RecipientUserId, request.BusinessId.Value, ct);
+        {
+            var guardKey = (request.RecipientUserId, request.BusinessId.Value);
+            if (!_verifiedRecipients.Contains(guardKey))
+            {
+                await EnsureRecipientBelongsToBusinessAsync(request.RecipientUserId, request.BusinessId.Value, ct);
+                _verifiedRecipients.Add(guardKey);
+            }
+        }
 
         // 3. Preferences. R2 — only SECURITY may bypass them.
         var surviving = request.Force && definition.Category == NotificationCategory.Security
@@ -105,20 +122,47 @@ public sealed class NotificationService : INotificationService
             return new NotificationResult(false, null, Array.Empty<string>(), SuppressedByPreferences);
         }
 
-        // 4. in_app is delivered inline: the inbox INSERT *is* the delivery, and its
+        // 4. Idempotency: every key this call could write, resolved in ONE query.
+        //    The date bucket in the key is taken once, so the keys computed here are
+        //    exactly the keys the row writers would otherwise compute themselves.
+        var now = DateTime.UtcNow;
+        var wantsInApp = surviving.Contains(NotificationChannel.InApp);
+        var externalChannels = surviving.Where(channel => channel != NotificationChannel.InApp).ToList();
+
+        var inAppKey = wantsInApp ? CreateIdempotencyKey(request, NotificationChannel.InApp, now) : null;
+        var channelKeys = externalChannels
+            .Select(channel => (Channel: channel, Key: CreateIdempotencyKey(request, channel, now)))
+            .ToList();
+
+        var candidateKeys = new List<string>();
+        if (inAppKey != null) candidateKeys.Add(inAppKey);
+        candidateKeys.AddRange(channelKeys.Select(entry => entry.Key));
+
+        var alreadyQueued = candidateKeys.Count == 0
+            ? new HashSet<string>(StringComparer.Ordinal)
+            : new HashSet<string>(
+                await _context.NotificationLogs
+                    .AsNoTracking()
+                    .Where(log => candidateKeys.Contains(log.IdempotencyKey!))
+                    .Select(log => log.IdempotencyKey!)
+                    .ToListAsync(ct),
+                StringComparer.Ordinal);
+
+        // 5. in_app is delivered inline: the inbox INSERT *is* the delivery, and its
         //    ledger row is written in the same unit of work so in-app is no longer
         //    the only untracked channel (audit defect B4). Operational suppression
         //    is consulted here because in-app rows never reach the dispatch worker.
         Guid? inboxId = null;
         string? inboxSuppression = null;
-        if (surviving.Contains(NotificationChannel.InApp) && _dispatchGuard is not null && request.BusinessId.HasValue)
-            inboxSuppression = await _dispatchGuard.GetChannelSuppressionReasonAsync(
+        if (wantsInApp && _dispatchGuard is not null && request.BusinessId.HasValue)
+            inboxSuppression = await SuppressionReasonAsync(
                 request.RecipientUserId, request.BusinessId.Value, NotificationChannel.InApp, ct);
 
-        if (surviving.Contains(NotificationChannel.InApp) && inboxSuppression is null)
-            inboxId = await WriteInboxRowAsync(request, persistInline, ct);
+        if (wantsInApp && inboxSuppression is null)
+            inboxId = await WriteInboxRowAsync(
+                request, inAppKey!, alreadyQueued.Contains(inAppKey!), now, persistInline, ct);
 
-        if (surviving.Contains(NotificationChannel.InApp) && inboxSuppression is not null)
+        if (wantsInApp && inboxSuppression is not null)
         {
             NotificationMetrics.RecordSuppressed(definition.Category, $"suppression:{inboxSuppression}");
             _logger.LogInformation(
@@ -136,9 +180,10 @@ public sealed class NotificationService : INotificationService
             NotificationMetrics.RecordSent(NotificationChannel.InApp);
         }
 
-        foreach (var channel in surviving.Where(channel => channel != NotificationChannel.InApp))
+        foreach (var (channel, key) in channelKeys)
         {
-            if (await TryQueueOutboxRowAsync(request, channel, persistInline, ct))
+            if (alreadyQueued.Contains(key)) continue;
+            if (await TryQueueOutboxRowAsync(request, channel, key, now, persistInline, ct))
                 accepted.Add(channel);
         }
 
@@ -170,14 +215,15 @@ public sealed class NotificationService : INotificationService
     }
 
     /// <summary>Writes the inbox row plus its same-UoW ledger row and returns the inbox id.</summary>
-    private async Task<Guid?> WriteInboxRowAsync(NotificationRequest request, bool persistInline, CancellationToken ct)
+    /// <remarks>
+    /// The idempotency key and whether it already exists are resolved by the caller in
+    /// the single batched pre-check, so this method performs no query of its own.
+    /// </remarks>
+    private async Task<Guid?> WriteInboxRowAsync(
+        NotificationRequest request, string idempotencyKey, bool alreadyWritten, DateTime now,
+        bool persistInline, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        var now = DateTime.UtcNow;
-        var idempotencyKey = CreateIdempotencyKey(request, NotificationChannel.InApp, now);
-        var alreadyWritten = await _context.NotificationLogs
-            .AsNoTracking()
-            .AnyAsync(log => log.IdempotencyKey == idempotencyKey && log.Channel == NotificationChannel.InApp, ct);
         if (alreadyWritten)
             return null;
 
@@ -224,18 +270,13 @@ public sealed class NotificationService : INotificationService
     private async Task<bool> TryQueueOutboxRowAsync(
         NotificationRequest request,
         string channel,
+        string key,
+        DateTime now,
         bool persistInline,
         CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        var now = DateTime.UtcNow;
         var payload = SerializeData(request.Data);
-        var key = CreateIdempotencyKey(request, channel, now);
-        if (await _context.NotificationLogs.AnyAsync(
-                existing => existing.IdempotencyKey == key, ct))
-        {
-            return false;
-        }
 
         var row = new NotificationLog
         {
@@ -312,33 +353,55 @@ public sealed class NotificationService : INotificationService
     /// with the given business, otherwise nothing is written and the caller gets an
     /// <see cref="ArgumentException"/>.
     /// </summary>
+    /// <remarks>
+    /// The happy path is ONE round trip: membership and enrollment are asked as a
+    /// single <c>UNION</c>, and the "does this business exist at all" question is only
+    /// asked when the answer is already a refusal — which is the only case that needs
+    /// to tell the two failures apart.
+    /// </remarks>
     private async Task EnsureRecipientBelongsToBusinessAsync(
         Guid recipientUserId, Guid businessId, CancellationToken ct)
     {
+        var associated = await _context.BusinessMemberships
+            .AsNoTracking()
+            .Where(m => m.UserId == recipientUserId &&
+                        m.BusinessId == businessId &&
+                        m.Status == BusinessMembershipStatus.Active)
+            .Select(_ => 1)
+            .Union(_context.CustomerBusinessEnrollments
+                .AsNoTracking()
+                .Where(e => e.CustomerId == recipientUserId && e.BusinessId == businessId)
+                .Select(_ => 1))
+            .AnyAsync(ct);
+
+        if (associated) return;
+
         var businessExists = await _context.Businesses
             .AsNoTracking()
             .AnyAsync(b => b.Id == businessId, ct);
 
-        if (!businessExists)
-            throw new ArgumentException($"Business {businessId} was not found.", nameof(businessId));
-
-        var isMember = await _context.BusinessMemberships
-            .AsNoTracking()
-            .AnyAsync(m => m.UserId == recipientUserId &&
-                           m.BusinessId == businessId &&
-                           m.Status == BusinessMembershipStatus.Active, ct);
-
-        if (isMember) return;
-
-        var isEnrolled = await _context.CustomerBusinessEnrollments
-            .AsNoTracking()
-            .AnyAsync(e => e.CustomerId == recipientUserId && e.BusinessId == businessId, ct);
-
-        if (isEnrolled) return;
-
         throw new ArgumentException(
-            $"Recipient {recipientUserId} is not associated with business {businessId}.",
-            nameof(recipientUserId));
+            businessExists
+                ? $"Recipient {recipientUserId} is not associated with business {businessId}."
+                : $"Business {businessId} was not found.",
+            businessExists ? nameof(recipientUserId) : nameof(businessId));
+    }
+
+    /// <summary>
+    /// The dispatch guard's suppression verdict, memoised per (recipient, business,
+    /// channel) for the life of the scope: a booking asks the same question for the
+    /// same person when it queues each of its notifications.
+    /// </summary>
+    private async Task<string?> SuppressionReasonAsync(
+        Guid recipientUserId, Guid businessId, string channel, CancellationToken ct)
+    {
+        var key = (recipientUserId, businessId, channel);
+        if (_suppressionReasons.TryGetValue(key, out var cached)) return cached;
+
+        var reason = await _dispatchGuard!.GetChannelSuppressionReasonAsync(
+            recipientUserId, businessId, channel, ct);
+        _suppressionReasons[key] = reason;
+        return reason;
     }
 
     private string SerializeData(IReadOnlyDictionary<string, object?> data)

@@ -67,7 +67,8 @@ public class JwtTokenService
     /// The claims are minted only after the server has verified the membership
     /// (see <c>IBusinessMembershipResolver</c>) — never from client input.
     /// </summary>
-    public string GenerateAccessToken(UserAuth userAuth, User user, Guid? businessId, string? bizRole)
+    public string GenerateAccessToken(
+        UserAuth userAuth, User user, Guid? businessId, string? bizRole)
     {
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_settings.Secret));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);

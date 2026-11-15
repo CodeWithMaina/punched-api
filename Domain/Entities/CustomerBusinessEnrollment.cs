@@ -19,6 +19,15 @@ public class CustomerBusinessEnrollment : BaseEntity
     [Required]
     public CustomerBusinessEnrollmentStatus Status { get; set; } = CustomerBusinessEnrollmentStatus.Active;
 
+    /// <summary>
+    /// Whether this relationship was established by a guest (account-free) booking
+    /// or by a registered account. Guests are only ever upgraded to
+    /// <see cref="CustomerType.Registered"/> — never the other way round — so a real
+    /// account can never be demoted to a guest.
+    /// </summary>
+    [Required]
+    public CustomerType Type { get; set; } = CustomerType.Registered;
+
     /// <summary>How the enrollment was created: qr|discovery|business|booking|referral|loyalty.</summary>
     [Required]
     [MaxLength(20)]
