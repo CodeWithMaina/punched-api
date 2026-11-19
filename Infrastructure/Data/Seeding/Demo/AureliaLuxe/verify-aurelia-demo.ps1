@@ -191,3 +191,35 @@ if ($slots.Count -gt 0) {
         Show '  status' $newAppt.data.status
     }
 }
+
+# ── 6. Leave no trace ─────────────────────────────────────────
+# This script is a verification harness, not a booking channel. Every run used to
+# leave a real appointment behind, on a generated slot, for a demo customer — which
+# is why the calendar filled with bookings nobody made. Unless -KeepBooking is
+# passed, the run cancels its booking, then purges every verification booking for
+# the tenant through the supported maintenance command (which deletes by seeder id
+# or verification marker, never by date or customer).
+$keepBooking = $args -contains '-KeepBooking'
+if (-not $keepBooking) {
+    if ($newAppt -and $newAppt.success) {
+        try {
+            $cancelled = Invoke-RestMethod -Uri "$base/appointments/$($newAppt.data.id)/cancel" -Method Post -Headers $ch `
+                -ContentType 'application/json' -Body (@{ reason = 'Verification run cleanup.' } | ConvertTo-Json)
+            Show 'Verification booking cancelled' $cancelled.success
+        } catch {
+            Show 'Verification booking cancel failed' $_.Exception.Message
+        }
+    }
+
+    $project = Join-Path $PSScriptRoot '..\..\..\..\PunchedApi.csproj'
+    try {
+        & dotnet run --project $project --no-build -- db purge-test-appointments --business $businessId --apply
+    } catch {
+        Show 'Verification booking purge failed' $_.Exception.Message
+    }
+
+    $after = Invoke-RestMethod -Uri "$base/businesses/me/appointments?pageSize=1" -Headers $ownerHeaders -Method Get
+    Show 'Appointments left after cleanup' $after.data.meta.totalCount
+} else {
+    Show 'Verification booking retained' 'rerun with the purge command, or omit -KeepBooking'
+}

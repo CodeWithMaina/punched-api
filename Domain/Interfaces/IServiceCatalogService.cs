@@ -27,6 +27,13 @@ public interface IServiceCatalogService
     Task<ApiResponse<PaginatedResponse<ServiceCatalogItemResponse>>> QueryMyServicesAsync(
         Guid ownerUserId, ServiceCatalogQueryRequest request);
 
+    /// <summary>
+    /// Aggregates over the owner's whole catalogue: rows per lifecycle state and the
+    /// real price bounds. The Services list needs all of these at once (tabs, summary
+    /// and the range slider), so it reads them in one query rather than four counts.
+    /// </summary>
+    Task<ApiResponse<ServiceCatalogFacetsResponse>> GetMyServiceFacetsAsync(Guid ownerUserId);
+
     /// <summary>Owner-scoped single-service lookup.</summary>
     Task<ApiResponse<ServiceCatalogItemResponse>> GetServiceAsync(Guid ownerUserId, Guid serviceId);
 

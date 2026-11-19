@@ -28,6 +28,16 @@ public sealed class SeedOptions
     /// </summary>
     public bool IncludeAnalyticsBackfill { get; set; } = false;
 
+    /// <summary>
+    /// When false (default), the Aurelia demo <b>activity</b> step — the generated
+    /// appointment book, its payments, attendance, reviews, loyalty ledger and
+    /// engagement rows — is skipped even when seeding runs. The demo tenant's
+    /// profile, services and staff are still seeded; only synthetic activity is
+    /// opt-in, so an ordinary <c>db seed</c> can never repopulate a business's
+    /// calendar with bookings nobody made.
+    /// </summary>
+    public bool EnableDemoActivity { get; set; } = false;
+
     public bool ResetDatabase { get; set; }
     public bool ClearExistingData { get; set; }
     public bool AppendData { get; set; }

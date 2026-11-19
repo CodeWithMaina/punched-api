@@ -8,6 +8,34 @@ namespace PunchedApi.Application.DTOs;
 // ═══════════════════════════════════════════════════════════════
 
 /// <summary>
+/// Aggregates for the owner's catalogue: one row per business, so the list's tabs,
+/// its header summary and the price-range bounds all come from the same read
+/// instead of a request per status (and never from a hardcoded ceiling).
+/// </summary>
+public class ServiceCatalogFacetsResponse
+{
+    [JsonPropertyName("total")]
+    public int Total { get; set; }
+
+    [JsonPropertyName("active")]
+    public int Active { get; set; }
+
+    [JsonPropertyName("paused")]
+    public int Paused { get; set; }
+
+    [JsonPropertyName("archived")]
+    public int Archived { get; set; }
+
+    /// <summary>Lowest service price in the catalogue; null when there are no services.</summary>
+    [JsonPropertyName("minPrice")]
+    public decimal? MinPrice { get; set; }
+
+    /// <summary>Highest service price in the catalogue; null when there are no services.</summary>
+    [JsonPropertyName("maxPrice")]
+    public decimal? MaxPrice { get; set; }
+}
+
+/// <summary>
 /// A service offered by a business (public/owner views).
 /// </summary>
 public class ServiceCatalogItemResponse

@@ -34,6 +34,26 @@ internal static class AureliaLuxeDemoIds
     public static Guid SubscriptionAudit(string key) => DeterministicSeed.GuidFor(Scope, $"subscription-audit:{key}");
 
     // ── Activity (refreshed on every run) ───────────────────────
+    /// <summary>
+    /// Upper bound on the activity rows a single demo run can write. Every id below
+    /// is derived from an index in <c>1..MaxActivityIndex</c>, which is what lets the
+    /// seeder (and the purge command) scope cleanup to its own rows instead of a
+    /// business-wide delete.
+    /// </summary>
+    public const int MaxActivityIndex = 5000;
+
+    /// <summary>All ids a per-index activity factory can ever produce.</summary>
+    public static IReadOnlyList<Guid> ActivityIds(Func<int, Guid> factory)
+    {
+        var ids = new Guid[MaxActivityIndex];
+        for (var i = 0; i < MaxActivityIndex; i++)
+        {
+            ids[i] = factory(i + 1);
+        }
+
+        return ids;
+    }
+
     public static Guid Appointment(int index) => DeterministicSeed.GuidFor(Scope, $"appointment:{index:D5}");
     public static Guid AppointmentResource(int index, int line) =>
         DeterministicSeed.GuidFor(Scope, $"appointment-resource:{index:D5}:{line}");

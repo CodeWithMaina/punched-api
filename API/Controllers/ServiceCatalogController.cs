@@ -135,6 +135,22 @@ public class ServiceCatalogController : ControllerBase
         return result.Success ? Ok(result) : MapFailure(result);
     }
 
+    /// <summary>
+    /// Owner: catalogue aggregates for the Services list — per-status counts and the
+    /// real price bounds of the business's own services.
+    /// </summary>
+    [HttpGet("me/facets")]
+    [Authorize(Policy = MembershipPolicies.Owner)]
+    [ProducesResponseType(typeof(ApiResponse<ServiceCatalogFacetsResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetMyServiceFacets()
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _catalogService.GetMyServiceFacetsAsync(userId.Value);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
     /// <summary>Owner: get a single service belonging to the owner's business.</summary>
     [HttpGet("me/{id:guid}")]
     [Authorize(Policy = MembershipPolicies.Owner)]

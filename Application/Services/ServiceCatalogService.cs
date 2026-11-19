@@ -334,6 +334,48 @@ public class ServiceCatalogService : IServiceCatalogService
             });
     }
 
+    /// <inheritdoc />
+    public async Task<ApiResponse<ServiceCatalogFacetsResponse>> GetMyServiceFacetsAsync(Guid ownerUserId)
+    {
+        var business = await ResolveOwnerBusinessAsync(ownerUserId);
+        if (business == null)
+            return ApiResponse<ServiceCatalogFacetsResponse>.Fail(
+                "NOT_FOUND", "No business found for this account.");
+
+        // One grouped read for the counts and the price bounds. Prices are aggregated in
+        // double because SQLite (the unit-test provider) cannot aggregate decimal; the
+        // result is converted back so the API still speaks decimal.
+        var facets = await _context.ServiceCatalogItems
+            .AsNoTracking()
+            .Where(s => s.BusinessId == business.Id)
+            .GroupBy(_ => 1)
+            .Select(group => new
+            {
+                Total = group.Count(),
+                Active = group.Count(s => s.IsActive && !s.IsArchived),
+                Paused = group.Count(s => !s.IsActive && !s.IsArchived),
+                Archived = group.Count(s => s.IsArchived),
+                MinPrice = group.Min(s => (double)(s.Price ?? 0m)),
+                MaxPrice = group.Max(s => (double)(s.Price ?? 0m))
+            })
+            .FirstOrDefaultAsync();
+
+        if (facets == null || facets.Total == 0)
+        {
+            return ApiResponse<ServiceCatalogFacetsResponse>.Ok(new ServiceCatalogFacetsResponse());
+        }
+
+        return ApiResponse<ServiceCatalogFacetsResponse>.Ok(new ServiceCatalogFacetsResponse
+        {
+            Total = facets.Total,
+            Active = facets.Active,
+            Paused = facets.Paused,
+            Archived = facets.Archived,
+            MinPrice = (decimal)facets.MinPrice,
+            MaxPrice = (decimal)facets.MaxPrice
+        });
+    }
+
     public async Task<ApiResponse<ServiceCatalogItemResponse>> GetServiceAsync(Guid ownerUserId, Guid serviceId)
     {
         var business = await ResolveOwnerBusinessAsync(ownerUserId);

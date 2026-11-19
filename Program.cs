@@ -516,6 +516,9 @@ builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
     builder.Services.AddSingleton<ISeedRandom, SeedRandom>();
     builder.Services.AddScoped<IDatabaseSeeder, DatabaseSeeder>();
     builder.Services.AddScoped<IDatabaseCliRunner, DatabaseCliRunner>();
+    // Data hygiene for demo/verification bookings: identifies rows by seeder id or
+    // verification marker, never by date, customer or status.
+    builder.Services.AddScoped<ITestAppointmentCleanupService, TestAppointmentCleanupService>();
     builder.Services.AddScoped<IAdminBootstrapper, AdminBootstrapper>();
     builder.Services.AddScoped<IModuleCatalogSeeder, ModuleCatalogSeeder>();
     builder.Services.AddScoped<ISeedStep, DatabasePreparationSeedStep>();

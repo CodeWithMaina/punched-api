@@ -39,6 +39,17 @@ public sealed class AureliaLuxeActivitySeedStep : ISeedStep
     {
         var db = context.Db;
 
+        // Demo activity is opt-in. Seeding a tenant's profile is one thing; filling its
+        // calendar with bookings nobody made is another, and doing it on an ordinary seed
+        // run is how a real business ends up with appointments it never took.
+        var options = context.ServiceProvider.GetService<Microsoft.Extensions.Options.IOptions<Application.Settings.SeedOptions>>()?.Value;
+        if (options is null || !options.EnableDemoActivity)
+        {
+            context.Report.Warnings.Add(
+                "AureliaLuxeActivity skipped: Seed:EnableDemoActivity is false. Synthetic appointments, payments and demo activity are opt-in.");
+            return;
+        }
+
         // The whole seed run shares one DbContext, and the standard steps leave
         // their entities tracked. The refresh below deletes rows at the database
         // level (ExecuteDelete does not touch the change tracker), so a stale
@@ -120,20 +131,66 @@ public sealed class AureliaLuxeActivitySeedStep : ISeedStep
         var businessId = demo.BusinessId;
         var removed = 0;
 
+        // Ids this seeder can ever have written. Everything below is scoped to ONE of
+        // these ids AND to the tenant, so a booking or payment a human created in the
+        // app — which has a random id — is never touched. (A business-wide delete here
+        // used to wipe real appointments and payments on every demo refresh; that is
+        // exactly how a calendar ends up with bookings nobody made, and how real ones
+        // disappear.)
+        var appointmentIds = AureliaLuxeDemoIds.ActivityIds(AureliaLuxeDemoIds.Appointment);
+        var paymentIds = AureliaLuxeDemoIds.ActivityIds(AureliaLuxeDemoIds.Payment);
+        var reviewIds = AureliaLuxeDemoIds.ActivityIds(AureliaLuxeDemoIds.Review);
+        var rescheduleIds = AureliaLuxeDemoIds.ActivityIds(AureliaLuxeDemoIds.RescheduleRequest);
+
+        // Reviews come first: a review restricts its appointment's deletion.
         removed += await db.Reviews
-            .Where(r => r.BusinessId == businessId)
+            .Where(r => r.BusinessId == businessId
+                        && (reviewIds.Contains(r.Id) || appointmentIds.Contains(r.AppointmentId)))
             .ExecuteDeleteAsync(cancellationToken);
 
-        removed += await db.RescheduleRequests
-            .Where(r => db.Appointments.Any(a => a.Id == r.AppointmentId && a.BusinessId == businessId))
+        // Money first, ledger before payments: the ledger rows point at the payments.
+        var seededLedgerIds = await db.FinancialTransactions
+            .Where(t => t.BusinessId == businessId
+                        && ((t.SourcePaymentId != null && paymentIds.Contains(t.SourcePaymentId.Value))
+                            || (t.AppointmentId != null && appointmentIds.Contains(t.AppointmentId.Value))))
+            .Select(t => t.Id)
+            .ToListAsync(cancellationToken);
+
+        if (seededLedgerIds.Count > 0)
+        {
+            removed += await db.FinancialTransactions
+                .Where(t => t.RefundOfTransactionId != null && seededLedgerIds.Contains(t.RefundOfTransactionId.Value))
+                .ExecuteDeleteAsync(cancellationToken);
+
+            removed += await db.FinancialTransactions
+                .Where(t => seededLedgerIds.Contains(t.Id))
+                .ExecuteDeleteAsync(cancellationToken);
+        }
+
+        removed += await db.PaymentCallbacks
+            .Where(c => c.BusinessId == businessId && c.PaymentId != null && paymentIds.Contains(c.PaymentId.Value))
             .ExecuteDeleteAsync(cancellationToken);
 
         removed += await db.Payments
-            .Where(p => p.BusinessId == businessId)
+            .Where(p => p.BusinessId == businessId
+                        && (paymentIds.Contains(p.Id)
+                            || (p.AppointmentId != null && appointmentIds.Contains(p.AppointmentId.Value))))
             .ExecuteDeleteAsync(cancellationToken);
 
+        removed += await db.RescheduleRequests
+            .Where(r => rescheduleIds.Contains(r.Id) || appointmentIds.Contains(r.AppointmentId))
+            .ExecuteDeleteAsync(cancellationToken);
+
+        // Commission entries are SetNull on delete, so they must go before the
+        // appointment itself or the link is already gone.
+        removed += await db.CommissionEntries
+            .Where(c => c.BusinessId == businessId && c.AppointmentId != null
+                        && appointmentIds.Contains(c.AppointmentId.Value))
+            .ExecuteDeleteAsync(cancellationToken);
+
+        // Resources and status history cascade from the appointment.
         removed += await db.Appointments
-            .Where(a => a.BusinessId == businessId)
+            .Where(a => a.BusinessId == businessId && appointmentIds.Contains(a.Id))
             .ExecuteDeleteAsync(cancellationToken);
 
         // Attendance has a deliberate FK cycle (sessions ↔ events) and the

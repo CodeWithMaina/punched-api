@@ -11,6 +11,7 @@ public sealed class DatabaseCliRunner : IDatabaseCliRunner
     private static readonly HashSet<string> SupportedCommands = new(StringComparer.OrdinalIgnoreCase)
     {
         "db",
+        "data",
         "migrate",
         "seed",
         "migrate-seed",
@@ -78,6 +79,9 @@ public sealed class DatabaseCliRunner : IDatabaseCliRunner
             case "backfill":
                 await BackfillAsync(args, cancellationToken);
                 break;
+            case "purge-test-appointments":
+                await PurgeTestAppointmentsAsync(args, cancellationToken);
+                break;
             case "help":
                 PrintHelp();
                 break;
@@ -133,6 +137,111 @@ public sealed class DatabaseCliRunner : IDatabaseCliRunner
         {
             throw new InvalidOperationException(result.Error ?? "Analytics backfill failed.");
         }
+    }
+
+    private async Task PurgeTestAppointmentsAsync(string[] args, CancellationToken cancellationToken)
+    {
+        var (identifier, apply, seedScope, maxSeedIndex, marker, demoDomains) = ParsePurgeArgs(args);
+
+        if (string.IsNullOrWhiteSpace(identifier))
+        {
+            throw new ArgumentException(
+                "purge-test-appointments requires --business <id|slug>. Example: "
+                + "dotnet PunchedApi.dll db purge-test-appointments --business aurelia-luxe [--apply]");
+        }
+
+        var businessId = Guid.TryParse(identifier, out var parsedId)
+            ? parsedId
+            : await _dbContext.Businesses
+                .Where(b => b.Slug != null && b.Slug == identifier)
+                .Select(b => b.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+
+        if (businessId == Guid.Empty)
+        {
+            throw new ArgumentException($"No business matches '{identifier}'. Pass the business id or slug.");
+        }
+
+        LogTargetDatabase();
+        _logger.LogInformation(
+            "Purging test appointments. Business={Business} Apply={Apply} SeedScope={Scope} VerificationMarker={Marker}",
+            businessId, apply, seedScope, marker);
+
+        var cleanup = _serviceProvider.GetRequiredService<ITestAppointmentCleanupService>();
+        var report = await cleanup.ExecuteAsync(
+            new TestAppointmentCleanupRequest(
+                businessId, apply, seedScope, maxSeedIndex, marker, DemoCustomerEmailDomains: demoDomains),
+            cancellationToken);
+
+        _logger.LogInformation(
+            "Appointments for {Business}: total={Total} seeded={Seeded} verification={Verification} automation={Automation} demo-identities={Synthetic} retained={Retained}",
+            report.BusinessName, report.TotalAppointments, report.SeededAppointments,
+            report.VerificationAppointments, report.AutomationAppointments,
+            report.SyntheticIdentityAppointments, report.RetainedAppointments);
+
+        if (report.RemovedRows.Count > 0)
+        {
+            foreach (var (table, count) in report.RemovedRows.OrderBy(r => r.Key, StringComparer.Ordinal))
+            {
+                _logger.LogInformation("  removed {Table}: {Count}", table, count);
+            }
+        }
+
+        _logger.LogInformation(
+            "Remaining appointments by status: {Statuses}",
+            report.RemainingByStatus.Count == 0
+                ? "none"
+                : string.Join(", ", report.RemainingByStatus.OrderBy(r => r.Key, StringComparer.Ordinal)
+                    .Select(r => $"{r.Key}={r.Value}")));
+
+        foreach (var warning in report.Warnings)
+        {
+            _logger.LogWarning("{Warning}", warning);
+        }
+    }
+
+    private static (string? Identifier, bool Apply, string SeedScope, int MaxSeedIndex, string Marker,
+        IReadOnlyList<string> DemoDomains) ParsePurgeArgs(string[] args)
+    {
+        string? identifier = null;
+        var apply = false;
+        var seedScope = "aurelia-demo";
+        var maxSeedIndex = 5000;
+        var marker = "Seeded verification booking.";
+        var demoDomains = new List<string> { "demo.punched.app" };
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            if (i + 1 < args.Length && args[i].Equals("--business", StringComparison.OrdinalIgnoreCase))
+            {
+                identifier = args[i + 1];
+            }
+            else if (i + 1 < args.Length && args[i].Equals("--seed-scope", StringComparison.OrdinalIgnoreCase))
+            {
+                seedScope = args[i + 1];
+            }
+            else if (i + 1 < args.Length && args[i].Equals("--demo-customer-domain", StringComparison.OrdinalIgnoreCase))
+            {
+                demoDomains = args[i + 1]
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .ToList();
+            }
+            else if (i + 1 < args.Length && args[i].Equals("--max-seed-index", StringComparison.OrdinalIgnoreCase)
+                     && int.TryParse(args[i + 1], out var parsedMax) && parsedMax > 0)
+            {
+                maxSeedIndex = parsedMax;
+            }
+            else if (i + 1 < args.Length && args[i].Equals("--verification-marker", StringComparison.OrdinalIgnoreCase))
+            {
+                marker = args[i + 1];
+            }
+            else if (args[i].Equals("--apply", StringComparison.OrdinalIgnoreCase))
+            {
+                apply = true;
+            }
+        }
+
+        return (identifier, apply, seedScope, maxSeedIndex, marker, demoDomains);
     }
 
     private void LogTargetDatabase()
@@ -225,6 +334,15 @@ public sealed class DatabaseCliRunner : IDatabaseCliRunner
             return "backfill";
         }
 
+        // Data hygiene runs as `data purge-test-appointments ...` (and as
+        // `db purge-test-appointments ...` for symmetry with the other db commands).
+        if (args[0].Equals("data", StringComparison.OrdinalIgnoreCase))
+        {
+            return args.Length > 1 && args[1].Equals("purge-test-appointments", StringComparison.OrdinalIgnoreCase)
+                ? "purge-test-appointments"
+                : null;
+        }
+
         if (args[0].Equals("migrate", StringComparison.OrdinalIgnoreCase))
         {
             return "migrate";
@@ -257,6 +375,7 @@ public sealed class DatabaseCliRunner : IDatabaseCliRunner
             "seed" => "seed",
             "migrate-seed" => "migrate-seed",
             "backfill" => "backfill",
+            "purge-test-appointments" => "purge-test-appointments",
             "init" => "migrate-seed",
             "help" => "help",
             _ => null,
@@ -270,6 +389,8 @@ public sealed class DatabaseCliRunner : IDatabaseCliRunner
         _logger.LogInformation("  dotnet PunchedApi.dll db seed");
         _logger.LogInformation("  dotnet PunchedApi.dll db migrate-seed");
         _logger.LogInformation("  dotnet PunchedApi.dll db backfill --from <yyyy-MM-dd> --to <yyyy-MM-dd> [--business <id>] [--no-resume]");
+        _logger.LogInformation("  dotnet PunchedApi.dll db purge-test-appointments --business <id|slug> [--apply] [--seed-scope aurelia-demo] [--max-seed-index 5000] [--verification-marker <text>]");
+        _logger.LogInformation("  dotnet PunchedApi.dll data purge-test-appointments --business <id|slug> [--apply]");
         _logger.LogInformation("  dotnet PunchedApi.dll migrate");
         _logger.LogInformation("  dotnet PunchedApi.dll seed");
         _logger.LogInformation("  dotnet PunchedApi.dll migrate-seed");
