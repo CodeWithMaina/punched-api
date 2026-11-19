@@ -313,6 +313,10 @@ public class CashbookEntryResponse
     [JsonPropertyName("customerName")]
     public string? CustomerName { get; set; }
 
+    /// <summary>The payment that produced this row (null for a manual income or expense entry).</summary>
+    [JsonPropertyName("sourcePaymentId")]
+    public Guid? SourcePaymentId { get; set; }
+
     [JsonPropertyName("category")]
     public string? Category { get; set; }
 

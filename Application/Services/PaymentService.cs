@@ -174,7 +174,16 @@ public partial class PaymentService : IPaymentService
         if (!await CanAccessPaymentAsync(payment, userId, role))
             return ApiResponse<PaymentResponse>.Fail("NOT_FOUND", "Payment not found.");
 
-        return ApiResponse<PaymentResponse>.Ok(ToResponse(payment));
+                // Carry the customer's display name on the single-payment read too (the list
+        // already resolves it for its page); without this the detail page cannot name them.
+        var response = ToResponse(payment);
+        if (payment.CustomerId is Guid customerId)
+        {
+            var names = await FinancialAccess.ResolveUserNamesAsync(_context, new[] { (Guid?)customerId });
+            response.CustomerName = names.GetValueOrDefault(customerId);
+        }
+
+        return ApiResponse<PaymentResponse>.Ok(response);
     }
 
     /// <summary>List payments with DB-first filters. Scope is enforced by role (tenant isolation).</summary>
@@ -215,6 +224,27 @@ public partial class PaymentService : IPaymentService
             dbQuery = dbQuery.Where(p => p.Type == type);
         if (query.From.HasValue) dbQuery = dbQuery.Where(p => p.CreatedAt >= query.From.Value);
         if (query.To.HasValue) dbQuery = dbQuery.Where(p => p.CreatedAt <= query.To.Value);
+        // Server-side free-text search across the payment's own fields and its customer.
+        // EF.Functions.Like keeps this a parameterised SQL predicate (never in-memory filtering),
+        // and the customer condition is an EXISTS subquery, so a page never fans out into N+1.
+        var search = query.Search?.Trim();
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var like = $"%{search}%";
+            var isCash = string.Equals(search, "cash", StringComparison.OrdinalIgnoreCase);
+            var isMpesa = string.Equals(search, "mpesa", StringComparison.OrdinalIgnoreCase)
+                          || string.Equals(search, "m-pesa", StringComparison.OrdinalIgnoreCase);
+            dbQuery = dbQuery.Where(p =>
+                EF.Functions.Like(p.Reference, like) ||
+                (p.PhoneNumber != null && EF.Functions.Like(p.PhoneNumber, like)) ||
+                (p.ParsedTransactionCode != null && EF.Functions.Like(p.ParsedTransactionCode, like)) ||
+                (p.ExternalReference != null && EF.Functions.Like(p.ExternalReference, like)) ||
+                (p.CustomerId != null && _context.Users.Any(u =>
+                    u.Id == p.CustomerId &&
+                    (EF.Functions.Like(u.FullName, like) || (u.Email != null && EF.Functions.Like(u.Email, like))))) ||
+                (isCash && p.Method == PaymentMethod.Cash) ||
+                (isMpesa && p.Method == PaymentMethod.Mpesa));
+        }
 
         var page = Math.Max(1, query.Page);
         var pageSize = Math.Clamp(query.PageSize, 1, 100);

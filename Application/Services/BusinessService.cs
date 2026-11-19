@@ -855,6 +855,107 @@ public partial class BusinessService : IBusinessService
                 LastVisitAt = stampAgg?.Last ?? loyaltyRow?.LastStampAt,
             };
 
+            // ── Financial insight (spend, recency, most-served service) ──────────
+            // Two grouped reads, both scoped to THIS business and THIS customer in SQL:
+            // nothing is filtered, summed or counted in application memory, and neither
+            // read fans out per row.
+            //
+            // The ledger is the single source of truth for recognised money. A settled
+            // payment writes exactly one Income row (unique SourcePaymentId), so summing
+            // income rows can never double-count a partial payment; voided rows and rows
+            // that are not verified are excluded, and a verified Refund row is subtracted
+            // — exactly the rules the finance module itself uses.
+            var financeAgg = await _context.FinancialTransactions
+                .AsNoTracking()
+                .Where(t => t.BusinessId == bid
+                            && t.CustomerId == customerId
+                            && !t.IsVoided
+                            && t.VerificationStatus == FinancialVerificationStatus.Verified
+                            && (t.Type == FinancialTransactionType.Income
+                                || t.Type == FinancialTransactionType.Refund))
+                .GroupBy(_ => 1)
+                .Select(g => new
+                {
+                    // The SUM stays in the database. It is expressed over `double`
+                    // because SQLite (the unit-test provider) cannot aggregate a decimal
+                    // column; a single customer's KES total is many orders of magnitude
+                    // below the range where this is inexact, and the value is converted
+                    // back to decimal and rounded to the cent exactly once below.
+                    IncomeTotal = g.Sum(t => t.Type == FinancialTransactionType.Income
+                        ? (double)t.Amount
+                        : 0d),
+                    IncomeCount = g.Count(t => t.Type == FinancialTransactionType.Income),
+                    RefundTotal = g.Sum(t => t.Type == FinancialTransactionType.Refund
+                        ? (double)t.Amount
+                        : 0d),
+                    LastPaidAt = g.Max(t => t.Type == FinancialTransactionType.Income
+                        ? (t.VerifiedAt ?? t.TransactionDate)
+                        : (DateTime?)null),
+                })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            // Completed visits only: cancelled and no-show appointments never represent
+            // a service the customer actually received.
+            var completedAppointments = _context.Appointments
+                .AsNoTracking()
+                .Where(a => a.BusinessId == bid
+                            && a.CustomerId == customerId
+                            && a.Status == AppointmentStatuses.Completed);
+
+            var completedCount = await completedAppointments.CountAsync(cancellationToken);
+
+            // Most-served service, grouped in the database by catalogue identity (the
+            // snapshot's name can legitimately differ across visits if the service was
+            // renamed). Only the leading handful of groups is read, so this never loads a
+            // customer's whole history to find the top one.
+            var topServices = await (
+                    from a in completedAppointments
+                    join r in _context.AppointmentResources.AsNoTracking() on a.Id equals r.AppointmentId
+                    group r by r.ServiceCatalogItemId into svc
+                    orderby svc.Count() descending
+                    select new
+                    {
+                        ServiceCatalogItemId = svc.Key,
+                        Name = svc.OrderByDescending(row => row.CreatedAt)
+                            .Select(row => row.Name)
+                            .FirstOrDefault(),
+                        TimesServed = svc.Count(),
+                    })
+                .Take(5)
+                .ToListAsync(cancellationToken);
+
+            var topService = topServices
+                .OrderByDescending(row => row.TimesServed)
+                .ThenBy(row => row.Name, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+
+            var grossSpent = financeAgg is null ? 0m : (decimal)financeAgg.IncomeTotal;
+            var refundedAmount = financeAgg is null ? 0m : (decimal)financeAgg.RefundTotal;
+            var netSpent = Math.Max(0m, grossSpent - refundedAmount);
+            var paidTransactions = financeAgg?.IncomeCount ?? 0;
+
+            var finance = new CustomerDetailsFinanceBlock
+            {
+                Currency = "KES",
+                TotalSpent = decimal.Round(netSpent, 2, MidpointRounding.AwayFromZero),
+                PaidTransactions = paidTransactions,
+                RefundedAmount = decimal.Round(refundedAmount, 2, MidpointRounding.AwayFromZero),
+                CompletedAppointments = completedCount,
+                AverageSpend = paidTransactions > 0
+                    ? decimal.Round(netSpent / paidTransactions, 2, MidpointRounding.AwayFromZero)
+                    : 0m,
+                LastPaymentAt = financeAgg?.LastPaidAt,
+                TopService = topService == null
+                    ? null
+                    : new CustomerDetailsTopService
+                    {
+                        ServiceId = topService.ServiceCatalogItemId,
+                        ServiceName = topService.Name,
+                        TimesServed = topService.TimesServed,
+                    },
+                HasHistory = paidTransactions > 0 || completedCount > 0,
+            };
+
             CustomerDetailsLoyaltySummary? loyalty = null;
             if (loyaltyRow != null)
             {
@@ -951,6 +1052,7 @@ public partial class BusinessService : IBusinessService
                 },
                 Metrics = metrics,
                 Loyalty = loyalty,
+                Finance = finance,
                 ServerMs = (long)Math.Round(elapsedMs, 0),
             });
         }

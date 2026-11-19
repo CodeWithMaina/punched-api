@@ -151,6 +151,7 @@ public partial class FinancialAnalyticsService
             PaymentMethod = FinancialWire.ToWire(t.PaymentMethod),
             Source = FinancialWire.ToWire(t.Source),
             CustomerName = t.CustomerName,
+            SourcePaymentId = t.SourcePaymentId,
             Category = t.Category,
             VerificationStatus = FinancialWire.ToWire(t.VerificationStatus),
             IsVoided = t.IsVoided,

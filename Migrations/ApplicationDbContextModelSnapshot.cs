@@ -1522,6 +1522,75 @@ namespace PunchedApi.Migrations
                     b.ToTable("business_modules", (string)null);
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessOperatingHour", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("DayOfWeek")
+                        .HasColumnType("integer")
+                        .HasColumnName("day_of_week");
+
+                    b.Property<bool>("IsClosed")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_closed");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId", "DayOfWeek")
+                        .IsUnique()
+                        .HasDatabaseName("ux_business_operating_hours_business_day");
+
+                    b.ToTable("business_operating_hours", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_business_operating_hours_day", "\"day_of_week\" >= 0 AND \"day_of_week\" <= 6");
+                        });
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessOperatingPeriod", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessOperatingHourId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_operating_hour_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("EndMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("end_minute");
+
+                    b.Property<int>("StartMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("start_minute");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessOperatingHourId")
+                        .HasDatabaseName("ix_business_operating_periods_hour");
+
+                    b.ToTable("business_operating_periods", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_business_operating_periods_minutes", "\"start_minute\" >= 0 AND \"start_minute\" <= 1439 AND \"end_minute\" >= 1 AND \"end_minute\" <= 1440 AND \"end_minute\" > \"start_minute\"");
+                        });
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessPaymentConfig", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1747,6 +1816,77 @@ namespace PunchedApi.Migrations
                         .HasDatabaseName("ux_business_role_permissions_role_code");
 
                     b.ToTable("business_role_permissions", (string)null);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessScheduleException", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateOnly>("Date")
+                        .HasColumnType("date")
+                        .HasColumnName("date");
+
+                    b.Property<bool>("IsClosed")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_closed");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("reason");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId", "Date")
+                        .IsUnique()
+                        .HasDatabaseName("ux_business_schedule_exceptions_business_date");
+
+                    b.ToTable("business_schedule_exceptions", (string)null);
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessScheduleExceptionPeriod", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessScheduleExceptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_schedule_exception_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("EndMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("end_minute");
+
+                    b.Property<int>("StartMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("start_minute");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessScheduleExceptionId")
+                        .HasDatabaseName("ix_business_schedule_exception_periods_exception");
+
+                    b.ToTable("business_schedule_exception_periods", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_business_schedule_exception_periods_minutes", "\"start_minute\" >= 0 AND \"start_minute\" <= 1439 AND \"end_minute\" >= 1 AND \"end_minute\" <= 1440 AND \"end_minute\" > \"start_minute\"");
+                        });
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessSlugHistory", b =>
@@ -7617,6 +7757,26 @@ namespace PunchedApi.Migrations
                     b.Navigation("OverriddenByUser");
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessOperatingHour", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessOperatingPeriod", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.BusinessOperatingHour", "OperatingHour")
+                        .WithMany("Periods")
+                        .HasForeignKey("BusinessOperatingHourId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("OperatingHour");
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessPaymentConfig", b =>
                 {
                     b.HasOne("PunchedApi.Domain.Entities.Business", "Business")
@@ -7657,6 +7817,26 @@ namespace PunchedApi.Migrations
                         .IsRequired();
 
                     b.Navigation("Role");
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessScheduleException", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.Business", null)
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessScheduleExceptionPeriod", b =>
+                {
+                    b.HasOne("PunchedApi.Domain.Entities.BusinessScheduleException", "Exception")
+                        .WithMany("Periods")
+                        .HasForeignKey("BusinessScheduleExceptionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Exception");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessSlugHistory", b =>
@@ -8827,9 +9007,19 @@ namespace PunchedApi.Migrations
                     b.Navigation("Stamps");
                 });
 
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessOperatingHour", b =>
+                {
+                    b.Navigation("Periods");
+                });
+
             modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessRole", b =>
                 {
                     b.Navigation("Permissions");
+                });
+
+            modelBuilder.Entity("PunchedApi.Domain.Entities.BusinessScheduleException", b =>
+                {
+                    b.Navigation("Periods");
                 });
 
             modelBuilder.Entity("PunchedApi.Domain.Entities.CardDesign", b =>

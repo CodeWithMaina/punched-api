@@ -55,16 +55,21 @@ public class AppointmentAvailabilityService
     /// </summary>
     private readonly TimeProvider _time;
 
+    /// <summary>Business-level operating hours; constrains every staff window.</summary>
+    private readonly IBusinessScheduleService _schedule;
+
     public AppointmentAvailabilityService(
         ApplicationDbContext context,
         ILogger<AppointmentAvailabilityService> logger,
         TimeProvider? timeProvider = null,
-        IProviderEligibilityService? providerEligibility = null)
+        IProviderEligibilityService? providerEligibility = null,
+        IBusinessScheduleService? businessSchedule = null)
     {
         _context = context;
         _logger = logger;
         _time = timeProvider ?? TimeProvider.System;
         _eligibility = providerEligibility ?? new ProviderEligibilityService(context);
+        _schedule = businessSchedule ?? new BusinessScheduleService(context);
     }
 
     /// <summary>Current UTC time, from the injected clock.</summary>
@@ -138,6 +143,11 @@ public class AppointmentAvailabilityService
 
         var interval = NormalizeInterval(business.BookingSlotIntervalMinutes);
         var leadMinutes = Math.Max(0, business.BookingLeadTimeMinutes);
+
+        // The business's own schedule. Empty means "never configured", in which case
+        // the legacy booking window applies exactly as before.
+        var businessWindows = await _schedule.GetWindowsAsync(businessId, startDate, endDate);
+        var scheduleConfigured = businessWindows.Count > 0;
 
         var response = new AvailabilityCalendarResponse
         {
@@ -226,15 +236,27 @@ public class AppointmentAvailabilityService
             {
                 shiftsByStaffDate.TryGetValue((staffId, date), out var rostered);
                 weeklyByStaff.TryGetValue(staffId, out var pattern);
+                IReadOnlyList<(int Start, int End)>? windowsForDate = null;
+                if (scheduleConfigured)
+                    windowsForDate = businessWindows.TryGetValue(date, out var scheduled)
+                        ? scheduled
+                        : new List<(int, int)>();
+
                 windowsByStaffDate[(staffId, date)] =
-                    ResolveWindows(date, rostered, pattern, defaultWindow);
+                    ResolveWindows(date, rostered, pattern, defaultWindow, windowsForDate);
             }
         }
 
         for (var date = startDate; date <= endDate; date = date.AddDays(1))
         {
+            IReadOnlyList<(int Start, int End)>? dayWindows = null;
+            if (scheduleConfigured)
+                dayWindows = businessWindows.TryGetValue(date, out var scheduledDay)
+                    ? scheduledDay
+                    : new List<(int, int)>();
+
             response.Days.Add(BuildDay(
-                date, tz, eligible, windowsByStaffDate, busyByStaff, defaultWindow,
+                date, tz, eligible, windowsByStaffDate, busyByStaff, defaultWindow, dayWindows,
                 interval, totalMinutes, distinctRequested, staffUserId, earliestBookableUtc));
         }
 
@@ -327,6 +349,11 @@ public class AppointmentAvailabilityService
 
         var defaultWindow = (Start: business.BookingOpenHour * 60, End: business.BookingCloseHour * 60);
 
+        var businessWindows = await _schedule.GetWindowsAsync(businessId, localDate, localDate);
+        IReadOnlyList<(int Start, int End)>? scheduleWindows = businessWindows.Count > 0
+            ? (businessWindows.TryGetValue(localDate, out var scheduled) ? scheduled : new List<(int, int)>())
+            : null;
+
         Guid? bestStaff = null;
         var bestLoad = int.MaxValue;
         var sawOffDuty = false;
@@ -339,7 +366,8 @@ public class AppointmentAvailabilityService
                 localDate,
                 dayShifts.Where(s => s.StaffUserId == staff.Id).ToList(),
                 pattern,
-                defaultWindow);
+                defaultWindow,
+                scheduleWindows);
             if (!windows.Any(w => startMinute >= w.Start && startMinute + totalMinutes <= w.End))
             {
                 sawOffDuty = true;
@@ -382,6 +410,7 @@ public class AppointmentAvailabilityService
         Dictionary<(Guid StaffUserId, DateOnly Date), List<(int Start, int End)>> windowsByStaffDate,
         Dictionary<Guid, List<(DateTime Start, DateTime End)>> busyByStaff,
         (int Start, int End) defaultWindow,
+        IReadOnlyList<(int Start, int End)>? businessWindows,
         int interval,
         int totalMinutes,
         Guid[] serviceIds,
@@ -396,14 +425,16 @@ public class AppointmentAvailabilityService
         {
             windows[staff.Id] = windowsByStaffDate.TryGetValue((staff.Id, date), out var rostered)
                 ? rostered
-                : new List<(int, int)> { defaultWindow };
+                : businessWindows is { Count: > 0 }
+                    ? businessWindows.ToList()
+                    : new List<(int, int)> { defaultWindow };
         }
 
         day.IsOpen = windows.Values.Any(w => w.Count > 0);
 
         // Grid bounds span every working window so off-duty times still render.
-        var gridStart = defaultWindow.Start;
-        var gridEnd = defaultWindow.End;
+        var gridStart = businessWindows is { Count: > 0 } ? businessWindows.Min(w => w.Start) : defaultWindow.Start;
+        var gridEnd = businessWindows is { Count: > 0 } ? businessWindows.Max(w => w.End) : defaultWindow.End;
         foreach (var w in windows.Values.SelectMany(x => x))
         {
             gridStart = Math.Min(gridStart, w.Start);
@@ -652,13 +683,28 @@ public class AppointmentAvailabilityService
         DateOnly date,
         List<StaffShift>? rostered,
         Dictionary<int, StaffAvailability>? weekly,
-        (int Start, int End) defaultWindow)
+        (int Start, int End) defaultWindow,
+        IReadOnlyList<(int Start, int End)>? businessWindows = null)
     {
+        var hasRostered = rostered is { Count: > 0 };
+        StaffAvailability? pattern = null;
+        if (weekly != null && weekly.TryGetValue((int)date.DayOfWeek, out var found))
+            pattern = found;
+
+        if (!hasRostered && pattern == null)
+        {
+            // No staff-level window: the business schedule (when configured) is the
+            // window; otherwise the legacy booking window applies unchanged.
+            if (businessWindows != null)
+                return businessWindows.OrderBy(w => w.Start).ToList();
+            return new List<(int Start, int End)> { defaultWindow };
+        }
+
         List<(bool Working, int Start, int End, int? BreakStart, int? BreakEnd)> source;
 
-        if (rostered is { Count: > 0 })
+        if (hasRostered)
         {
-            source = rostered
+            source = rostered!
                 .Select(s => (
                     s.IsWorking,
                     s.StartMinute ?? s.StartHour * 60,
@@ -667,19 +713,12 @@ public class AppointmentAvailabilityService
                     s.BreakEndMinute))
                 .ToList();
         }
-        else if (weekly != null && weekly.TryGetValue((int)date.DayOfWeek, out var pattern))
-        {
-            source = new List<(bool, int, int, int?, int?)>
-            {
-                (pattern.IsWorking, pattern.StartMinute, pattern.EndMinute,
-                    pattern.BreakStartMinute, pattern.BreakEndMinute)
-            };
-        }
         else
         {
             source = new List<(bool, int, int, int?, int?)>
             {
-                (true, defaultWindow.Start, defaultWindow.End, null, null)
+                (pattern!.IsWorking, pattern.StartMinute, pattern.EndMinute,
+                    pattern.BreakStartMinute, pattern.BreakEndMinute)
             };
         }
 
@@ -703,7 +742,24 @@ public class AppointmentAvailabilityService
             if (breakEnd!.Value < end) windows.Add((breakEnd.Value, end));
         }
 
-        return windows.OrderBy(w => w.Start).ToList();
+        if (businessWindows == null)
+            return windows.OrderBy(w => w.Start).ToList();
+
+        // A configured schedule constrains the staff window: closed (empty list)
+        // leaves nothing, otherwise each staff window is intersected with each
+        // open business period.
+        var constrained = new List<(int Start, int End)>();
+        foreach (var s in windows)
+        {
+            foreach (var b in businessWindows)
+            {
+                var start = Math.Max(s.Start, b.Start);
+                var end = Math.Min(s.End, b.End);
+                if (end > start) constrained.Add((start, end));
+            }
+        }
+
+        return constrained.OrderBy(w => w.Start).ToList();
     }
 
     private static string DayPartOf(int hour) =>

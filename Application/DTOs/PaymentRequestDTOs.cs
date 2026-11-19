@@ -241,6 +241,9 @@ public class PaymentListQuery
     public string? Type { get; set; }
     public DateTime? From { get; set; }
     public DateTime? To { get; set; }
+
+    /// <summary>Free-text search across reference, phone, M-Pesa code and customer name/email.</summary>
+    public string? Search { get; set; }
     public int Page { get; set; } = 1;
     public int PageSize { get; set; } = 25;
 }

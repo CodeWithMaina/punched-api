@@ -4,8 +4,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Notifications;
+using PunchedApi.Application.Settings;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
 
@@ -217,6 +219,30 @@ public class UserController : ControllerBase
     }
 
     /// <summary>
+    /// The public half of the deployment's VAPID key pair, so the web app can create a
+    /// push subscription. The private key is never exposed by any endpoint — it stays in
+    /// the server's configuration and is used only to sign deliveries.
+    /// </summary>
+    [HttpGet("push/config")]
+    [ProducesResponseType(typeof(ApiResponse<PushConfigResponse>), StatusCodes.Status200OK)]
+    public IActionResult GetPushConfig([FromServices] IOptions<VapidSettings> vapid)
+    {
+        var settings = vapid.Value;
+        var configured = settings.Enabled
+                         && !string.IsNullOrWhiteSpace(settings.PublicKey)
+                         && !string.IsNullOrWhiteSpace(settings.PrivateKey);
+
+        // `publicKey` is returned whenever the deployment has one (it is not a secret) so
+        // the UI can explain WHY push is unavailable. `configured` is the honest answer
+        // to "can this server actually deliver a notification?", which needs both halves.
+        return Ok(ApiResponse<PushConfigResponse>.Ok(new PushConfigResponse
+        {
+            Enabled = configured,
+            PublicKey = string.IsNullOrWhiteSpace(settings.PublicKey) ? null : settings.PublicKey
+        }));
+    }
+
+    /// <summary>
     /// Register (or refresh) a browser endpoint that can receive VAPID web pushes.
     /// Scope is always the caller's own user id; no client-supplied user id is accepted.
     /// </summary>
@@ -234,8 +260,24 @@ public class UserController : ControllerBase
             return BadRequest(ApiResponse<MessageResponse>.Fail("VALIDATION_ERROR", "Push subscription details are required."));
         }
 
+        var endpoint = request.Endpoint.Trim();
+
+        // A browser endpoint identifies a device, not a person. If the same endpoint was
+        // registered by another account (a shared or handed-over browser), retire those
+        // rows first: otherwise notifications for the previous user would keep arriving
+        // on a device they no longer use. This also guarantees one active row per
+        // (user, endpoint) pair below.
+        var otherDevices = await _context.PushDevices
+            .Where(device => device.Endpoint == endpoint && device.IsActive && device.UserId != userId.Value)
+            .ToListAsync(HttpContext.RequestAborted);
+        foreach (var other in otherDevices)
+        {
+            other.IsActive = false;
+            other.LastSeenAt = DateTime.UtcNow;
+        }
+
         var existing = await _context.PushDevices
-            .SingleOrDefaultAsync(device => device.UserId == userId.Value && device.Endpoint == request.Endpoint, HttpContext.RequestAborted);
+            .SingleOrDefaultAsync(device => device.UserId == userId.Value && device.Endpoint == endpoint, HttpContext.RequestAborted);
 
         if (existing is null)
         {
@@ -243,7 +285,7 @@ public class UserController : ControllerBase
             {
                 Id = Guid.NewGuid(),
                 UserId = userId.Value,
-                Endpoint = request.Endpoint.Trim(),
+                Endpoint = endpoint,
                 P256dh = request.Keys.P256dh.Trim(),
                 Auth = request.Keys.Auth.Trim(),
                 UserAgent = Request.Headers["User-Agent"].ToString(),
@@ -293,6 +335,39 @@ public class UserController : ControllerBase
         return Ok(ApiResponse<MessageResponse>.Ok(new MessageResponse { Message = "Push token removed." }));
     }
 
+    /// <summary>
+    /// The caller's own active push devices. Endpoints are reduced to their host so the
+    /// response can be shown on screen without leaking a full capability URL, which is
+    /// itself a credential for that subscription.
+    /// </summary>
+    [HttpGet("push/devices")]
+    [ProducesResponseType(typeof(ApiResponse<List<PushDeviceSummary>>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetPushDevices()
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var devices = await _context.PushDevices.AsNoTracking()
+            .Where(device => device.UserId == userId.Value && device.IsActive)
+            .OrderByDescending(device => device.LastSeenAt)
+            .Select(device => new { device.Id, device.Endpoint, device.UserAgent, device.LastSeenAt })
+            .ToListAsync(HttpContext.RequestAborted);
+
+        var summaries = devices.Select(device => new PushDeviceSummary
+        {
+            Id = device.Id,
+            Host = EndpointHost(device.Endpoint),
+            UserAgent = device.UserAgent,
+            LastSeenAt = device.LastSeenAt,
+        }).ToList();
+
+        return Ok(ApiResponse<List<PushDeviceSummary>>.Ok(summaries));
+    }
+
+    /// <summary>`https://fcm.googleapis.com/fcm/send/abc…` → `fcm.googleapis.com`.</summary>
+    private static string EndpointHost(string endpoint) =>
+        Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) ? uri.Host : "unknown";
+
     /// <summary>Private API responses must never be stored by a shared device or proxy.</summary>
     private void NoStore() => Response.Headers["Cache-Control"] = "no-store";
 
@@ -333,6 +408,39 @@ public sealed class PushRegistrationRequest
 
     [JsonPropertyName("keys")]
     public PushRegistrationKeys? Keys { get; set; }
+}
+
+/// <summary>
+/// What the web app needs to know before it can subscribe a device: the VAPID public
+/// key (safe to expose) and whether this deployment can actually deliver a push
+/// (which also needs the private half, so it is answered server-side).
+/// </summary>
+public sealed class PushConfigResponse
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
+
+    [JsonPropertyName("publicKey")]
+    public string? PublicKey { get; set; }
+}
+
+/// <summary>
+/// One active push device for the caller. The full endpoint is a capability URL, so it
+/// never leaves the server — the host is enough for a person to recognise the device.
+/// </summary>
+public sealed class PushDeviceSummary
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    [JsonPropertyName("host")]
+    public string Host { get; set; } = string.Empty;
+
+    [JsonPropertyName("userAgent")]
+    public string? UserAgent { get; set; }
+
+    [JsonPropertyName("lastSeenAt")]
+    public DateTime LastSeenAt { get; set; }
 }
 
 public sealed class PushRegistrationKeys

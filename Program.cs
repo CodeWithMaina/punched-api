@@ -388,6 +388,7 @@ try
 
     // ── Booking (Phase 2/3) ─────────────────────────────────
     builder.Services.AddScoped<IAppointmentService, AppointmentService>();
+    builder.Services.AddScoped<IBusinessScheduleService, BusinessScheduleService>();
     builder.Services.AddSingleton(TimeProvider.System);
     builder.Services.AddScoped<IReviewService, ReviewService>();
     builder.Services.AddScoped<AppointmentAvailabilityService>();

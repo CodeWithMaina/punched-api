@@ -1943,6 +1943,72 @@ public class CustomerDetailsLoyaltySummary
 }
 
 /// <summary>
+/// The service this customer has booked (and completed) most often.
+/// </summary>
+public class CustomerDetailsTopService
+{
+    [JsonPropertyName("serviceId")]
+    public Guid ServiceId { get; set; }
+
+    [JsonPropertyName("serviceName")]
+    public string ServiceName { get; set; } = string.Empty;
+
+    /// <summary>Completed appointments that included this service.</summary>
+    [JsonPropertyName("timesServed")]
+    public int TimesServed { get; set; }
+}
+
+/// <summary>
+/// Customer financial insight for the Overview tab.
+///
+/// <para>Every figure comes from the business's own ledger and appointment history,
+/// already scoped to the authenticated business and this customer. Income and refunds
+/// are the <i>recognised</i> rows only — a settled payment writes exactly one income
+/// row (keyed by <c>SourcePaymentId</c>), and a voided or pending row never counts — so
+/// partial payments add up correctly and nothing is counted twice. A customer with no
+/// financial history gets <see cref="HasHistory"/> = false and zeroed figures rather
+/// than a fabricated placeholder.</para>
+/// </summary>
+public class CustomerDetailsFinanceBlock
+{
+    /// <summary>ISO-4217 code of the amounts below.</summary>
+    [JsonPropertyName("currency")]
+    public string Currency { get; set; } = "KES";
+
+    /// <summary>Net recognised spend: verified income minus verified refunds.</summary>
+    [JsonPropertyName("totalSpent")]
+    public decimal TotalSpent { get; set; }
+
+    /// <summary>Verified income rows that make up the total (one per settled payment).</summary>
+    [JsonPropertyName("paidTransactions")]
+    public int PaidTransactions { get; set; }
+
+    /// <summary>Verified refunds returned to this customer.</summary>
+    [JsonPropertyName("refundedAmount")]
+    public decimal RefundedAmount { get; set; }
+
+    /// <summary>Appointments completed for this customer (cancelled/no-show excluded).</summary>
+    [JsonPropertyName("completedAppointments")]
+    public int CompletedAppointments { get; set; }
+
+    /// <summary>Total spend ÷ paid transactions. Zero when there is nothing to average.</summary>
+    [JsonPropertyName("averageSpend")]
+    public decimal AverageSpend { get; set; }
+
+    /// <summary>When the last verified payment was recognised (null when none).</summary>
+    [JsonPropertyName("lastPaymentAt")]
+    public DateTime? LastPaymentAt { get; set; }
+
+    /// <summary>The most frequently served service from completed appointments.</summary>
+    [JsonPropertyName("topService")]
+    public CustomerDetailsTopService? TopService { get; set; }
+
+    /// <summary>False when the customer has never paid and has no completed visit.</summary>
+    [JsonPropertyName("hasHistory")]
+    public bool HasHistory { get; set; }
+}
+
+/// <summary>
 /// Aggregated customer-details response. Supplies everything the
 /// initial Overview shell needs in one request; appointments and
 /// activity load on demand from their own paginated endpoints.
@@ -1960,6 +2026,13 @@ public class CustomerDetailsResponse
 
     [JsonPropertyName("loyalty")]
     public CustomerDetailsLoyaltySummary? Loyalty { get; set; }
+
+    /// <summary>
+    /// Spend, payment recency and most-served service. Always present; an
+    /// empty history is expressed by <c>hasHistory = false</c>.
+    /// </summary>
+    [JsonPropertyName("finance")]
+    public CustomerDetailsFinanceBlock Finance { get; set; } = new();
 
     /// <summary>
     /// Server-side processing time in milliseconds (diagnostics only).

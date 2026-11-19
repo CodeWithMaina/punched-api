@@ -44,6 +44,12 @@ public class ApplicationDbContext : DbContext
     /// <see cref="StaffShifts"/> override it for the date they cover.
     /// </summary>
     public DbSet<StaffAvailability> StaffAvailability => Set<StaffAvailability>();
+
+    // ── Business operating schedule (weekly hours + dated exceptions) ──
+    public DbSet<BusinessOperatingHour> BusinessOperatingHours => Set<BusinessOperatingHour>();
+    public DbSet<BusinessOperatingPeriod> BusinessOperatingPeriods => Set<BusinessOperatingPeriod>();
+    public DbSet<BusinessScheduleException> BusinessScheduleExceptions => Set<BusinessScheduleException>();
+    public DbSet<BusinessScheduleExceptionPeriod> BusinessScheduleExceptionPeriods => Set<BusinessScheduleExceptionPeriod>();
     public DbSet<NotificationLog> NotificationLogs => Set<NotificationLog>();
     public DbSet<NotificationSuppression> NotificationSuppressions => Set<NotificationSuppression>();
 
