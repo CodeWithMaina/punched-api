@@ -172,6 +172,11 @@ namespace PunchedApi.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<string>("BookingRequestKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("booking_request_key");
+
                     b.Property<Guid>("BusinessId")
                         .HasColumnType("uuid")
                         .HasColumnName("business_id");
@@ -223,6 +228,11 @@ namespace PunchedApi.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("CustomerId");
+
+                    b.HasIndex("BusinessId", "BookingRequestKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_appointments_booking_request_key")
+                        .HasFilter("\"booking_request_key\" IS NOT NULL");
 
                     b.HasIndex("BusinessId", "CreatedAt");
 

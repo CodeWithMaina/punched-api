@@ -152,6 +152,16 @@ public static class AppointmentConflicts
         "That time is no longer available for this staff member. Please pick another slot.";
 
     /// <summary>
+    /// The public/storefront conflict code. It says the same thing without naming a staff
+    /// member, which is all a customer needs (and all they should be told).
+    /// </summary>
+    public const string SlotUnavailable = "SLOT_UNAVAILABLE";
+
+    /// <summary>Human-readable copy for a storefront conflict.</summary>
+    public const string SlotUnavailableMessage =
+        "That time is no longer available because it overlaps with another booking. Please choose another time.";
+
+    /// <summary>
     /// True when the exception means "somebody else took the slot", rather than a
     /// transient database fault:
     /// <list type="bullet">
@@ -167,6 +177,18 @@ public static class AppointmentConflicts
         (pg.SqlState == PostgresErrorCodes.ExclusionViolation ||
          pg.SqlState == PostgresErrorCodes.SerializationFailure ||
          pg.SqlState == PostgresErrorCodes.DeadlockDetected);
+
+    /// <summary>
+    /// True when the unique index on (business_id, booking_request_key) refused a second
+    /// row for the same booking intent. That is a replay, not a failure: the caller should
+    /// return the booking the first request made.
+    /// </summary>
+    public static bool IsBookingKeyConflict(Exception exception) =>
+        FindPostgres(exception) is
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: "ux_appointments_booking_request_key"
+        };
 
     /// <summary>The Npgsql exception inside any wrapper (EF wraps in DbUpdateException).</summary>
     private static PostgresException? FindPostgres(Exception? exception)

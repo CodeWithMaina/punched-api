@@ -165,6 +165,27 @@ public class AppointmentService : IAppointmentService
     }
 
     /// <summary>
+    /// Queues a batch of notification intents inside the caller's open unit of work. Like
+    /// <see cref="QueueNotificationSafelyAsync"/>, a notification problem is logged and never
+    /// fails the domain operation.
+    /// </summary>
+    private async Task QueueNotificationsSafelyAsync(IReadOnlyList<NotificationRequest> requests)
+    {
+        if (requests.Count == 0) return;
+
+        try
+        {
+            await _notifications.QueueManyAsync(requests);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Notification intents could not be queued atomically for {Count} recipient(s).",
+                requests.Count);
+        }
+    }
+
+    /// <summary>
     /// Fine-grained permission gate (G6): staff members do NOT hold
     /// <c>appointments.manage</c> (PermissionMatrix), so staff creating business
     /// appointments on behalf of customers is forbidden. Distinct from
@@ -196,6 +217,151 @@ public class AppointmentService : IAppointmentService
     {
         return await _availability.GetAvailabilityCalendarAsync(
             request.BusinessId, request.ServiceIds, request.StaffUserId, request.StartDate, request.EndDate);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  STOREFRONT FAST PATH
+    // ═══════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Books a storefront appointment from a context that has <b>already been read</b>.
+    ///
+    /// <para>This is the critical path a customer waits on. The caller (the public booking
+    /// service) has resolved the business, the catalogue, the roster, the roster's working
+    /// windows and the diary in one parallel read wave, so this method validates the whole
+    /// requested interval in memory and then does exactly one write transaction: lock →
+    /// re-check → insert (appointment, service lines, history, notifications, reminders,
+    /// domain event and any booking-fee row) → commit.</para>
+    ///
+    /// <para>It never trusts a client figure. The duration is the sum of the catalogue's
+    /// own durations, the price snapshot is the catalogue's own price, the staff member is
+    /// one of the server's eligible providers, and the interval must fit entirely inside
+    /// that member's effective working window with no overlap against a reserving
+    /// appointment.</para>
+    /// </summary>
+    public async Task<ApiResponse<AppointmentResponse>> CreateStorefrontAppointmentAsync(
+        BookingReadContext read,
+        Guid customerId,
+        BookingCustomer customer,
+        Guid[] serviceIds,
+        Guid? staffUserId,
+        DateTime scheduledAt,
+        string? note,
+        bool payAfterService,
+        string? bookingRequestKey,
+        Func<Guid, Payment?>? bookingFeeFactory = null,
+        CancellationToken cancellationToken = default)
+    {
+        var distinctRequested = serviceIds.Distinct().ToArray();
+
+        // A retry of the same booking intent is answered with the booking that already
+        // exists, BEFORE availability is re-checked: the interval is now held by the
+        // customer's own appointment, so a fresh check would call their booking a conflict.
+        if (read.ExistingBooking is Appointment existing)
+        {
+            if (existing.CustomerId != customerId)
+                return ApiResponse<AppointmentResponse>.Fail(
+                    "DUPLICATE_BOOKING_KEY",
+                    "That booking key has already been used. Start a new booking.");
+
+            return ApiResponse<AppointmentResponse>.Ok(
+                await BuildCreatedResponseAsync(existing, customer, existing.CreatedAt));
+        }
+
+        var services = read.Services
+            .Where(s => distinctRequested.Contains(s.Id))
+            .OrderBy(s => Array.IndexOf(distinctRequested, s.Id))
+            .ToList();
+
+        if (services.Count != distinctRequested.Length)
+            return ApiResponse<AppointmentResponse>.Fail(
+                "SERVICE_NOT_FOUND", "One or more services were not found in this business.");
+
+        var totalMinutes = services.Sum(s => s.DurationMinutes);
+        if (totalMinutes <= 0)
+            return ApiResponse<AppointmentResponse>.Fail(
+                "VALIDATION_ERROR", "The selected services have no duration configured.");
+
+        var startUtc = NormalizeUtc(scheduledAt);
+        var endUtc = startUtc.AddMinutes(totalMinutes);
+
+        var business = read.Business;
+
+        // Lead time is the customer's rule, not the operator's: a storefront booking cannot
+        // be made in the past or inside the business's minimum notice.
+        if (startUtc < DateTime.UtcNow.AddMinutes(Math.Max(0, business.BookingLeadTimeMinutes)))
+            return ApiResponse<AppointmentResponse>.Fail(
+                AppointmentConflicts.SlotUnavailable,
+                "That time has already passed or is too soon to book.");
+
+        var tz = BookingTime.ResolveTimeZone(business.TimeZoneId);
+        var local = TimeZoneInfo.ConvertTimeFromUtc(startUtc, tz);
+        var localDate = DateOnly.FromDateTime(local);
+        var startMinute = (int)local.TimeOfDay.TotalMinutes;
+
+        var eligible = read.Providers.ToList();
+        if (eligible.Count == 0)
+            return ApiResponse<AppointmentResponse>.Fail(
+                "STAFF_NOT_AVAILABLE", "No staff member performs all of the selected services.");
+
+        if (staffUserId is Guid pinned)
+        {
+            eligible = eligible.Where(p => p.Id == pinned).ToList();
+            if (eligible.Count == 0)
+                return ApiResponse<AppointmentResponse>.Fail(
+                    "STAFF_NOT_AVAILABLE", "Staff member is not available for all requested services.");
+        }
+
+        Guid? chosenStaff = null;
+        var bestLoad = int.MaxValue;
+        var sawOffDuty = false;
+        var sawBooked = false;
+
+        foreach (var staff in eligible)
+        {
+            // The ENTIRE interval must sit inside one working window — not just its start.
+            var windows = read.WindowsFor(staff.Id, localDate);
+            if (!windows.Any(w => startMinute >= w.Start && startMinute + totalMinutes <= w.End))
+            {
+                sawOffDuty = true;
+                continue;
+            }
+
+            var busy = read.BusyFor(staff.Id);
+            if (busy.Any(b => AppointmentReservations.Overlaps(b.StartUtc, b.EndUtc, startUtc, endUtc)))
+            {
+                sawBooked = true;
+                continue;
+            }
+
+            if (busy.Count < bestLoad)
+            {
+                bestLoad = busy.Count;
+                chosenStaff = staff.Id;
+            }
+        }
+
+        if (chosenStaff == null)
+            return ApiResponse<AppointmentResponse>.Fail(
+                AppointmentConflicts.SlotUnavailable,
+                // Off-duty is a different answer from "somebody booked it": the customer
+                // should know whether to try another time on the same day or another day.
+                sawBooked
+                    ? AppointmentConflicts.SlotUnavailableMessage
+                    : sawOffDuty
+                        ? "Nobody is working at that time. Please pick another slot."
+                        : "That slot is not bookable.");
+
+        return await InsertAppointmentTransactionallyAsync(
+            business.Id, customerId, chosenStaff, startUtc, endUtc, services, note,
+            customerId, Guid.Empty,
+            payAfterService: payAfterService,
+            business: business,
+            customer: customer,
+            reminderOffsetMinutesJson: read.ReminderOffsetMinutesJson,
+            bookingFeeFactory: bookingFeeFactory,
+            bookingRequestKey: bookingRequestKey,
+            skipWinBackCancel: read.CustomerMatch == null);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -1923,7 +2089,17 @@ public class AppointmentService : IAppointmentService
         List<ServiceCatalogItem> services, string? note, Guid changedByUserId, Guid excludeId,
         bool payAfterService = false,
         Business? business = null,
-        BookingCustomer? customer = null)
+        BookingCustomer? customer = null,
+        // Pre-read reminder ladder (the booking fast path reads it in its parallel wave).
+        string? reminderOffsetMinutesJson = null,
+        // A booking-fee row written in the SAME transaction as the appointment. The factory
+        // receives the appointment id, so the fee can only ever point at the row it pays for.
+        Func<Guid, Payment?>? bookingFeeFactory = null,
+        // The client's booking-intent key: a repeat returns the booking that already exists.
+        string? bookingRequestKey = null,
+        // A customer with no prior relationship cannot have pending win-back jobs, so the
+        // reactivation sweep is skipped for them (one round trip saved on a first booking).
+        bool skipWinBackCancel = false)
     {
         var reservingStatuses = AppointmentReservations.ReservingStatuses.ToArray();
         Guid appointmentId;
@@ -1931,12 +2107,21 @@ public class AppointmentService : IAppointmentService
 
         await using (var transaction = await _context.Database.BeginTransactionAsync())
         {
+            var writeWatch = System.Diagnostics.Stopwatch.StartNew();
+            long lockMs = 0, keyMs = 0, overlapMs = 0, prepareMs = 0, saveMs = 0;
             try
             {
                 // Serialise bookings for this staff member BEFORE re-checking, so two
                 // simultaneous requests cannot both pass the check. The loser waits
                 // here for the winner's commit and then sees the new row below.
                 await StaffTimeLock.AcquireAsync(_context, businessId, staffUserId);
+                lockMs = writeWatch.ElapsedMilliseconds;
+
+                // Idempotency is answered by the snapshot the booking was validated
+                // against (the existing booking for this intent key) and, if two identical
+                // submissions race past that read, by the filtered unique index on
+                // (business_id, booking_request_key) — handled below as a replay. No extra
+                // round trip is spent asking again here.
 
                 if (staffUserId.HasValue)
                 {
@@ -1957,6 +2142,8 @@ public class AppointmentService : IAppointmentService
                             AppointmentConflicts.StaffTimeUnavailable,
                             AppointmentConflicts.StaffTimeUnavailableMessage);
                     }
+
+                    overlapMs = writeWatch.ElapsedMilliseconds - lockMs - keyMs;
                 }
 
                 var appointment = new Appointment
@@ -1968,7 +2155,8 @@ public class AppointmentService : IAppointmentService
                     ScheduledAt = scheduledAt,
                     EndAt = endAt,
                     Status = InitialStatusFor(),
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = DateTime.UtcNow,
+                    BookingRequestKey = string.IsNullOrWhiteSpace(bookingRequestKey) ? null : bookingRequestKey
                 };
 
             var sortOrder = 0;
@@ -1988,6 +2176,12 @@ public class AppointmentService : IAppointmentService
             }
 
             await _unitOfWork.Appointments.AddAsync(appointment);
+
+            // A booking fee travels with the appointment: both rows are written by the one
+            // SaveChanges inside this transaction, so a paid-for slot can never exist
+            // without the payment that says what it is for.
+            if (bookingFeeFactory?.Invoke(appointment.Id) is Payment bookingFee)
+                await _context.Payments.AddAsync(bookingFee);
 
             // "Pay after service": the appointment's whole value becomes an outstanding
             // payment, written inside the SAME transaction as the row it belongs to. If it
@@ -2019,31 +2213,31 @@ public class AppointmentService : IAppointmentService
                 CreatedAt = historyChangedAt
             });
 
-            // Phase 1: the booking-confirmation intent joins this transaction — it exists
-            // if and only if the appointment row does (intent-level outbox).
+            // Phase 1: the booking-confirmation intent joins this transaction — it exists if
+            // and only if the appointment row does (intent-level outbox). Both notices are
+            // queued in ONE batch: the customer's confirmation and the assigned
+            // professional's, so the tenant-guard and idempotency reads are paid once.
             var businessName = business?.Name ?? await GetBusinessNameAsync(appointment.BusinessId);
-            await QueueNotificationSafelyAsync(new NotificationRequest(
-                "appointment.booked",
-                appointment.CustomerId,
-                appointment.BusinessId,
-                new Dictionary<string, object?>
-                {
-                    ["businessName"] = businessName,
-                    ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
-                    ["appointmentId"] = appointment.Id
-                },
-                $"appt:{appointment.Id}:booked"));
+            var bookingIntents = new List<NotificationRequest>
+            {
+                new(
+                    "appointment.booked",
+                    appointment.CustomerId,
+                    appointment.BusinessId,
+                    new Dictionary<string, object?>
+                    {
+                        ["businessName"] = businessName,
+                        ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+                        ["appointmentId"] = appointment.Id
+                    },
+                    $"appt:{appointment.Id}:booked")
+            };
 
-            // Phase 2: the durable created-event and the reminder ladder join the same
-            // transaction — a crash can delay reminders but never lose them.
-            await PublishAppointmentCreatedAsync(appointment, business, default);
-            await CreatePendingReminderJobsAsync(appointment, _context, default);
-
-            // The assigned professional is told the slot is theirs. Same
-            // transaction as the row, so the notice can never outlive a rollback.
+            // The assigned professional is told the slot is theirs. Same transaction as the
+            // row, so the notice can never outlive a rollback.
             if (appointment.StaffUserId is Guid assignedStaffId && assignedStaffId != Guid.Empty)
             {
-                await QueueNotificationSafelyAsync(new NotificationRequest(
+                bookingIntents.Add(new NotificationRequest(
                     "appointment.staff_assigned",
                     assignedStaffId,
                     appointment.BusinessId,
@@ -2056,16 +2250,60 @@ public class AppointmentService : IAppointmentService
                     $"appt:{appointment.Id}:staff-assigned:{assignedStaffId}"));
             }
 
-            // Reactivation: cancel any pending customer.lapsed jobs for this customer
-            // at this business so they stop receiving lapse nudges.
-            await CancelPendingWinBackJobsAsync(
-                appointment.CustomerId, appointment.BusinessId, _context, default);
+            await QueueNotificationsSafelyAsync(bookingIntents);
 
+            // Phase 2: the durable created-event and the reminder ladder join the same
+            // transaction — a crash can delay reminders but never lose them. The ladder JSON
+            // was read with the booking context; a row created in this transaction cannot
+            // already have queued jobs, so the dedupe lookup is skipped.
+            await PublishAppointmentCreatedAsync(appointment, business, default);
+            await CreatePendingReminderJobsAsync(
+                appointment, _context, default, reminderOffsetMinutesJson, skipExistingCheck: true);
+
+            // Reactivation: cancel any pending customer.lapsed jobs for this customer
+            // at this business so they stop receiving lapse nudges. A first-time customer
+            // has no such jobs by definition.
+            if (!skipWinBackCancel)
+            {
+                await CancelPendingWinBackJobsAsync(
+                    appointment.CustomerId, appointment.BusinessId, _context, default);
+            }
+
+            prepareMs = writeWatch.ElapsedMilliseconds - lockMs - keyMs - overlapMs;
             await _unitOfWork.SaveChangesAsync();
+                saveMs = writeWatch.ElapsedMilliseconds - lockMs - keyMs - overlapMs - prepareMs;
+                var commitWatch = System.Diagnostics.Stopwatch.StartNew();
                 await transaction.CommitAsync();
+                commitWatch.Stop();
 
                 appointmentId = appointment.Id;
                 statusChangedAt = historyChangedAt;
+
+                _logger.LogInformation(
+                    "BookingWriteTiming AppointmentId={AppointmentId} LockMs={LockMs} KeyMs={KeyMs} " +
+                    "OverlapMs={OverlapMs} PrepareMs={PrepareMs} SaveMs={SaveMs} CommitMs={CommitMs} TotalMs={TotalMs}",
+                    appointment.Id, lockMs, keyMs, overlapMs, prepareMs, saveMs,
+                    commitWatch.ElapsedMilliseconds, writeWatch.ElapsedMilliseconds);
+            }
+            catch (Exception ex) when (AppointmentConflicts.IsBookingKeyConflict(ex))
+            {
+                // Two identical submissions raced past the in-transaction lookup; the unique
+                // index let exactly one row through. Return that row — the customer's booking
+                // was made once, which is what they asked for.
+                await RollbackQuietlyAsync(transaction);
+
+                var replay = await _context.Appointments.AsNoTracking()
+                    .Include(a => a.Resources)
+                    .FirstOrDefaultAsync(a =>
+                        a.BusinessId == businessId && a.BookingRequestKey == bookingRequestKey);
+
+                if (replay == null)
+                    return ApiResponse<AppointmentResponse>.Fail(
+                        "BOOKING_FAILED", "Failed to create appointment.");
+
+                return ApiResponse<AppointmentResponse>.Ok(customer != null
+                    ? await BuildCreatedResponseAsync(replay, customer, replay.CreatedAt)
+                    : await ToResponseAsync(replay));
             }
             catch (Exception ex) when (AppointmentConflicts.IsSlotConflict(ex))
             {
@@ -2151,15 +2389,6 @@ public class AppointmentService : IAppointmentService
 
         return response;
     }
-
-    /// <summary>The party data a caller already resolved for a booking.</summary>
-    private sealed record BookingCustomer(
-        Guid Id,
-        string? FullName,
-        string? Email,
-        string? PhoneNumber,
-        string? AvatarUrl,
-        string CustomerType);
 
     /// <summary>
     /// Rolls back without masking the original failure. A transaction that already
@@ -2323,18 +2552,26 @@ public class AppointmentService : IAppointmentService
     /// times instead of accumulating duplicate jobs. Failures are non-fatal to the
     /// booking itself — the scheduler claims and delivers them.
     /// </summary>
-    private async Task<bool> CreatePendingReminderJobsAsync(Appointment appointment, ApplicationDbContext context, CancellationToken ct)
+    private async Task<bool> CreatePendingReminderJobsAsync(
+        Appointment appointment, ApplicationDbContext context, CancellationToken ct,
+        string? reminderOffsetMinutesJson = null, bool skipExistingCheck = false)
     {
         // Per-appointment opt-out: never create reminder jobs for opted-out
         // appointments. The scheduler worker also re-checks at dispatch time
         // as a second line of defence.
         if (appointment.ReminderOptOut) return false;
 
-        var policy = await context.BusinessReminderPolicies
-            .AsNoTracking()
-            .FirstOrDefaultAsync(p => p.BusinessId == appointment.BusinessId, ct)
-            ?? new BusinessReminderPolicy();
-        var offsets = ParseOffsetMinutes(policy.OffsetMinutesJson);
+        var offsetsJson = reminderOffsetMinutesJson;
+        if (offsetsJson == null)
+        {
+            var policy = await context.BusinessReminderPolicies
+                .AsNoTracking()
+                .FirstOrDefaultAsync(p => p.BusinessId == appointment.BusinessId, ct)
+                ?? new BusinessReminderPolicy();
+            offsetsJson = policy.OffsetMinutesJson;
+        }
+
+        var offsets = ParseOffsetMinutes(offsetsJson);
         var now = DateTime.UtcNow;
 
         // The due times this appointment wants, before anything is asked of the
@@ -2351,14 +2588,16 @@ public class AppointmentService : IAppointmentService
         if (wanted.Count == 0) return false;
 
         var keys = wanted.Keys.ToList();
-        var queued = (await context.ScheduledJobs
-            .AsNoTracking()
-            .Where(j => keys.Contains(j.DedupeKey) &&
-                        j.AggregateType == "appointment" &&
-                        j.AggregateId == appointment.Id &&
-                        j.Status == "pending")
-            .Select(j => j.DedupeKey)
-            .ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
+        var queued = skipExistingCheck
+            ? new HashSet<string>(StringComparer.Ordinal)
+            : (await context.ScheduledJobs
+                .AsNoTracking()
+                .Where(j => keys.Contains(j.DedupeKey) &&
+                            j.AggregateType == "appointment" &&
+                            j.AggregateId == appointment.Id &&
+                            j.Status == "pending")
+                .Select(j => j.DedupeKey)
+                .ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
 
         var created = false;
         foreach (var (key, due) in wanted)

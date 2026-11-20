@@ -391,6 +391,14 @@ try
     builder.Services.AddScoped<IBusinessScheduleService, BusinessScheduleService>();
     builder.Services.AddSingleton(TimeProvider.System);
     builder.Services.AddScoped<IReviewService, ReviewService>();
+    // Booking reads run as one parallel wave: the fan-out owns the extra short-lived
+    // contexts, the loader turns their rows into one booking/availability snapshot.
+    builder.Services.AddScoped<BookingReadFanout>();
+    // Explicit factory: the loader also has a sequential constructor for unit tests, so
+    // container activation would be ambiguous.
+    builder.Services.AddScoped<BookingReadContextLoader>(sp => new BookingReadContextLoader(
+        sp.GetRequiredService<BookingReadFanout>(),
+        sp.GetService<IModuleEntitlementService>()));
     builder.Services.AddScoped<AppointmentAvailabilityService>();
     builder.Services.AddScoped<IServiceCatalogService, ServiceCatalogService>();
     // Owner-side customer creation for the booking flow (wizard Step 1).

@@ -33,4 +33,15 @@ public interface INotificationService
     /// arbitrates any race at commit time.
     /// </remarks>
     Task<NotificationResult> QueueAsync(NotificationRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// Queues several intents WITHOUT saving, resolving the tenant guard, the idempotency
+    /// keys and the (cached) channel preferences once for the whole batch.
+    ///
+    /// <para>Identical semantics to <see cref="QueueAsync"/> — every row joins the caller's
+    /// unit of work — but the bookkeeping reads are shared, which is what keeps a booking's
+    /// two notification intents off the critical path.</para>
+    /// </summary>
+    Task<IReadOnlyList<NotificationResult>> QueueManyAsync(
+        IReadOnlyList<NotificationRequest> requests, CancellationToken ct = default);
 }

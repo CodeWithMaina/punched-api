@@ -58,18 +58,27 @@ public class AppointmentAvailabilityService
     /// <summary>Business-level operating hours; constrains every staff window.</summary>
     private readonly IBusinessScheduleService _schedule;
 
+    /// <summary>
+    /// The one-read loader every grid and booking decision uses. Reading the business,
+    /// catalogue, roster and schedule in parallel is what keeps availability responsive
+    /// when each round trip costs a couple of hundred milliseconds.
+    /// </summary>
+    private readonly BookingReadContextLoader _readContexts;
+
     public AppointmentAvailabilityService(
         ApplicationDbContext context,
         ILogger<AppointmentAvailabilityService> logger,
         TimeProvider? timeProvider = null,
         IProviderEligibilityService? providerEligibility = null,
-        IBusinessScheduleService? businessSchedule = null)
+        IBusinessScheduleService? businessSchedule = null,
+        BookingReadContextLoader? readContexts = null)
     {
         _context = context;
         _logger = logger;
         _time = timeProvider ?? TimeProvider.System;
         _eligibility = providerEligibility ?? new ProviderEligibilityService(context);
         _schedule = businessSchedule ?? new BusinessScheduleService(context);
+        _readContexts = readContexts ?? new BookingReadContextLoader(context);
     }
 
     /// <summary>Current UTC time, from the injected clock.</summary>
@@ -116,10 +125,22 @@ public class AppointmentAvailabilityService
         if (serviceIds == null || serviceIds.Length == 0)
             return Fail("VALIDATION_ERROR", "At least one service is required.");
 
-        var business = await _context.Businesses.AsNoTracking().FirstOrDefaultAsync(b => b.Id == businessId);
-        if (business == null)
+        var distinctRequested = serviceIds.Distinct().ToArray();
+
+        // Everything the grid needs — the business, its catalogue, the eligible roster and
+        // every schedule row — is read in ONE parallel wave (BookingReadContextLoader).
+        // Used to be a dozen sequential round trips, which on a remote database was the
+        // difference between a responsive date picker and a four-second wait.
+        var provisionalStart = DateOnly.FromDateTime(UtcNow).AddDays(-1);
+        var provisionalEnd = provisionalStart.AddDays(MaxRangeDays + 2);
+
+        var read = await _readContexts.LoadAsync(
+            businessId, distinctRequested, provisionalStart, provisionalEnd);
+
+        if (read == null)
             return Fail("NOT_FOUND", "Business not found.");
 
+        var business = read.Business;
         var tz = ResolveTimeZone(business.TimeZoneId);
         var nowUtc = UtcNow;
 
@@ -130,10 +151,7 @@ public class AppointmentAvailabilityService
         if (endDate.DayNumber - startDate.DayNumber >= MaxRangeDays)
             endDate = startDate.AddDays(MaxRangeDays - 1);
 
-        var distinctRequested = serviceIds.Distinct().ToArray();
-        var services = await _context.ServiceCatalogItems.AsNoTracking()
-            .Where(s => distinctRequested.Contains(s.Id) && s.BusinessId == businessId && s.IsActive)
-            .ToListAsync();
+        var services = read.Services.ToList();
         if (services.Count != distinctRequested.Length)
             return Fail("SERVICE_NOT_FOUND", "One or more services were not found in this business.");
 
@@ -146,8 +164,8 @@ public class AppointmentAvailabilityService
 
         // The business's own schedule. Empty means "never configured", in which case
         // the legacy booking window applies exactly as before.
-        var businessWindows = await _schedule.GetWindowsAsync(businessId, startDate, endDate);
-        var scheduleConfigured = businessWindows.Count > 0;
+        var businessWindows = read.BusinessWindows;
+        var scheduleConfigured = read.ScheduleConfigured;
 
         var response = new AvailabilityCalendarResponse
         {
@@ -161,8 +179,9 @@ public class AppointmentAvailabilityService
             StaffUserId = staffUserId
         };
 
-        // Eligible roster: staff assigned to every requested service.
-        var eligible = await GetEligibleStaffAsync(businessId, distinctRequested);
+        // Eligible roster: members assigned to every requested service, already resolved
+        // from the bulk read (owner-based models collapse to the owner).
+        var eligible = read.Providers.ToList();
 
         if (staffUserId.HasValue)
         {
@@ -185,66 +204,20 @@ public class AppointmentAvailabilityService
             return ApiResponse<AvailabilityCalendarResponse>.Ok(response);
         }
 
-        // Preload rostered days + the recurring week for the whole window.
-        var staffIds = eligible.Select(u => u.Id).ToList();
-
-        var shifts = await _context.StaffShifts.AsNoTracking()
-            .Where(s => s.BusinessId == businessId && staffIds.Contains(s.StaffUserId)
-                && s.Date >= startDate && s.Date <= endDate)
-            .ToListAsync();
-
-        var weekly = await _context.StaffAvailability.AsNoTracking()
-            .Where(a => a.BusinessId == businessId && staffIds.Contains(a.StaffUserId))
-            .ToListAsync();
-
-        var shiftsByStaffDate = shifts
-            .GroupBy(s => (s.StaffUserId, s.Date))
-            .ToDictionary(g => g.Key, g => g.ToList());
-
-        var weeklyByStaff = weekly
-            .GroupBy(a => a.StaffUserId)
-            .ToDictionary(g => g.Key, g => g.ToDictionary(a => a.DayOfWeek));
-
-        var rangeStartUtc = ToUtc(startDate.ToDateTime(TimeOnly.MinValue), tz);
-        var rangeEndUtc = ToUtc(endDate.AddDays(1).ToDateTime(TimeOnly.MinValue), tz);
-
-        // Only statuses that actually hold the staff member's time are busy; a
-        // cancelled, completed or no-show appointment has released its interval.
-        var reservingStatuses = AppointmentReservations.ReservingStatuses.ToArray();
-
-        var busyRows = await _context.Appointments.AsNoTracking()
-            .Where(a => a.BusinessId == businessId
-                && a.StaffUserId != null && staffIds.Contains(a.StaffUserId.Value)
-                && reservingStatuses.Contains(a.Status)
-                && a.ScheduledAt < rangeEndUtc && a.EndAt > rangeStartUtc)
-            .Select(a => new { StaffUserId = a.StaffUserId!.Value, a.ScheduledAt, a.EndAt })
-            .ToListAsync();
-
-        var busyByStaff = busyRows
-            .GroupBy(b => b.StaffUserId)
-            .ToDictionary(g => g.Key, g => g.Select(b => (Start: b.ScheduledAt, End: b.EndAt)).ToList());
+        // Rosters, recurring weeks, busy intervals and every (staff, date) window were
+        // resolved from the single read wave; nothing below asks the database again.
+        var busyByStaff = read.BusyByStaff.ToDictionary(
+            entry => entry.Key,
+            entry => entry.Value.Select(b => (Start: b.StartUtc, End: b.EndUtc)).ToList());
 
         var defaultWindow = (Start: business.BookingOpenHour * 60, End: business.BookingCloseHour * 60);
         var earliestBookableUtc = nowUtc.AddMinutes(leadMinutes);
 
-        // Resolve every (staff, date) window once: a dated row for the date wins,
-        // else the recurring weekday, else the business's own booking window.
         var windowsByStaffDate = new Dictionary<(Guid, DateOnly), List<(int Start, int End)>>();
         for (var date = startDate; date <= endDate; date = date.AddDays(1))
         {
-            foreach (var staffId in staffIds)
-            {
-                shiftsByStaffDate.TryGetValue((staffId, date), out var rostered);
-                weeklyByStaff.TryGetValue(staffId, out var pattern);
-                IReadOnlyList<(int Start, int End)>? windowsForDate = null;
-                if (scheduleConfigured)
-                    windowsForDate = businessWindows.TryGetValue(date, out var scheduled)
-                        ? scheduled
-                        : new List<(int, int)>();
-
-                windowsByStaffDate[(staffId, date)] =
-                    ResolveWindows(date, rostered, pattern, defaultWindow, windowsForDate);
-            }
+            foreach (var staff in eligible)
+                windowsByStaffDate[(staff.Id, date)] = read.WindowsFor(staff.Id, date);
         }
 
         for (var date = startDate; date <= endDate; date = date.AddDays(1))
@@ -290,14 +263,19 @@ public class AppointmentAvailabilityService
         if (totalMinutes <= 0)
             return SlotResolution.Deny("VALIDATION_ERROR", "The selected services have no duration configured.");
 
-        // The caller (the on-behalf booking path) has usually read this row already;
-        // taking the pre-loaded one saves a round trip that would return identical data.
-        business ??= await _context.Businesses.AsNoTracking().FirstOrDefaultAsync(b => b.Id == businessId);
-        if (business == null)
-            return SlotResolution.Deny("NOT_FOUND", "Business not found.");
-
         var startUtc = DateTime.SpecifyKind(scheduledAtUtc, DateTimeKind.Utc);
         var endUtc = startUtc.AddMinutes(totalMinutes);
+
+        // One wide read (UTC date ±1 day covers any business timezone) returns the roster,
+        // the resolved working windows for every candidate and the intervals already held.
+        var utcDate = DateOnly.FromDateTime(startUtc);
+        var read = await _readContexts.LoadAsync(
+            businessId, serviceIds, utcDate.AddDays(-1), utcDate.AddDays(1));
+
+        if (read == null)
+            return SlotResolution.Deny("NOT_FOUND", "Business not found.");
+
+        business ??= read.Business;
 
         if (enforceLeadTime && startUtc < UtcNow.AddMinutes(Math.Max(0, business.BookingLeadTimeMinutes)))
             return SlotResolution.Deny("SLOT_UNAVAILABLE", "That time has already passed or is too soon to book.");
@@ -307,8 +285,7 @@ public class AppointmentAvailabilityService
         var localDate = DateOnly.FromDateTime(local);
         var startMinute = (int)local.TimeOfDay.TotalMinutes;
 
-        var distinctRequested = serviceIds.Distinct().ToArray();
-        var eligible = await GetEligibleStaffAsync(businessId, distinctRequested);
+        var eligible = read.Providers.ToList();
         if (eligible.Count == 0)
             return SlotResolution.Deny("STAFF_NOT_AVAILABLE", "No staff member performs all of the selected services.");
 
@@ -319,41 +296,6 @@ public class AppointmentAvailabilityService
                 return SlotResolution.Deny("STAFF_NOT_AVAILABLE", "Staff member is not available for all requested services.");
         }
 
-        var staffIds = eligible.Select(u => u.Id).ToList();
-
-        var dayShifts = await _context.StaffShifts.AsNoTracking()
-            .Where(s => s.BusinessId == businessId && staffIds.Contains(s.StaffUserId) && s.Date == localDate)
-            .ToListAsync();
-
-        var weekly = await _context.StaffAvailability.AsNoTracking()
-            .Where(a => a.BusinessId == businessId && staffIds.Contains(a.StaffUserId))
-            .ToListAsync();
-
-        var weeklyByStaff = weekly
-            .GroupBy(a => a.StaffUserId)
-            .ToDictionary(g => g.Key, g => g.ToDictionary(a => a.DayOfWeek));
-
-        var dayStartUtc = ToUtc(localDate.ToDateTime(TimeOnly.MinValue), tz);
-        var dayEndUtc = ToUtc(localDate.AddDays(1).ToDateTime(TimeOnly.MinValue), tz);
-
-        var reservingStatuses = AppointmentReservations.ReservingStatuses.ToArray();
-
-        var dayBusy = await _context.Appointments.AsNoTracking()
-            .Where(a => a.BusinessId == businessId
-                && a.StaffUserId != null && staffIds.Contains(a.StaffUserId.Value)
-                && reservingStatuses.Contains(a.Status)
-                && (excludeAppointmentId == null || a.Id != excludeAppointmentId)
-                && a.ScheduledAt < dayEndUtc && a.EndAt > dayStartUtc)
-            .Select(a => new { StaffUserId = a.StaffUserId!.Value, a.ScheduledAt, a.EndAt })
-            .ToListAsync();
-
-        var defaultWindow = (Start: business.BookingOpenHour * 60, End: business.BookingCloseHour * 60);
-
-        var businessWindows = await _schedule.GetWindowsAsync(businessId, localDate, localDate);
-        IReadOnlyList<(int Start, int End)>? scheduleWindows = businessWindows.Count > 0
-            ? (businessWindows.TryGetValue(localDate, out var scheduled) ? scheduled : new List<(int, int)>())
-            : null;
-
         Guid? bestStaff = null;
         var bestLoad = int.MaxValue;
         var sawOffDuty = false;
@@ -361,21 +303,19 @@ public class AppointmentAvailabilityService
 
         foreach (var staff in eligible)
         {
-            weeklyByStaff.TryGetValue(staff.Id, out var pattern);
-            var windows = ResolveWindows(
-                localDate,
-                dayShifts.Where(s => s.StaffUserId == staff.Id).ToList(),
-                pattern,
-                defaultWindow,
-                scheduleWindows);
+            var windows = read.WindowsFor(staff.Id, localDate);
+
             if (!windows.Any(w => startMinute >= w.Start && startMinute + totalMinutes <= w.End))
             {
                 sawOffDuty = true;
                 continue;
             }
 
-            var busy = dayBusy.Where(b => b.StaffUserId == staff.Id).ToList();
-            if (busy.Any(b => AppointmentReservations.Overlaps(b.ScheduledAt, b.EndAt, startUtc, endUtc)))
+            var busy = read.BusyFor(staff.Id)
+                .Where(b => excludeAppointmentId == null || b.AppointmentId != excludeAppointmentId)
+                .ToList();
+
+            if (busy.Any(b => AppointmentReservations.Overlaps(b.StartUtc, b.EndUtc, startUtc, endUtc)))
             {
                 sawBooked = true;
                 continue;

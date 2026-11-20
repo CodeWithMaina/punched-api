@@ -21,6 +21,7 @@ public class AppointmentConfiguration : IEntityTypeConfiguration<Appointment>
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
         builder.Property(x => x.ReminderOptOut).HasColumnName("reminder_opt_out").HasDefaultValue(false);
         builder.Property(x => x.Note).HasColumnName("note").HasMaxLength(500);
+        builder.Property(x => x.BookingRequestKey).HasColumnName("booking_request_key").HasMaxLength(100);
         builder.Property(x => x.Version).HasColumnName("version").HasDefaultValue(0)
             // Enforced optimistic concurrency (not just a documented intention): the
             // token joins every UPDATE's WHERE clause, so two concurrent writes to the
@@ -55,6 +56,13 @@ public class AppointmentConfiguration : IEntityTypeConfiguration<Appointment>
         // The status filter (and the status count behind it) is always scoped to one
         // business — the composite keeps that filter an index seek per status.
         builder.HasIndex(x => new { x.BusinessId, x.Status });
+        // Booking intent idempotency: one row per client-supplied key within a business.
+        // Filtered so the many rows without a key (owner-created walk-ins, imports) do not
+        // collide with each other.
+        builder.HasIndex(x => new { x.BusinessId, x.BookingRequestKey })
+            .IsUnique()
+            .HasFilter("\"booking_request_key\" IS NOT NULL")
+            .HasDatabaseName("ux_appointments_booking_request_key");
 
         builder.HasMany(x => x.Resources)
             .WithOne()

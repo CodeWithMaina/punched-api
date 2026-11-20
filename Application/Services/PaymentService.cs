@@ -1127,7 +1127,8 @@ public partial class PaymentService : IPaymentService
     private static string? Truncate(string? value, int max) =>
         string.IsNullOrEmpty(value) ? value : value.Length <= max ? value : value[..max];
 
-    private static PaymentResponse ToResponse(Payment payment) => new()
+    /// <summary>The wire shape of a payment, shared so a booking can describe the row it just wrote.</summary>
+    internal static PaymentResponse ToResponse(Payment payment) => new()
     {
         Id = payment.Id,
         BusinessId = payment.BusinessId,

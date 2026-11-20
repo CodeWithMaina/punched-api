@@ -1,4 +1,6 @@
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Services;
+using PunchedApi.Domain.Entities;
 
 namespace PunchedApi.Domain.Interfaces;
 
@@ -32,6 +34,29 @@ public interface IAppointmentService
 
     /// <summary>Business/Staff booking on behalf of a customer.</summary>
     Task<ApiResponse<AppointmentResponse>> CreateAppointmentOnBehalfAsync(Guid callerUserId, string role, CreateAppointmentOnBehalfRequest request);
+
+    /// <summary>
+    /// Books a storefront appointment from a booking context that has already been read.
+    ///
+    /// <para>This is the customer-facing critical path: the caller resolves the business,
+    /// catalogue, roster and diary in one parallel read wave, then this method validates the
+    /// full requested interval in memory and performs a single write transaction (lock,
+    /// overlapping-interval re-check, appointment + service lines + history + outbox rows +
+    /// optional booking fee, commit). Client-supplied prices, durations and availability
+    /// decisions are never trusted.</para>
+    /// </summary>
+    Task<ApiResponse<AppointmentResponse>> CreateStorefrontAppointmentAsync(
+        BookingReadContext read,
+        Guid customerId,
+        BookingCustomer customer,
+        Guid[] serviceIds,
+        Guid? staffUserId,
+        DateTime scheduledAt,
+        string? note,
+        bool payAfterService,
+        string? bookingRequestKey,
+        Func<Guid, Payment?>? bookingFeeFactory = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>Reschedules an existing appointment inside a transactional overlap guard. Customer calls create a pending request instead.</summary>
     Task<ApiResponse<AppointmentResponse>> RescheduleAsync(Guid callerUserId, string role, Guid appointmentId, RescheduleAppointmentRequest request);

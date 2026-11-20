@@ -26,6 +26,18 @@ public interface INotificationDispatchGuard
     /// <summary>Active suppression reason for a channel, or null when not suppressed.</summary>
     Task<string?> GetChannelSuppressionReasonAsync(
         Guid userId, Guid businessId, string channel, CancellationToken ct = default);
+
+    /// <summary>
+    /// The same verdict for several (recipient, business, channel) triples in ONE query.
+    ///
+    /// <para>A booking queues an in-app notice for the customer and one for the assigned
+    /// professional; asking the question twice inside the booking transaction costs two
+    /// round trips for an answer that is almost always "not suppressed".</para>
+    /// </summary>
+    Task<IReadOnlyDictionary<(Guid UserId, Guid BusinessId, string Channel), string?>>
+        GetChannelSuppressionReasonsAsync(
+            IReadOnlyList<(Guid UserId, Guid BusinessId, string Channel)> queries,
+            CancellationToken ct = default);
 }
 
 /// <summary>
@@ -160,6 +172,37 @@ public sealed class NotificationDispatchGuard : INotificationDispatchGuard
             .Select(s => (string?)s.Reason)
             .FirstOrDefaultAsync(ct);
         return reason;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<(Guid UserId, Guid BusinessId, string Channel), string?>>
+        GetChannelSuppressionReasonsAsync(
+            IReadOnlyList<(Guid UserId, Guid BusinessId, string Channel)> queries, CancellationToken ct = default)
+    {
+        var result = new Dictionary<(Guid, Guid, string), string?>();
+        if (queries.Count == 0) return result;
+
+        var now = DateTime.UtcNow;
+        var userIds = queries.Select(q => q.UserId).Distinct().ToList();
+        var businessIds = queries.Select(q => q.BusinessId).Distinct().ToList();
+        var channels = queries.Select(q => q.Channel).Distinct().ToList();
+
+        var rows = await _context.NotificationSuppressions
+            .AsNoTracking()
+            .Where(s => businessIds.Contains(s.BusinessId)
+                && userIds.Contains(s.UserId)
+                && channels.Contains(s.Channel)
+                && (s.ExpiresAt == null || s.ExpiresAt > now))
+            .Select(s => new { s.UserId, s.BusinessId, s.Channel, s.Reason })
+            .ToListAsync(ct);
+
+        foreach (var query in queries)
+        {
+            result[query] = rows.FirstOrDefault(r =>
+                r.UserId == query.UserId && r.BusinessId == query.BusinessId && r.Channel == query.Channel)?.Reason;
+        }
+
+        return result;
     }
 
     /// <summary>

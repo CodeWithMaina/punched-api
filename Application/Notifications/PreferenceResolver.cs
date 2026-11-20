@@ -31,6 +31,16 @@ public sealed class PreferenceResolver : IPreferenceResolver, INotificationChann
 
     private const string UserKeyPrefix = "notifpref:user:";
     private const string BusinessKeyPrefix = "notifpref:biz:";
+
+    /// <summary>
+    /// Cache key for the channels this deployment can actually reach one recipient on.
+    /// The answer depends on data that changes rarely (a verified address, a mobile
+    /// number), and it is asked once per notification — which on a booking means twice,
+    /// inside its transaction. The same 60-second TTL as the override rows keeps the two
+    /// halves of a preference decision consistent.
+    /// </summary>
+    private const string ChannelKeyPrefix = "notifpref:channels:";
+
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(60);
 
     private readonly IUnitOfWork _unitOfWork;
@@ -306,10 +316,15 @@ public sealed class PreferenceResolver : IPreferenceResolver, INotificationChann
     private async Task<HashSet<string>> AvailableChannelsAsync(
         Guid userId, bool requireVerifiedEmail, CancellationToken ct)
     {
+        var key = $"{ChannelKeyPrefix}{userId:N}:{(requireVerifiedEmail ? "verified" : "any")}";
+        if (_cache.TryGetValue<HashSet<string>>(key, out var cached) && cached != null)
+            return new HashSet<string>(cached, StringComparer.Ordinal);
+
         var available = new HashSet<string>(StringComparer.Ordinal) { NotificationChannel.InApp };
         if (!_hasConfiguredSettings && _channels.Count == 0)
         {
             available.UnionWith(NotificationDefaults.AllChannels.Where(channel => channel != NotificationChannel.InApp));
+            _cache.Set(key, new HashSet<string>(available, StringComparer.Ordinal), CacheTtl);
             return available;
         }
 
@@ -325,6 +340,8 @@ public sealed class PreferenceResolver : IPreferenceResolver, INotificationChann
             && !string.IsNullOrWhiteSpace(_vapidSettings.PrivateKey))
             || (!_hasConfiguredSettings && _channels.Any(channel => channel.Name == NotificationChannel.Push)))
             available.Add(NotificationChannel.Push);
+
+        _cache.Set(key, new HashSet<string>(available, StringComparer.Ordinal), CacheTtl);
         return available;
     }
 

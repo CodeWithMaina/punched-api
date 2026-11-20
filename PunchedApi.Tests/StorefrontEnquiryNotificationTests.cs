@@ -138,5 +138,9 @@ public sealed class StorefrontEnquiryNotificationTests
 
         public Task<NotificationResult> QueueAsync(NotificationRequest request, CancellationToken ct = default) =>
             throw new InvalidOperationException("The notification pipeline is unavailable.");
+
+        public Task<IReadOnlyList<NotificationResult>> QueueManyAsync(
+            IReadOnlyList<NotificationRequest> requests, CancellationToken ct = default) =>
+            throw new InvalidOperationException("The notification pipeline is unavailable.");
     }
 }

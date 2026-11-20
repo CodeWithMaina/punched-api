@@ -190,6 +190,195 @@ public sealed class NotificationService : INotificationService
         return new NotificationResult(true, inboxId, accepted);
     }
 
+    /// <summary>
+    /// Queues several intents at once, resolving the shared reads ONCE.
+    ///
+    /// <para>A booking produces two intents (the customer's confirmation and the assigned
+    /// professional's notice) for two different people. Queued one at a time that is two
+    /// tenant-guard lookups, two preference resolutions and two idempotency lookups. Batched
+    /// it is one guard query plus one idempotency query, which is the difference between a
+    /// booking that waits on the notification ledger and one that merely writes to it.</para>
+    ///
+    /// <para>Same semantics as <see cref="QueueAsync"/>: nothing is saved here, every row
+    /// joins the caller's unit of work, and an unknown type or a tenant violation still
+    /// throws.</para>
+    /// </summary>
+    public async Task<IReadOnlyList<NotificationResult>> QueueManyAsync(
+        IReadOnlyList<NotificationRequest> requests, CancellationToken ct = default)
+    {
+        if (requests.Count == 0) return Array.Empty<NotificationResult>();
+
+        var definitions = requests.Select(request => NotificationTypes.Get(request.Type)).ToList();
+
+        // 1. Tenant guard for every distinct (recipient, business) pair, in ONE query.
+        await GuardManyAsync(requests, ct);
+
+        // 2. Channel preferences per intent. The resolver's override rows are cached for
+        //    60 seconds, so the second intent for the same person costs no round trip.
+        var survivingPerRequest = new List<IReadOnlyList<string>>(requests.Count);
+        for (var i = 0; i < requests.Count; i++)
+        {
+            var request = requests[i];
+            var definition = definitions[i];
+            survivingPerRequest.Add(request.Force && definition.Category == NotificationCategory.Security
+                ? await ForcePastPreferencesAsync(request, definition, ct)
+                : await _preferences.ResolveAsync(
+                    request.RecipientUserId, request.BusinessId, definition.Category,
+                    definition.DefaultChannels, ct));
+        }
+
+        // 3. Every idempotency key this batch could write, resolved by ONE query.
+        var now = DateTime.UtcNow;
+        var plans = new List<BatchPlan>(requests.Count);
+        var allKeys = new List<string>();
+
+        for (var i = 0; i < requests.Count; i++)
+        {
+            var request = requests[i];
+            var surviving = survivingPerRequest[i];
+            var wantsInApp = surviving.Contains(NotificationChannel.InApp);
+            var externalChannels = surviving.Where(channel => channel != NotificationChannel.InApp).ToList();
+
+            var inAppKey = wantsInApp ? CreateIdempotencyKey(request, NotificationChannel.InApp, now) : null;
+            var channelKeys = externalChannels
+                .Select(channel => (Channel: channel, Key: CreateIdempotencyKey(request, channel, now)))
+                .ToList();
+
+            if (inAppKey != null) allKeys.Add(inAppKey);
+            allKeys.AddRange(channelKeys.Select(entry => entry.Key));
+
+            plans.Add(new BatchPlan(request, surviving, inAppKey, channelKeys));
+        }
+
+        var alreadyQueued = allKeys.Count == 0
+            ? new HashSet<string>(StringComparer.Ordinal)
+            : new HashSet<string>(
+                await _context.NotificationLogs
+                    .AsNoTracking()
+                    .Where(log => allKeys.Contains(log.IdempotencyKey!))
+                    .Select(log => log.IdempotencyKey!)
+                    .ToListAsync(ct),
+                StringComparer.Ordinal);
+
+        // 4. In-app suppression for the whole batch, in ONE query. Almost always the
+        //    answer is "not suppressed"; paying a round trip per recipient for it inside a
+        //    booking transaction is exactly the cost this method exists to remove.
+        if (_dispatchGuard is not null)
+        {
+            var suppressionQueries = plans
+                .Where(plan => plan.InAppKey != null && plan.Request.BusinessId.HasValue)
+                .Select(plan => (plan.Request.RecipientUserId, plan.Request.BusinessId!.Value, NotificationChannel.InApp))
+                .Distinct()
+                .ToList();
+
+            if (suppressionQueries.Count > 0)
+            {
+                var reasons = await _dispatchGuard.GetChannelSuppressionReasonsAsync(suppressionQueries, ct);
+                foreach (var (key, reason) in reasons) _suppressionReasons[key] = reason;
+            }
+        }
+
+        // 5. Write the rows. The only remaining read is the inbox suppression verdict, which
+        //    was resolved above and is memoised per (recipient, business, channel).
+        var results = new List<NotificationResult>(requests.Count);
+
+        foreach (var plan in plans)
+        {
+            var request = plan.Request;
+
+            if (plan.Surviving.Count == 0)
+            {
+                NotificationMetrics.RecordSuppressed(definitions[0].Category, SuppressedByPreferences);
+                results.Add(new NotificationResult(false, null, Array.Empty<string>(), SuppressedByPreferences));
+                continue;
+            }
+
+            Guid? inboxId = null;
+            string? inboxSuppression = null;
+
+            if (plan.InAppKey != null && _dispatchGuard is not null && request.BusinessId.HasValue)
+                inboxSuppression = await SuppressionReasonAsync(
+                    request.RecipientUserId, request.BusinessId.Value, NotificationChannel.InApp, ct);
+
+            if (plan.InAppKey != null && inboxSuppression is null)
+                inboxId = await WriteInboxRowAsync(
+                    request, plan.InAppKey, alreadyQueued.Contains(plan.InAppKey), now, persistInline: false, ct);
+
+            var accepted = new List<string>();
+            if (inboxId.HasValue)
+            {
+                accepted.Add(NotificationChannel.InApp);
+                NotificationMetrics.RecordSent(NotificationChannel.InApp);
+            }
+
+            foreach (var (channel, key) in plan.ChannelKeys)
+            {
+                if (alreadyQueued.Contains(key)) continue;
+                if (await TryQueueOutboxRowAsync(request, channel, key, now, persistInline: false, ct))
+                    accepted.Add(channel);
+            }
+
+            results.Add(new NotificationResult(true, inboxId, accepted));
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// The tenant guard for a whole batch: one UNION query answers "is this recipient a
+    /// member or a customer of this business?" for every pair at once.
+    /// </summary>
+    private async Task GuardManyAsync(IReadOnlyList<NotificationRequest> requests, CancellationToken ct)
+    {
+        var pairs = requests
+            .Where(request => request.BusinessId.HasValue)
+            .Select(request => (UserId: request.RecipientUserId, BusinessId: request.BusinessId!.Value))
+            .Distinct()
+            .Where(pair => !_verifiedRecipients.Contains(pair))
+            .ToList();
+
+        if (pairs.Count == 0) return;
+
+        var userIds = pairs.Select(pair => pair.UserId).Distinct().ToList();
+        var businessIds = pairs.Select(pair => pair.BusinessId).Distinct().ToList();
+
+        var valid = (await _context.BusinessMemberships
+                .AsNoTracking()
+                .Where(m => userIds.Contains(m.UserId) && businessIds.Contains(m.BusinessId)
+                    && m.Status == BusinessMembershipStatus.Active)
+                .Select(m => new { m.UserId, m.BusinessId })
+                .Union(_context.CustomerBusinessEnrollments
+                    .AsNoTracking()
+                    .Where(e => userIds.Contains(e.CustomerId) && businessIds.Contains(e.BusinessId))
+                    .Select(e => new { UserId = e.CustomerId, e.BusinessId }))
+                .ToListAsync(ct))
+            .Select(row => (row.UserId, row.BusinessId))
+            .ToHashSet();
+
+        foreach (var pair in pairs)
+        {
+            if (!valid.Contains(pair))
+            {
+                var businessExists = await _context.Businesses.AsNoTracking()
+                    .AnyAsync(b => b.Id == pair.BusinessId, ct);
+
+                throw new ArgumentException(
+                    businessExists
+                        ? $"Recipient {pair.UserId} is not associated with business {pair.BusinessId}."
+                        : $"Business {pair.BusinessId} was not found.",
+                    businessExists ? nameof(NotificationRequest.RecipientUserId) : nameof(NotificationRequest.BusinessId));
+            }
+
+            _verifiedRecipients.Add(pair);
+        }
+    }
+
+    private readonly record struct BatchPlan(
+        NotificationRequest Request,
+        IReadOnlyList<string> Surviving,
+        string? InAppKey,
+        IReadOnlyList<(string Channel, string Key)> ChannelKeys);
+
     /// <summary>R2 — the Force bypass is narrow, and always audited.</summary>
     /// <remarks>
     /// Force bypasses <em>preferences</em>, never <em>availability</em>: a channel

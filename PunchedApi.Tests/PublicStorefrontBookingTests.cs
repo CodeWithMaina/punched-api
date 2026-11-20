@@ -578,13 +578,16 @@ public class PublicStorefrontBookingTests
             mpesaMessage: ValidMessage, idempotencyKey: "storefront-retry-1"));
         Assert.True(first.Success, first.Error?.Message);
 
-        // The customer taps again with the same details and key. The slot is already theirs, so the
-        // retry is refused rather than duplicated — and no second payment is opened.
+        // The customer taps again with the same details and key — a double-click, a slow
+        // network retry, or a refresh after a timeout. The booking intent is the SAME
+        // intent, so the server returns the booking it already made instead of creating a
+        // second one or opening a second payment. That replay is the idempotency promise;
+        // refusing the retry would leave the customer unsure whether their first tap worked.
         var again = await BookAsync(env, Request(env, "0777000666", "retry@example.test",
             mpesaMessage: ValidMessage, idempotencyKey: "storefront-retry-1"));
 
-        Assert.False(again.Success);
-        Assert.Equal("STAFF_TIME_UNAVAILABLE", again.Error?.Code);
+        Assert.True(again.Success, again.Error?.Message);
+        Assert.Equal(first.Data!.Appointment.Id, again.Data!.Appointment.Id);
 
         env.Context.ChangeTracker.Clear();
         Assert.Single(await env.Context.Appointments.AsNoTracking()

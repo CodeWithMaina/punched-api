@@ -49,4 +49,15 @@ public class Appointment : BaseEntity
     public int Version { get; set; }
 
     public ICollection<AppointmentResource> Resources { get; set; } = new List<AppointmentResource>();
+
+    /// <summary>
+    /// The client's booking-intent key for the request that created this row, or null.
+    ///
+    /// <para>It is what makes a repeated submission (a double-click, a browser retry, a
+    /// refresh after a timeout) return the booking that already exists instead of creating a
+    /// second one. The uniqueness is enforced by a filtered unique index on
+    /// (business_id, booking_request_key), so the guard is a database fact rather than a
+    /// check-then-insert race.</para>
+    /// </summary>
+    public string? BookingRequestKey { get; set; }
 }

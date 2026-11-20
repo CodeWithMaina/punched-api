@@ -53,6 +53,13 @@ public sealed class PublicBookingService : IPublicBookingService
     /// </summary>
     private ICustomerEnrollmentService? _enrollments;
 
+    /// <summary>
+    /// The one-read booking context (business, catalogue, roster, schedule, diary). Optional
+    /// so a unit test can construct the service without container options; it then falls back
+    /// to the same reads sequentially over the same context.
+    /// </summary>
+    private readonly BookingReadContextLoader _readContexts;
+
     public PublicBookingService(
         ApplicationDbContext db,
         IAppointmentService appointments,
@@ -60,7 +67,8 @@ public sealed class PublicBookingService : IPublicBookingService
         IModuleEntitlementService modules,
         ILogger<PublicBookingService> logger,
         ITenantContext? tenant = null,
-        ICustomerEnrollmentService? enrollments = null)
+        ICustomerEnrollmentService? enrollments = null,
+        BookingReadContextLoader? readContexts = null)
     {
         _db = db;
         _appointments = appointments;
@@ -69,6 +77,7 @@ public sealed class PublicBookingService : IPublicBookingService
         _logger = logger;
         _tenant = tenant;
         _enrollments = enrollments;
+        _readContexts = readContexts ?? new BookingReadContextLoader(db);
     }
 
     private static ApiResponse<PublicBookingResponse> Fail(string code, string message) =>
@@ -98,21 +107,75 @@ public sealed class PublicBookingService : IPublicBookingService
         if (tenantBusinessId is Guid activeTenant && request.BusinessId != activeTenant)
             return Fail("FORBIDDEN", "This business is not available on this site.");
 
-        var business = await _db.Businesses.AsNoTracking()
-            .FirstOrDefaultAsync(b => b.Id == request.BusinessId, cancellationToken);
-        if (business == null)
-            return Fail("BUSINESS_NOT_FOUND", "Business not found.");
-
-        if (!await _modules.IsModuleEnabledAsync(business.Id, ModuleKey))
-            return Fail("MODULE_DISABLED", "This business does not take bookings through Punched.");
-
         // ── What the customer typed ──────────────────────────────
         var invalid = ValidateCustomer(request);
         if (invalid != null) return invalid;
 
+        if (request.ServiceIds == null || request.ServiceIds.Length == 0)
+            return Fail("VALIDATION_ERROR", "Choose at least one service.");
+
+        // ── ONE parallel read wave ───────────────────────────────
+        // Business, payment configuration, catalogue, roster, working windows, diary and the
+        // reminder ladder. This is the change that took the booking off the ten-second floor:
+        // the reads no longer queue behind each other at ~250ms per round trip, and the
+        // booking write below then validates the whole interval in memory.
+        //
+        // The window is the booking page's own horizon (14 days) plus timezone slack: the
+        // roster for the requested local date has to be in this snapshot, or the write would
+        // have to ask the database again for a day it already knows about.
+        var utcToday = DateOnly.FromDateTime(DateTime.UtcNow);
+        var readWatch = System.Diagnostics.Stopwatch.StartNew();
+        var read = await _readContexts.LoadAsync(
+            request.BusinessId,
+            request.ServiceIds,
+            utcToday.AddDays(-2),
+            utcToday.AddDays(16),
+            includePaymentConfig: true,
+            includeReminderPolicy: true,
+            customerEmail: request.Email,
+            customerPhone: request.PhoneNumber,
+            bookingRequestKey: request.IdempotencyKey,
+            ct: cancellationToken);
+        readWatch.Stop();
+        var readMs = readWatch.ElapsedMilliseconds;
+
+        if (read == null)
+            return Fail("BUSINESS_NOT_FOUND", "Business not found.");
+
+        // A booking further out than the snapshot window (the booking page offers 14 days)
+        // still has to be judged against that day's real roster. Re-read for the requested
+        // date alone rather than refusing a booking the business would accept.
+        var bookingTimeZone = BookingTime.ResolveTimeZone(read.Business.TimeZoneId);
+        var requestedLocalDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(
+            DateTime.SpecifyKind(request.ScheduledAt, DateTimeKind.Utc), bookingTimeZone));
+
+        if (requestedLocalDate < utcToday.AddDays(-2) || requestedLocalDate > utcToday.AddDays(16))
+        {
+            read = await _readContexts.LoadAsync(
+                request.BusinessId,
+                request.ServiceIds,
+                requestedLocalDate.AddDays(-1),
+                requestedLocalDate.AddDays(1),
+                includePaymentConfig: true,
+                includeReminderPolicy: true,
+                customerEmail: request.Email,
+                customerPhone: request.PhoneNumber,
+                bookingRequestKey: request.IdempotencyKey,
+                ct: cancellationToken);
+
+            if (read == null)
+                return Fail("BUSINESS_NOT_FOUND", "Business not found.");
+        }
+
+        var business = read.Business;
+
+        // The entitlement check is memory-cached (and warmed by the loader's Staff check), so
+        // it costs nothing on the critical path once the business has been seen.
+        if (!await _modules.IsModuleEnabledAsync(business.Id, ModuleKey))
+            return Fail("MODULE_DISABLED", "This business does not take bookings through Punched.");
+
         // ── The business's own payment policy ────────────────────
-        var config = await _db.BusinessPaymentConfigs.AsNoTracking()
-            .FirstOrDefaultAsync(c => c.BusinessId == business.Id, cancellationToken);
+        var config = read.PaymentConfig;
 
         var policy = StorefrontPaymentOptions.Resolve(
             config?.PayUpfrontEnabled ?? true,
@@ -125,46 +188,116 @@ public sealed class PublicBookingService : IPublicBookingService
         // Only a customer token identifies a customer. Anything else — no token, an owner's token,
         // a staff token, a customer of some other business — is resolved from what was typed.
         var authenticatedAsCustomer = IsCustomerRole(callerRole);
+        var customerWatch = System.Diagnostics.Stopwatch.StartNew();
         var resolved = await ResolveCustomerAsync(
             business.Id,
             request,
             authenticatedAsCustomer ? callerUserId : null,
+            read.CustomerMatch,
             cancellationToken);
+        customerWatch.Stop();
+        var customerMs = customerWatch.ElapsedMilliseconds;
         if (!resolved.Success)
             return Fail(resolved.Error!.Code, resolved.Error.Message);
 
         var customer = resolved.Data!;
 
-        // ── The appointment: booked now, before any money is discussed ──
-        var created = await _appointments.CreateAppointmentAsync(
-            customer.User.Id, "Customer",
-            new CreateAppointmentRequest
+        // The write path's view of the same party. Display data only — authorization was
+        // already decided above.
+        var bookingCustomer = new BookingCustomer(
+            customer.User.Id,
+            customer.User.FullName,
+            customer.User.Email,
+            customer.User.PhoneNumber,
+            customer.User.AvatarUrl,
+            customer.Type == CustomerType.Guest ? "guest" : "registered");
+
+        // ── The money, decided before the write so it lands in the same transaction ──
+        // A booking fee is manual M-PESA only: without published details there is no online
+        // channel to collect through, which is exactly what the previous path concluded.
+        var warnings = new List<string>();
+        Payment? bookingFee = null;
+        var paysUpfront = policy.Option == StorefrontPaymentOptions.PayUpfront;
+
+        if (paysUpfront && config is { HasManualMpesaDetails: true })
+        {
+            var serviceTotal = read.Services.Sum(s => s.Price ?? 0m);
+            var fee = config.BookingFeeFor(serviceTotal);
+            if (fee > 0)
             {
-                BusinessId = business.Id,
-                ServiceIds = request.ServiceIds,
-                StaffUserId = request.StaffUserId,
-                ScheduledAt = request.ScheduledAt,
-                Note = request.Note,
-                // Exactly the option the policy just resolved, so the appointment path applies the
-                // terms the customer was shown.
-                PaymentOption = policy.Option,
+                bookingFee = new Payment
+                {
+                    Id = Guid.NewGuid(),
+                    BusinessId = business.Id,
+                    CustomerId = customer.User.Id,
+                    Type = PaymentType.BookingFee,
+                    Method = PaymentMethod.Mpesa,
+                    Provider = PaymentProviderKind.ManualMpesa,
+                    Status = PaymentStatus.Created,
+                    Amount = decimal.Round(fee, 2, MidpointRounding.AwayFromZero),
+                    Currency = "KES",
+                    Reference = PaymentReferences.New(),
+                    PhoneNumber = string.IsNullOrWhiteSpace(request.PhoneNumber)
+                        ? null
+                        : new string(request.PhoneNumber.Where(char.IsDigit).ToArray()),
+                    CreatedByUserId = customer.User.Id,
+                    CreatedAt = DateTime.UtcNow
+                };
+            }
+            // A zero fee is a valid configuration ("nothing up front"), not a failure.
+        }
+
+        // ── The appointment ──────────────────────────────────────
+        // One transaction: staff-time lock, overlapping-interval re-check, appointment and
+        // its service lines, status history, notification intents, reminders, the booking
+        // fee above, commit. The client's idempotency key makes a retry a replay.
+        var writeWatch = System.Diagnostics.Stopwatch.StartNew();
+        var created = await _appointments.CreateStorefrontAppointmentAsync(
+            read,
+            customer.User.Id,
+            bookingCustomer,
+            request.ServiceIds,
+            request.StaffUserId,
+            request.ScheduledAt,
+            request.Note,
+            payAfterService: policy.Option == StorefrontPaymentOptions.PayAfterService,
+            bookingRequestKey: request.IdempotencyKey,
+            bookingFeeFactory: appointmentId =>
+            {
+                if (bookingFee == null) return null;
+                bookingFee.AppointmentId = appointmentId;
+                return bookingFee;
             },
-            isGuest: !authenticatedAsCustomer);
+            cancellationToken: cancellationToken);
 
         if (!created.Success)
             return Fail(created.Error!.Code, created.Error.Message);
 
+        writeWatch.Stop();
+        var writeMs = writeWatch.ElapsedMilliseconds;
+
         var appointment = created.Data!;
 
-        // ── The payment: recorded as evidence awaiting the owner's decision ──
-        var warnings = new List<string>();
-        PaymentResponse? payment = null;
+        // A replay (same booking key) found the appointment that already exists; the fee row
+        // was written by the FIRST request, so it is not in hand here. Read the money's state
+        // instead of guessing it.
+        var replayed = bookingFee != null && bookingFee.AppointmentId == Guid.Empty;
 
-        if (policy.Option == StorefrontPaymentOptions.PayUpfront)
-            payment = await CreateBookingFeePaymentAsync(
-                appointment, config, request, customer.User.Id, warnings, cancellationToken);
+        PaymentResponse? payment = !replayed && bookingFee != null
+            ? PaymentService.ToResponse(bookingFee)
+            : null;
 
-        var summary = await SummaryAsync(appointment.Id, customer.User.Id);
+        // A pasted confirmation is evidence for the owner: it moves the payment's state and
+        // is never a condition of the booking itself.
+        if (payment != null && !string.IsNullOrWhiteSpace(request.MpesaMessage))
+        {
+            var submitted = await SubmitAsync(bookingFee!.Id, customer.User.Id, request.MpesaMessage!, warnings);
+            if (submitted != null) payment = submitted;
+        }
+
+        var summary = payment != null
+            ? DescribeLocally(read, appointment, payment)
+            : await SummaryAsync(appointment.Id, customer.User.Id);
 
         _logger.LogInformation(
             "Public booking created. BusinessId={BusinessId} AppointmentId={AppointmentId} " +
@@ -172,8 +305,46 @@ public sealed class PublicBookingService : IPublicBookingService
             business.Id, appointment.Id, customer.User.Id, customer.Type, policy.Option,
             payment?.Id, payment?.Status ?? "none");
 
+        // Structured timings for the booking pipeline. No customer name, phone, email or
+        // payment reference appears in them: only durations and the ids an operator would
+        // use to find the request.
+        _logger.LogInformation(
+            "BookingTiming AppointmentId={AppointmentId} BusinessId={BusinessId} ReadMs={ReadMs} " +
+            "CustomerMs={CustomerMs} WriteMs={WriteMs} TotalMs={TotalMs}",
+            appointment.Id, business.Id, readMs, customerMs, writeMs,
+            readMs + customerMs + writeMs);
+
         return ApiResponse<PublicBookingResponse>.Ok(
             Describe(appointment, payment, summary, warnings));
+    }
+
+    /// <summary>
+    /// The payment summary for a booking whose rows this request just wrote: computed from
+    /// the same server figures the appointment was priced from, so no extra round trip is
+    /// spent asking the database what it was told a moment ago.
+    /// </summary>
+    private static AppointmentPaymentSummary DescribeLocally(
+        BookingReadContext read, AppointmentResponse appointment, PaymentResponse payment)
+    {
+        var serviceTotal = read.Services.Sum(s => s.Price ?? 0m);
+        var fee = read.PaymentConfig?.BookingFeeFor(serviceTotal) ?? 0m;
+
+        return new AppointmentPaymentSummary
+        {
+            AppointmentId = appointment.Id,
+            ServiceTotal = serviceTotal,
+            BookingFee = fee,
+            BookingFeePercentage = read.PaymentConfig?.BookingFeePercentage ?? 0,
+            // Nothing is settled at this point: a booking-fee row is evidence the customer
+            // says they paid, not money the business has confirmed.
+            AmountPaid = 0m,
+            Balance = serviceTotal,
+            PaymentStatus = "unpaid",
+            VerificationStatus = string.Equals(payment.Status, "submitted", StringComparison.OrdinalIgnoreCase)
+                ? "awaiting_verification"
+                : "pending",
+            Payments = new List<PaymentResponse> { payment }
+        };
     }
 
     public async Task<ApiResponse<PublicBookingResponse>> SubmitPaymentProofAsync(
@@ -311,6 +482,7 @@ public sealed class PublicBookingService : IPublicBookingService
     /// </summary>
     private async Task<ApiResponse<ResolvedCustomer>> ResolveCustomerAsync(
         Guid businessId, PublicBookingRequest request, Guid? callerUserId,
+        BookingCustomerMatch? preloadedMatch,
         CancellationToken cancellationToken)
     {
         var name = request.FullName.Trim();
@@ -355,34 +527,92 @@ public sealed class PublicBookingService : IPublicBookingService
         var suffix = PhoneSuffix(phone);
         var loweredEmail = email.ToLowerInvariant();
 
-        var match = await _db.Users
-            .Where(u => u.Role == UserRole.Customer && !u.IsDeleted
-                && ((u.Email != null && u.Email.ToLower() == loweredEmail)
-                    || (u.PhoneNumber != null
-                        && (u.PhoneNumber == phone
-                            || (suffix.Length == 9 && u.PhoneNumber.EndsWith(suffix)))
-                        && _db.CustomerBusinessEnrollments.Any(e =>
-                            e.CustomerId == u.Id && e.BusinessId == businessId))))
-            .OrderBy(u => u.CreatedAt)
-            .FirstOrDefaultAsync(cancellationToken);
+        var match = preloadedMatch;
+        User? matchedUser = null;
 
         if (match != null)
         {
-            // The relationship already exists, so it is reused — and never re-tagged downward: a
-            // Registered customer stays Registered even when they booked without signing in.
-            var enrolled = await EnsureEnrollmentAsync(businessId, match.Id, CustomerType.Guest, cancellationToken);
+            if (match.HasActiveEnrollment)
+            {
+                // The relationship is already active and its own row says what kind it is, so
+                // no enrollment write and no read-back is needed: the customer is reused
+                // exactly as the snapshot described them.
+                matchedUser = new User
+                {
+                    Id = match.UserId,
+                    FullName = match.FullName,
+                    Email = match.Email,
+                    PhoneNumber = match.PhoneNumber,
+                    AvatarUrl = match.AvatarUrl,
+                    Role = UserRole.Customer
+                };
+
+                var existingType = match.EnrollmentType == CustomerType.Guest
+                    ? CustomerType.Guest
+                    : CustomerType.Registered;
+
+                _logger.LogInformation(
+                    "Public booking reused an existing customer. BusinessId={BusinessId} CustomerId={CustomerId} Type={Type}",
+                    businessId, match.UserId, existingType);
+
+                return ApiResponse<ResolvedCustomer>.Ok(new ResolvedCustomer(matchedUser, existingType));
+            }
+
+            matchedUser = new User
+            {
+                Id = match.UserId,
+                FullName = match.FullName,
+                Email = match.Email,
+                PhoneNumber = match.PhoneNumber,
+                AvatarUrl = match.AvatarUrl,
+                Role = UserRole.Customer
+            };
+        }
+
+        if (match == null)
+            match = await _db.Users
+                .Where(u => u.Role == UserRole.Customer && !u.IsDeleted
+                    && ((u.Email != null && u.Email.ToLower() == loweredEmail)
+                        || (u.PhoneNumber != null
+                            && (u.PhoneNumber == phone
+                                || (suffix.Length == 9 && u.PhoneNumber.EndsWith(suffix)))
+                            && _db.CustomerBusinessEnrollments.Any(e =>
+                                e.CustomerId == u.Id && e.BusinessId == businessId))))
+                .OrderBy(u => u.CreatedAt)
+                .FirstOrDefaultAsync(cancellationToken) is { } found
+                ? new BookingCustomerMatch(
+                    found.Id, found.FullName, found.Email, found.PhoneNumber, found.AvatarUrl,
+                    CustomerType.Guest, CustomerBusinessEnrollmentStatus.Left)
+                : null;
+
+        if (match != null)
+        {
+            // The relationship exists (or was matched by the database just now): reuse it —
+            // and never re-tag downward, so a Registered customer stays Registered even when
+            // they booked without signing in.
+            var enrolled = await EnsureEnrollmentAsync(businessId, match.UserId, CustomerType.Guest, cancellationToken);
             if (!enrolled.Success)
                 return ApiResponse<ResolvedCustomer>.Fail(enrolled.Error!.Code, enrolled.Error.Message);
 
             // The relationship row is the authority on what kind of relationship it is — read it
             // back rather than inferring it, so "Guest" here always means the row says Guest.
-            var type = await EnrollmentTypeAsync(businessId, match.Id, cancellationToken);
+            var type = await EnrollmentTypeAsync(businessId, match.UserId, cancellationToken);
 
             _logger.LogInformation(
                 "Public booking reused an existing customer. BusinessId={BusinessId} CustomerId={CustomerId} Type={Type}",
-                businessId, match.Id, type);
+                businessId, match.UserId, type);
 
-            return ApiResponse<ResolvedCustomer>.Ok(new ResolvedCustomer(match, type));
+            matchedUser ??= new User
+            {
+                Id = match.UserId,
+                FullName = match.FullName,
+                Email = match.Email,
+                PhoneNumber = match.PhoneNumber,
+                AvatarUrl = match.AvatarUrl,
+                Role = UserRole.Customer
+            };
+
+            return ApiResponse<ResolvedCustomer>.Ok(new ResolvedCustomer(matchedUser, type));
         }
 
         // ── A new customer, tagged as a guest ────────────────────
