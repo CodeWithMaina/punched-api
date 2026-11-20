@@ -49,6 +49,19 @@ public partial class PaymentService : IPaymentService
     /// </summary>
     private readonly IFinancialLedgerService? _ledger;
 
+    /// <summary>
+    /// Optional durable outbox: the obligation that a settled payment becomes income. When present,
+    /// settlement commits the obligation in the same transaction as the payment status, and the
+    /// processor (or the worker) finishes the books.
+    /// </summary>
+    private readonly IPaymentLedgerOutbox? _ledgerOutbox;
+
+    /// <summary>Optional immediate ledger attempt after settlement; the worker remains the guarantee.</summary>
+    private readonly IPaymentLedgerProcessor? _ledgerProcessor;
+
+    /// <summary>Optional serialisation of concurrent verify/reject decisions (PostgreSQL advisory lock).</summary>
+    private readonly IPaymentDecisionGuard? _decisionGuard;
+
     public PaymentService(
         ApplicationDbContext context,
         IUnitOfWork uow,
@@ -59,7 +72,10 @@ public partial class PaymentService : IPaymentService
         INotificationService notifications,
         ILogger<PaymentService> logger,
         ICommissionService? commissions = null,
-        IFinancialLedgerService? ledger = null)
+        IFinancialLedgerService? ledger = null,
+        IPaymentLedgerOutbox? ledgerOutbox = null,
+        IPaymentLedgerProcessor? ledgerProcessor = null,
+        IPaymentDecisionGuard? decisionGuard = null)
     {
         _context = context;
         _uow = uow;
@@ -71,6 +87,9 @@ public partial class PaymentService : IPaymentService
         _logger = logger;
         _commissions = commissions;
         _ledger = ledger;
+        _ledgerOutbox = ledgerOutbox;
+        _ledgerProcessor = ledgerProcessor;
+        _decisionGuard = decisionGuard;
     }
 
     /// <summary>
@@ -95,17 +114,95 @@ public partial class PaymentService : IPaymentService
     }
 
     /// <summary>
-    /// Recognises a settled payment in the business's financial ledger. Idempotent (one row per
-    /// payment) and non-fatal: the money has already moved, so a ledger problem must never undo the
-    /// payment — it is logged and the next settlement of the same payment is a no-op anyway.
+    /// Persists a settlement together with its durable ledger obligation.
+    ///
+    /// <para>The payment's settled status and the obligation to recognise it are committed in ONE
+    /// transaction, so there is no window in which a settled payment exists with neither income nor a
+    /// record that income is still owed. On PostgreSQL this is a real transaction; on SQLite/InMemory
+    /// (tests) the two writes still happen back-to-back inside the same unit of work.</para>
+    ///
+    /// <para>After the commit the ledger write is attempted immediately — the common case is still
+    /// one request, one income row. If that attempt fails, the obligation is already durable and the
+    /// worker retries it; the payment is never rolled back for a books problem.</para>
     /// </summary>
-    private async Task RecogniseInLedgerSafelyAsync(Payment payment)
+    private async Task CommitSettlementAsync(Func<Task> save, Payment payment, CancellationToken cancellationToken = default)
     {
-        if (_ledger == null || !PaymentStatuses.IsSettled(payment.Status)) return;
+        if (_ledgerOutbox == null)
+        {
+            // Legacy construction (tests that pass only the ledger): keep the old best-effort path.
+            await save();
+            return;
+        }
+
+        if (_context.Database.IsRelational() && _context.Database.CurrentTransaction == null)
+        {
+            await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+            await save();
+            await _ledgerOutbox.EnsureObligationAsync(payment, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        else
+        {
+            // Either not relational, or the caller already owns a decision transaction (the advisory
+            // lock scope). In both cases the save and the obligation share that unit of work.
+            await save();
+            await _ledgerOutbox.EnsureObligationAsync(payment, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Turns a settled payment into income, or guarantees that the worker will.
+    ///
+    /// <para>When the outbox is present this never calls the ledger directly for the "write" step —
+    /// the processor owns the attempt and its retry policy — so there is exactly one code path that
+    /// can create income and exactly one place that decides what a failure means.</para>
+    /// </summary>
+    private async Task RecogniseInLedgerSafelyAsync(Payment payment, CancellationToken cancellationToken = default)
+    {
+        if (!PaymentStatuses.IsSettled(payment.Status)) return;
+
+        if (_ledgerOutbox != null)
+        {
+            try
+            {
+                // Idempotent: the settlement transaction already inserted this; a legacy settlement
+                // (or a replayed callback) gets the obligation here.
+                await _ledgerOutbox.EnsureObligationAsync(payment, cancellationToken);
+
+                if (_ledgerProcessor != null)
+                {
+                    var result = await _ledgerProcessor.ProcessAsync(payment.Id, cancellationToken);
+                    if (result.Outcome is LedgerProcessOutcome.Created or LedgerProcessOutcome.AlreadyRecorded)
+                    {
+                        _logger.LogInformation(
+                            "Payment {PaymentId} recorded in the ledger as {TransactionId} ({Outcome}).",
+                            payment.Id, result.FinancialTransactionId, result.Outcome);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "Payment {PaymentId} settled but its ledger row is not written yet ({Outcome}, {Code}); the outbox retains the obligation.",
+                            payment.Id, result.Outcome, result.ErrorCode);
+                    }
+                }
+
+                return;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The obligation is already committed; the worker will finish the job.
+                _logger.LogError(ex,
+                    "Immediate ledger processing for payment {PaymentId} failed; the obligation stays queued for retry.",
+                    payment.Id);
+                return;
+            }
+        }
+
+        if (_ledger == null) return;
 
         try
         {
-            await _ledger.EnsureIncomeForPaymentAsync(payment);
+            await _ledger.EnsureIncomeForPaymentAsync(payment, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -200,6 +297,24 @@ public partial class PaymentService : IPaymentService
                 var recorderNames = await FinancialAccess.ResolveUserNamesAsync(_context, new[] { (Guid?)recorder });
                 response.LedgerRecordedByName = recorderNames.GetValueOrDefault(recorder);
             }
+        }
+
+        // Settlement and bookkeeping are distinct states, and the screen must be able to say so:
+        // a settled payment whose income has not been written yet is "processing", not "recorded".
+        if (ledger != null)
+        {
+            response.LedgerProcessingStatus = "recorded";
+        }
+        else if (PaymentStatuses.IsSettled(payment.Status))
+        {
+            var obligationStatus = await _context.PaymentLedgerObligations
+                .AsNoTracking()
+                .Where(o => o.PaymentId == payment.Id)
+                .Select(o => o.Status)
+                .FirstOrDefaultAsync();
+
+            response.LedgerProcessingStatus =
+                obligationStatus == PaymentLedgerObligationStatus.Failed ? "attention" : "processing";
         }
 
         return ApiResponse<PaymentResponse>.Ok(response);
@@ -744,14 +859,15 @@ public partial class PaymentService : IPaymentService
         };
         AddAttempt(payment, attempt);
 
-        await _uow.SaveChangesAsync();
+        // Status and ledger obligation commit together; the income row follows immediately after.
+        await CommitSettlementAsync(_uow.SaveChangesAsync, payment);
 
         // The money arrived, so the appointment's accrued commission can be
         // released. Idempotent, and never able to fail the payment itself.
         await SettleCommissionSafelyAsync(payment.BusinessId, payment.AppointmentId, payment.Id);
 
-        // Cash in hand is recognised income: one ledger row, written after the payment committed so a
-        // ledger failure can never roll back money the business is holding.
+        // Cash in hand is recognised income. If the books cannot be written right now, the
+        // obligation committed above is what guarantees the worker finishes it.
         await RecogniseInLedgerSafelyAsync(payment);
 
         _logger.LogInformation(

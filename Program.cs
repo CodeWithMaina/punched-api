@@ -455,6 +455,20 @@ try
     builder.Services.AddScoped<IExpenseService, ExpenseService>();
     builder.Services.AddScoped<IFinancialAnalyticsService, FinancialAnalyticsService>();
     builder.Services.AddScoped<IMpesaReconciliationService, MpesaReconciliationService>();
+
+    // ── Payment → ledger outbox ──────────────────────────────────────────────────────────────
+    // Settlement writes a durable obligation in the same transaction as the payment status; the
+    // processor turns obligations into income, and the worker retries anything the request could not
+    // finish. Registered before PaymentService/PaymentCallbackService so their optional parameters
+    // resolve (and so DI no longer falls back to the legacy "best effort" path).
+    builder.Services.Configure<PaymentLedgerOptions>(
+        builder.Configuration.GetSection(PaymentLedgerOptions.SectionName));
+    builder.Services.AddScoped<IPaymentLedgerOutbox, PaymentLedgerOutbox>();
+    builder.Services.AddScoped<IPaymentLedgerProcessor, PaymentLedgerProcessor>();
+    builder.Services.AddScoped<IPaymentLedgerReconciliationService, PaymentLedgerReconciliationService>();
+    builder.Services.AddScoped<IPaymentDecisionGuard, PaymentDecisionGuard>();
+    if (workersEnabled)
+        builder.Services.AddHostedService<PaymentLedgerWorker>();
 builder.Services.Configure<BillingOptions>(builder.Configuration.GetSection(BillingOptions.SectionName));
 builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisioningService>();
 

@@ -458,6 +458,12 @@ public partial class PaymentService
         if (string.IsNullOrWhiteSpace(request.Reason))
             return ApiResponse<PaymentResponse>.Fail("VALIDATION_ERROR", "A rejection reason is required.");
 
+        // A rejection and an approval racing on the same claim are serialised the same way: whoever
+        // gets the lock first decides, and the other sees the decided status.
+        await using var decision = _decisionGuard == null
+            ? null
+            : await _decisionGuard.BeginAsync(paymentId);
+
         var loaded = await LoadForDecisionAsync(paymentId, userId, role);
         if (loaded.Error != null) return loaded.Error;
 
@@ -487,6 +493,9 @@ public partial class PaymentService
 
         await _uow.SaveChangesAsync();
 
+        // The rejection is durable; release the decision lock.
+        if (decision != null) await decision.CommitAsync();
+
         _logger.LogInformation(
             "Manual M-PESA payment {PaymentId} REJECTED by user {UserId} (business {BusinessId}); reason: {Reason}",
             payment.Id, userId, payment.BusinessId, reason);
@@ -506,6 +515,12 @@ public partial class PaymentService
     public async Task<ApiResponse<PaymentResponse>> VerifyPaymentAsync(
         Guid paymentId, VerifyPaymentRequest request, Guid userId, string role)
     {
+        // Serialise concurrent decisions on this payment. The lock is released by CommitAsync once the
+        // settlement and its obligation are committed; every early return rolls it back.
+        await using var decision = _decisionGuard == null
+            ? null
+            : await _decisionGuard.BeginAsync(paymentId);
+
         var loaded = await LoadForDecisionAsync(paymentId, userId, role);
         if (loaded.Error != null) return loaded.Error;
 
@@ -570,7 +585,14 @@ public partial class PaymentService
         // be a worse failure than not verifying at all.
         var appointmentStatus = await AdvanceAppointmentAfterVerificationAsync(payment, userId);
 
-        await _uow.SaveChangesAsync();
+        // The verification, its history event, the appointment transition and the ledger obligation
+        // all commit together. A crash immediately after this cannot lose the income: the obligation
+        // is in the same committed row set.
+        await CommitSettlementAsync(_uow.SaveChangesAsync, payment);
+
+        // Settlement and its ledger obligation are now durable: release the decision lock before the
+        // (idempotent, non-transactional) commission release and ledger attempt.
+        if (decision != null) await decision.CommitAsync();
 
         // Settled money releases commission exactly as a provider-confirmed payment
         // does. Idempotent and non-fatal.

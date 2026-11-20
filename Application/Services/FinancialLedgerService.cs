@@ -40,15 +40,45 @@ public class FinancialLedgerService : IFinancialLedgerService
     public async Task<FinancialTransaction?> EnsureIncomeForPaymentAsync(
         Payment payment, CancellationToken cancellationToken = default)
     {
+        // Kept for every existing caller: the money has already moved, so this path never throws.
+        var result = await TryEnsureIncomeForPaymentAsync(payment, cancellationToken);
+        return result.Transaction;
+    }
+
+    /// <summary>
+    /// The same recognition, but reporting <i>why</i> it did not produce a row.
+    ///
+    /// <para>The payment module needs that distinction: a transient database failure must be
+    /// retried by the outbox worker, while an invalid amount must stop and stay visible for a human.
+    /// Swallowing both into <c>null</c> — as the old method did — is precisely how a settled payment
+    /// could end up with no income and no signal.</para>
+    /// </summary>
+    public async Task<LedgerIncomeResult> TryEnsureIncomeForPaymentAsync(
+        Payment payment, CancellationToken cancellationToken = default)
+    {
         if (!PaymentStatuses.IsSettled(payment.Status))
-            return null;
+            return LedgerIncomeResult.PermanentFailure(
+                "PAYMENT_NOT_SETTLED",
+                "Only a settled payment can be recognised as income.");
+
+        // Financial data is validated here, before a row is built: a zero/negative amount or a
+        // missing currency is a data defect, not an outage, and retrying it forever would hide it.
+        if (payment.Amount <= 0)
+            return LedgerIncomeResult.PermanentFailure(
+                "INVALID_AMOUNT",
+                "The settled amount is not greater than zero, so it cannot become income.");
+
+        if (string.IsNullOrWhiteSpace(payment.Currency) || payment.Currency.Trim().Length != 3)
+            return LedgerIncomeResult.PermanentFailure(
+                "INVALID_CURRENCY",
+                "The payment does not carry a valid ISO currency.");
 
         // Already recognised: a replayed callback or a repeated confirmation is a no-op.
         var existing = await _context.FinancialTransactions
             .FirstOrDefaultAsync(t => t.SourcePaymentId == payment.Id, cancellationToken);
 
         if (existing != null)
-            return existing;
+            return LedgerIncomeResult.Existing(existing);
 
         var appointmentContext = await BuildAppointmentContextAsync(payment, cancellationToken);
         var method = await ResolvePaymentMethodAsync(payment, cancellationToken);
@@ -101,28 +131,47 @@ public class FinancialLedgerService : IFinancialLedgerService
                 $"Recognised {payment.Currency} {payment.Amount:0.00} from settled payment {payment.Reference}.",
                 null,
                 cancellationToken);
+
+            return LedgerIncomeResult.Created(transaction);
         }
         catch (DbUpdateException ex)
         {
             // Lost a race with a concurrent settlement of the same payment: the unique index did
-            // its job. Return the row the winner wrote instead of failing the caller.
+            // its job. Return the row the winner wrote instead of failing the caller — and report it
+            // as `AlreadyExisted`, so the obligation is completed rather than retried.
             _context.Entry(transaction).State = EntityState.Detached;
 
             var winner = await _context.FinancialTransactions
+                .AsNoTracking()
                 .FirstOrDefaultAsync(t => t.SourcePaymentId == payment.Id, cancellationToken);
 
-            if (winner == null)
-            {
-                _logger.LogError(ex,
-                    "Could not recognise payment {PaymentId} in the ledger; the payment itself stands.",
-                    payment.Id);
-                return null;
-            }
+            if (winner != null)
+                return LedgerIncomeResult.Existing(winner);
 
-            return winner;
+            // The insert was refused but no winner is visible: this is a real write conflict, not a
+            // duplicate. It is retryable — and it must be retried, or the payment never becomes income.
+            _logger.LogError(ex,
+                "Ledger insert for payment {PaymentId} (business {BusinessId}) failed without a visible winner; it will be retried.",
+                payment.Id, payment.BusinessId);
+
+            return LedgerIncomeResult.TransientFailure(
+                "LEDGER_WRITE_CONFLICT",
+                "The ledger insert conflicted with another writer and no income row is visible yet.");
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Infrastructure failures (connection loss, transient Npgsql errors, timeouts) must be
+            // retried by the outbox, not hidden. The message is logged in full; the obligation keeps
+            // only a bounded, non-sensitive summary.
+            _context.Entry(transaction).State = EntityState.Detached;
+            _logger.LogError(ex,
+                "Could not write income for payment {PaymentId} (business {BusinessId}); it will be retried by the ledger outbox.",
+                payment.Id, payment.BusinessId);
 
-        return transaction;
+            return LedgerIncomeResult.TransientFailure(
+                "LEDGER_WRITE_FAILED",
+                "The ledger write failed for an infrastructure reason and will be retried.");
+        }
     }
 
     public async Task<FinancialTransaction?> EnsureRefundForReversedPaymentAsync(

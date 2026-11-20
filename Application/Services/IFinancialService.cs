@@ -26,12 +26,47 @@ public interface IFinancialLedgerService
     Task<FinancialTransaction?> EnsureIncomeForPaymentAsync(Payment payment, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The same recognition, reporting whether a row was created, already existed, or why the write
+    /// failed. The payment → ledger outbox uses this to decide between completing, retrying and
+    /// stopping for investigation.
+    /// </summary>
+    Task<LedgerIncomeResult> TryEnsureIncomeForPaymentAsync(Payment payment, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Record the refund that accompanies a payment reversal. The original income row is left
     /// untouched; the refund is a linked row so both sides stay provable. Idempotent per
     /// payment: a replayed reversal cannot produce two refunds.
     /// </summary>
     Task<FinancialTransaction?> EnsureRefundForReversedPaymentAsync(
         Payment payment, string reason, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// The outcome of trying to recognise one settled payment in the ledger.
+///
+/// <para><c>Transient</c> means "retry me"; <c>Permanent</c> means a human must look. Collapsing the
+/// two into one failure flag would either retry bad data forever or give up on a blip.</para>
+/// </summary>
+public sealed record LedgerIncomeResult(
+    FinancialTransaction? Transaction,
+    bool AlreadyExisted,
+    bool Transient,
+    string? FailureCode,
+    string? FailureMessage)
+{
+    public bool Succeeded => Transaction != null;
+
+    public static LedgerIncomeResult Created(FinancialTransaction transaction) =>
+        new(transaction, AlreadyExisted: false, Transient: false, FailureCode: null, FailureMessage: null);
+
+    public static LedgerIncomeResult Existing(FinancialTransaction transaction) =>
+        new(transaction, AlreadyExisted: true, Transient: false, FailureCode: null, FailureMessage: null);
+
+    public static LedgerIncomeResult TransientFailure(string code, string message) =>
+        new(null, AlreadyExisted: false, Transient: true, code, message);
+
+    public static LedgerIncomeResult PermanentFailure(string code, string message) =>
+        new(null, AlreadyExisted: false, Transient: false, code, message);
 }
 
 /// <summary>

@@ -163,6 +163,9 @@ public class ApplicationDbContext : DbContext
     public DbSet<MpesaStatementImport> MpesaStatementImports => Set<MpesaStatementImport>();
     public DbSet<MpesaStatementLine> MpesaStatementLines => Set<MpesaStatementLine>();
 
+    // ── Payment → ledger outbox: the durable obligation that a settled payment becomes income ──
+    public DbSet<PaymentLedgerObligation> PaymentLedgerObligations => Set<PaymentLedgerObligation>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

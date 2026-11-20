@@ -115,6 +115,18 @@ public class PaymentResponse
     /// <summary>Who recorded the income in the books, when the server could resolve it.</summary>
     [JsonPropertyName("ledgerRecordedByName")]
     public string? LedgerRecordedByName { get; set; }
+
+    /// <summary>
+    /// Business-facing state of the books for this payment:
+    /// <c>recorded</c> (verified income exists), <c>processing</c> (settled, the outbox still owes
+    /// the row — it will appear automatically), <c>attention</c> (settlement succeeded but the books
+    /// need a human), or null when the payment is not settled and therefore not income.
+    ///
+    /// <para>Deliberately a coarse state, never the internal error text: a business needs to know
+    /// whether the money is in its books, not which database constraint failed.</para>
+    /// </summary>
+    [JsonPropertyName("ledgerProcessingStatus")]
+    public string? LedgerProcessingStatus { get; set; }
 }
 
 /// <summary>One entry of a manual M-PESA payment's verification trail.</summary>

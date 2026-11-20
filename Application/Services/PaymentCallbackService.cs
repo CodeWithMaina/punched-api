@@ -39,13 +39,24 @@ public class PaymentCallbackService : IPaymentCallbackService
     /// </summary>
     private readonly IFinancialLedgerService? _ledger;
 
+    /// <summary>
+    /// Optional durable outbox. A provider callback that settles a payment writes the obligation in
+    /// the same transaction as the status change, so a crash between the two can no longer leave
+    /// confirmed money missing from the books.
+    /// </summary>
+    private readonly IPaymentLedgerOutbox? _ledgerOutbox;
+
+    private readonly IPaymentLedgerProcessor? _ledgerProcessor;
+
     public PaymentCallbackService(
         ApplicationDbContext context,
         IUnitOfWork uow,
         INotificationService notifications,
         ILogger<PaymentCallbackService> logger,
         ICommissionService? commissions = null,
-        IFinancialLedgerService? ledger = null)
+        IFinancialLedgerService? ledger = null,
+        IPaymentLedgerOutbox? ledgerOutbox = null,
+        IPaymentLedgerProcessor? ledgerProcessor = null)
     {
         _context = context;
         _uow = uow;
@@ -53,6 +64,33 @@ public class PaymentCallbackService : IPaymentCallbackService
         _logger = logger;
         _commissions = commissions;
         _ledger = ledger;
+        _ledgerOutbox = ledgerOutbox;
+        _ledgerProcessor = ledgerProcessor;
+    }
+
+    /// <summary>
+    /// Persists a callback-applied settlement and its ledger obligation in one transaction.
+    /// </summary>
+    private async Task CommitSettlementAsync(Func<Task> save, Payment payment)
+    {
+        if (_ledgerOutbox == null)
+        {
+            await save();
+            return;
+        }
+
+        if (_context.Database.IsRelational())
+        {
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+            await save();
+            await _ledgerOutbox.EnsureObligationAsync(payment);
+            await transaction.CommitAsync();
+        }
+        else
+        {
+            await save();
+            await _ledgerOutbox.EnsureObligationAsync(payment);
+        }
     }
 
     /// <summary>
@@ -61,7 +99,27 @@ public class PaymentCallbackService : IPaymentCallbackService
     /// </summary>
     private async Task RecogniseInLedgerSafelyAsync(Payment payment)
     {
-        if (_ledger == null || !PaymentStatuses.IsSettled(payment.Status)) return;
+        if (!PaymentStatuses.IsSettled(payment.Status)) return;
+
+        if (_ledgerOutbox != null)
+        {
+            try
+            {
+                await _ledgerOutbox.EnsureObligationAsync(payment);
+                if (_ledgerProcessor != null)
+                    await _ledgerProcessor.ProcessAsync(payment.Id);
+                return;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex,
+                    "Immediate ledger processing for callback payment {PaymentId} failed; the obligation remains queued.",
+                    payment.Id);
+                return;
+            }
+        }
+
+        if (_ledger == null) return;
 
         try
         {
@@ -216,17 +274,20 @@ public class PaymentCallbackService : IPaymentCallbackService
         }
 
         await _context.PaymentCallbacks.AddAsync(record);
-        await _uow.SaveChangesAsync();
 
-        // Money is confirmed: release the appointment's accrued commission.
-        // Idempotent (a replayed callback changes nothing) and non-fatal.
+        // A callback that applied money commits the payment state and the ledger obligation together.
         if (record.Outcome == "applied" && payment.Status == PaymentStatus.Success)
         {
+            await CommitSettlementAsync(_uow.SaveChangesAsync, payment);
             await SettleCommissionSafelyAsync(payment);
 
             // A provider-confirmed payment is money in the business's account: recognise it in the
             // ledger exactly once (the unique source_payment_id is what makes a replay a no-op).
             await RecogniseInLedgerSafelyAsync(payment);
+        }
+        else
+        {
+            await _uow.SaveChangesAsync();
         }
 
         return (record.Outcome ?? "applied", payment.Id);
@@ -365,11 +426,20 @@ public class PaymentCallbackService : IPaymentCallbackService
         }
 
         await _context.PaymentCallbacks.AddAsync(record);
-        await _uow.SaveChangesAsync();
 
-        // Money is confirmed: release the appointment's accrued commission.
+        // C2B success is just as much a settlement as STK: it must release commission AND write the
+        // ledger obligation. (This path previously only settled commission, so a confirmed C2B
+        // payment could never appear in the cashbook.)
         if (record.Outcome == "applied" && payment.Status == PaymentStatus.Success)
+        {
+            await CommitSettlementAsync(_uow.SaveChangesAsync, payment);
             await SettleCommissionSafelyAsync(payment);
+            await RecogniseInLedgerSafelyAsync(payment);
+        }
+        else
+        {
+            await _uow.SaveChangesAsync();
+        }
 
         return (record.Outcome ?? "applied", payment.Id);
     }
