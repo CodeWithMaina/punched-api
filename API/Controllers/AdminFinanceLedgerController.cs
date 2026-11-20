@@ -157,6 +157,7 @@ public class AdminFinanceLedgerController : ControllerBase
         {
             ObligationsCreated = result.ObligationsCreated,
             ObligationsCompleted = result.ObligationsCompleted,
+            ObligationsRequeued = result.ObligationsRequeued,
             SettledPaymentsWithoutIncome = result.SettledPaymentsWithoutIncome,
             DuplicateIncomeGroups = result.DuplicateIncomeGroups,
             OrphanedIncomeRows = result.OrphanedIncomeRows,

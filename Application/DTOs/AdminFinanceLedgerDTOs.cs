@@ -73,6 +73,7 @@ public class AdminLedgerReconciliationResponse
 {
     [JsonPropertyName("obligationsCreated")] public int ObligationsCreated { get; set; }
     [JsonPropertyName("obligationsCompleted")] public int ObligationsCompleted { get; set; }
+    [JsonPropertyName("obligationsRequeued")] public int ObligationsRequeued { get; set; }
     [JsonPropertyName("settledPaymentsWithoutIncome")] public int SettledPaymentsWithoutIncome { get; set; }
     [JsonPropertyName("duplicateIncomeGroups")] public int DuplicateIncomeGroups { get; set; }
     [JsonPropertyName("orphanedIncomeRows")] public int OrphanedIncomeRows { get; set; }

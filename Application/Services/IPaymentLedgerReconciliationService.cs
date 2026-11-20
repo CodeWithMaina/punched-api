@@ -18,6 +18,7 @@ public interface IPaymentLedgerReconciliationService
 public sealed record PaymentLedgerReconciliationResult(
     int ObligationsCreated,
     int ObligationsCompleted,
+    int ObligationsRequeued,
     int SettledPaymentsWithoutIncome,
     int DuplicateIncomeGroups,
     int OrphanedIncomeRows,

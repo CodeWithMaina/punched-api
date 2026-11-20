@@ -63,7 +63,30 @@ public sealed class PaymentLedgerReconciliationService : IPaymentLedgerReconcili
                 completed += 1;
         }
 
-        // 3) Read-only anomaly counts. These are reported, never "fixed": deleting or rewriting
+        // 3) Obligations parked after a TRANSIENT failure whose settled payment still has no income
+        // get a fresh attempt budget. A permanent failure is never resurrected automatically (it needs
+        // a human), and a row whose payment is no longer settled is not income at all.
+        var transientFailed = await _context.PaymentLedgerObligations
+            .AsNoTracking()
+            .Where(o => o.Status == PaymentLedgerObligationStatus.Failed
+                        && o.FailureKind == PaymentLedgerFailureKind.Transient
+                        && !_context.FinancialTransactions.Any(t => t.SourcePaymentId == o.PaymentId)
+                        && _context.Payments.Any(p => p.Id == o.PaymentId
+                            && (p.Status == PaymentStatus.Success || p.Status == PaymentStatus.Verified)))
+            .OrderBy(o => o.CreatedAt)
+            .Take(take)
+            .Select(o => o.Id)
+            .ToListAsync(cancellationToken);
+
+        var requeued = 0;
+        foreach (var obligationId in transientFailed)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await _outbox.RequeueAsync(obligationId, null, cancellationToken))
+                requeued += 1;
+        }
+
+        // 4) Read-only anomaly counts. These are reported, never "fixed": deleting or rewriting
         // financial history to make a report look clean is the one thing a ledger must not do.
         var duplicateGroups = await CountDuplicateIncomeGroupsAsync(null, cancellationToken);
         var orphans = await CountOrphanedIncomeRowsAsync(null, cancellationToken);
@@ -74,11 +97,12 @@ public sealed class PaymentLedgerReconciliationService : IPaymentLedgerReconcili
         var finished = DateTime.UtcNow;
 
         _logger.LogInformation(
-            "Payment-ledger reconciliation finished in {Elapsed} ms: created {Created} obligation(s), completed {Completed}, {StillMissing} settled payment(s) still without income, {Duplicates} duplicate-income group(s), {Orphans} orphaned income row(s), {Failed} failed obligation(s).",
-            (int)(finished - started).TotalMilliseconds, created, completed, stillMissing, duplicateGroups, orphans, failed);
+            "Payment-ledger reconciliation finished in {Elapsed} ms: created {Created} obligation(s), completed {Completed}, requeued {Requeued}, {StillMissing} settled payment(s) still without income, {Duplicates} duplicate-income group(s), {Orphans} orphaned income row(s), {Failed} failed obligation(s).",
+            (int)(finished - started).TotalMilliseconds, created, completed, requeued, stillMissing,
+            duplicateGroups, orphans, failed);
 
         return new PaymentLedgerReconciliationResult(
-            created, completed, stillMissing, duplicateGroups, orphans, failed, started, finished);
+            created, completed, requeued, stillMissing, duplicateGroups, orphans, failed, started, finished);
     }
 
     public async Task<PaymentLedgerConsistencyReport> GetConsistencyReportAsync(

@@ -374,6 +374,11 @@ public class PaymentLedgerOutboxTests : IDisposable
         var retried = await Processor().ProcessAsync(payment.Id);
         Assert.Equal(LedgerProcessOutcome.FailedPermanently, retried.Outcome);
         Assert.Equal(0, await IncomeCountAsync(payment.Id));
+
+        // Reconciliation must never silently resurrect a permanent failure.
+        var reconciled = await Reconciliation().ReconcileAsync(100);
+        Assert.Equal(0, reconciled.ObligationsRequeued);
+        Assert.Equal(PaymentLedgerObligationStatus.Failed, (await ObligationAsync(payment.Id)).Status);
     }
 
     [Fact]
@@ -398,6 +403,16 @@ public class PaymentLedgerOutboxTests : IDisposable
         Assert.Equal(2, obligation.Attempts);
         Assert.Equal(PaymentLedgerFailureKind.Transient, obligation.FailureKind);
         Assert.Equal(0, await IncomeCountAsync(payment.Id));
+
+        // A transient-exhausted obligation is recoverable: the reconciliation sweep gives it a fresh
+        // budget, and the normal processor then writes the income. No operator action required.
+        var reconciled = await Reconciliation().ReconcileAsync(100);
+        Assert.Equal(1, reconciled.ObligationsRequeued);
+
+        var recovered = await Processor().ProcessAsync(payment.Id);
+        Assert.Equal(LedgerProcessOutcome.Created, recovered.Outcome);
+        Assert.Equal(1, await IncomeCountAsync(payment.Id));
+        Assert.Equal(PaymentLedgerObligationStatus.Completed, (await ObligationAsync(payment.Id)).Status);
     }
 
 
