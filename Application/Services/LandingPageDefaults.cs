@@ -34,8 +34,13 @@ public static class LandingPageDefaults
             Hero = new LandingPageHeroDto { ShowLogo = true },
             Navigation = new LandingPageNavigationDto
             {
-                Services = true, Loyalty = true, About = true, Reviews = true,
-                Contact = true, Gallery = true, Booking = true,
+                Services = true,
+                Loyalty = true,
+                About = true,
+                Reviews = true,
+                Contact = true,
+                Gallery = true,
+                Booking = true,
             },
             Sections = DefaultOrder.ToDictionary(
                 kv => kv.Key,
@@ -113,5 +118,5 @@ public static class LandingPageDefaults
         }
 
         return merged;
-}
+    }
 }

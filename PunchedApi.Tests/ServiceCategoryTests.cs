@@ -111,7 +111,7 @@ public partial class ServiceCategoryTests
         var list = await _categories.GetCategoriesAsync(_owner.Id, "Business");
 
         Assert.Equal(new[] { "First", "Second", "Third" }, list.Data!.Select(c => c.Name));
-        Assert.Equal(new[] { 0, 1, 2 }, list.Data.Select(c => c.SortOrder));
+        Assert.Equal(new[] { 0, 1, 2 }, list.Data!.Select(c => c.SortOrder));
     }
 
     [Fact]
@@ -196,7 +196,7 @@ public partial class ServiceCategoryTests
 
         Assert.True(reordered.Success);
         Assert.Equal(new[] { "C", "A", "B" }, reordered.Data!.Select(x => x.Name));
-        Assert.Equal(new[] { 0, 1, 2 }, reordered.Data.Select(x => x.SortOrder));
+        Assert.Equal(new[] { 0, 1, 2 }, reordered.Data!.Select(x => x.SortOrder));
     }
 
     [Fact]

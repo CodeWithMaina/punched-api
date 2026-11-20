@@ -1,9 +1,7 @@
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Moq;
 using PunchedApi.Application.DTOs;
-using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Services;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
@@ -33,10 +31,6 @@ public class BusinessSlugTests
             AccessTokenExpiryMinutes = 60,
             RefreshTokenExpiryDays = 30
         }));
-
-    private static IMapper CreateMapper() =>
-        new MapperConfiguration(cfg => cfg.AddProfile<MappingProfile>()).CreateMapper();
-
     private static BusinessSlugGenerator CreateGenerator(ApplicationDbContext context) =>
         new(context);
 
@@ -62,7 +56,6 @@ public class BusinessSlugTests
             new UnitOfWork(context),
             CreateJwtService(),
             emailMock.Object,
-            CreateMapper(),
             TestHelpers.CreateLogger<AuthService>(),
             new Mock<ISubscriptionProvisioningService>().Object,
             CreateGenerator(context),

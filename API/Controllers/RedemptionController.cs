@@ -17,7 +17,7 @@ namespace PunchedApi.API.Controllers;
 [Route("v1/redemptions")]
 [Produces("application/json")]
 [Authorize(Policy = MembershipPolicies.Authenticated)]
-    [RequireModule("rewards")]
+[RequireModule("rewards")]
 [EnableRateLimiting("general")]
 public class RedemptionController : ControllerBase
 {

@@ -335,7 +335,8 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
                 appointment.CustomerId,
                 appointment.BusinessId,
                 payload,
-                _row.DedupeKey) { Force = true };
+                _row.DedupeKey)
+            { Force = true };
 
             try
             {
@@ -388,7 +389,8 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
                 appointment.CustomerId,
                 appointment.BusinessId,
                 payload,
-                _row.DedupeKey) { Force = true };
+                _row.DedupeKey)
+            { Force = true };
 
             try
             {
@@ -472,7 +474,8 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
                 ownerId.Value,
                 business.Id,
                 payload,
-                _row.DedupeKey) { Force = true };
+                _row.DedupeKey)
+            { Force = true };
 
             try
             {

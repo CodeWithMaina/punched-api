@@ -16,7 +16,7 @@ namespace PunchedApi.API.Controllers;
 [Route("v1/qr")]
 [Produces("application/json")]
 [Authorize(Roles = "Customer")]
-    [RequireModule("stamps")]
+[RequireModule("stamps")]
 [EnableRateLimiting("general")]
 public class QrController : ControllerBase
 {

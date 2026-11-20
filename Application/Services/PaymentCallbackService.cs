@@ -151,7 +151,7 @@ public class PaymentCallbackService : IPaymentCallbackService
         var checkoutRequestId = GetStr(stk, "CheckoutRequestID") ?? string.Empty;
         var resultCode = GetStr(stk, "ResultCode") ?? string.Empty;
         var resultDesc = GetStr(stk, "ResultDesc");
-                var callbackId = GetStr(stk, "CheckoutRequestID") ?? Guid.NewGuid().ToString("N");
+        var callbackId = GetStr(stk, "CheckoutRequestID") ?? Guid.NewGuid().ToString("N");
 
         // Idempotency key includes the result code so a duplicate of the SAME result
         // is ignored, while Safaricom legitimately sending both a timeout and a later

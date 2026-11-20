@@ -12,7 +12,7 @@ public class AppointmentResource : BaseEntity
 {
     [Required] public Guid AppointmentId { get; set; }
     [Required] public Guid ServiceCatalogItemId { get; set; }
-    [Required] [MaxLength(120)] public string Name { get; set; } = string.Empty;
+    [Required][MaxLength(120)] public string Name { get; set; } = string.Empty;
     [Required] public int DurationMinutes { get; set; }
     [Required] public decimal Price { get; set; }
     public int SortOrder { get; set; } = 0;

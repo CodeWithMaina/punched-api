@@ -95,7 +95,7 @@ public partial class AttendanceLocationService
                 after = MapPolicyWire(policy),
             });
 
-                var (locationCount, activeCredentialCount) = await GetReadinessAsync(businessId.Value);
+        var (locationCount, activeCredentialCount) = await GetReadinessAsync(businessId.Value);
         return ApiResponse<AttendanceSettingsResponse>.Ok(BuildSettingsResponse(
             policy, isConfigured: locationCount > 0, locationCount, activeCredentialCount));
     }
@@ -152,7 +152,7 @@ public partial class AttendanceLocationService
         var s = start.Value;
         var e = end ?? DateTime.UtcNow;
         var overlap = (Math.Min(e.Ticks, dayEnd.Ticks) - Math.Max(s.Ticks, dayStart.Ticks));
-                return overlap < 0 ? 0 : (int)(overlap / TimeSpan.TicksPerMinute);
+        return overlap < 0 ? 0 : (int)(overlap / TimeSpan.TicksPerMinute);
     }
 
     /// <summary>

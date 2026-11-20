@@ -320,8 +320,10 @@ public sealed class BookingReadContextLoader
             // 12 - the customer this booking belongs to (storefront writes only). Email
             //      identifies an account; a phone is only trusted when this business
             //      already knows it, which is what the enrollment subquery enforces.
-            async db => await FindCustomerMatchAsync(
-                db, businessId, customerEmail, customerPhone, ct),
+            //      "No match" is a valid outcome, so the null is carried through the
+            //      object-typed read list exactly like the optional reads above.
+            async db => (await FindCustomerMatchAsync(
+                db, businessId, customerEmail, customerPhone, ct))!,
 
             // 13 - the booking this idempotency key already produced, if any.
             async db => string.IsNullOrWhiteSpace(bookingRequestKey)

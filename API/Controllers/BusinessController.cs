@@ -21,7 +21,7 @@ namespace PunchedApi.API.Controllers;
 [EnableRateLimiting("general")]
 public partial class BusinessController : ControllerBase
 {
-        private readonly IBusinessService _businessService;
+    private readonly IBusinessService _businessService;
     private readonly IStampService _stampService;
     private readonly INotificationsService _notificationsService;
     private readonly IAppointmentService _appointmentService;

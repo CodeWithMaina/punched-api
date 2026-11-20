@@ -111,7 +111,7 @@ public class AdminTierService : IAdminTierService
             return ApiResponse<AdminTierDetail>.Fail("GET_FAILED", "Failed to load the subscription tier.");
         }
     }
-// ═════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════
     //  LIFECYCLE
     // ═════════════════════════════════════════════════════════════
     public async Task<ApiResponse<AdminTierDetail>> PublishAsync(Guid id, Guid? actorUserId)
@@ -183,7 +183,7 @@ public class AdminTierService : IAdminTierService
             return ApiResponse<AdminTierDetail>.Fail("DEACTIVATE_FAILED", "Failed to deactivate the subscription tier.");
         }
     }
-public async Task<ApiResponse<AdminTierDetail>> UnarchiveAsync(Guid id, Guid? actorUserId)
+    public async Task<ApiResponse<AdminTierDetail>> UnarchiveAsync(Guid id, Guid? actorUserId)
     {
         try
         {
@@ -247,7 +247,7 @@ public async Task<ApiResponse<AdminTierDetail>> UnarchiveAsync(Guid id, Guid? ac
             return ApiResponse<MessageResponse>.Fail("PURGE_FAILED", "Failed to permanently delete the subscription tier.");
         }
     }
-public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? actorUserId)
+    public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? actorUserId)
     {
         try
         {
@@ -280,8 +280,8 @@ public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? acto
             _logger.LogError(ex, "Failed to archive subscription tier {TierId}.", id);
             return ApiResponse<AdminTierDetail>.Fail("ARCHIVE_FAILED", "Failed to archive the subscription tier.");
         }
-}
-// ═════════════════════════════════════════════════════════════
+    }
+    // ═════════════════════════════════════════════════════════════
     //  CREATE / UPDATE / DELETE
     // ═════════════════════════════════════════════════════════════
     public async Task<ApiResponse<AdminTierDetail>> CreateAsync(AdminTierCreateRequest request, Guid? actorUserId)
@@ -384,7 +384,7 @@ public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? acto
             Message = $"Tier '{archive.Data!.Key}' archived."
         });
     }
-// ═════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════
     //  TIER MODULES
     // ═════════════════════════════════════════════════════════════
     public async Task<ApiResponse<AdminTierModulesResponse>> GetModulesAsync(Guid id)
@@ -683,7 +683,7 @@ public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? acto
     }
 
 
-// ═════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════
     //  HELPERS
     // ═════════════════════════════════════════════════════════════
     /// <summary>Atomically replaces a tier's module set (validating existence + dependencies).</summary>
@@ -767,7 +767,7 @@ public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? acto
         foreach (var p in defaults)
             p.IsDefault = false;
     }
-// ═════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════
     //  MAPPING HELPERS
     // ═════════════════════════════════════════════════════════════
     /// <summary>Applies a lifecycle state transition, keeping the IsActive mirror invariant.</summary>
@@ -856,4 +856,4 @@ public async Task<ApiResponse<AdminTierDetail>> ArchiveAsync(Guid id, Guid? acto
                 Dependencies = def.Dependencies.ToList()
             })
             .ToList();
-    }
+}

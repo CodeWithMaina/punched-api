@@ -17,7 +17,7 @@ namespace PunchedApi.API.Controllers;
 [Route("v1/programs")]
 [Produces("application/json")]
 [Authorize(Policy = MembershipPolicies.Owner)]
-    [RequireModule("loyalty")]
+[RequireModule("loyalty")]
 [EnableRateLimiting("general")]
 public class LoyaltyProgramController : ControllerBase
 {

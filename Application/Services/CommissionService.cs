@@ -256,19 +256,19 @@ public partial class CommissionService
 
     private static CommissionRateResponse MapRate(
         CommissionRate rate, string? staffName, string? serviceName) => new()
-    {
-        Id = rate.Id,
-        Scope = Wire(rate.Scope.ToString()),
-        StaffUserId = rate.StaffUserId,
-        StaffName = staffName,
-        ServiceId = rate.ServiceCatalogItemId,
-        ServiceName = serviceName,
-        CalculationType = Wire(rate.CalculationType.ToString()),
-        Percentage = rate.Percentage,
-        FixedAmount = rate.FixedAmount,
-        IsActive = rate.IsActive,
-        CreatedAt = rate.CreatedAt
-    };
+        {
+            Id = rate.Id,
+            Scope = Wire(rate.Scope.ToString()),
+            StaffUserId = rate.StaffUserId,
+            StaffName = staffName,
+            ServiceId = rate.ServiceCatalogItemId,
+            ServiceName = serviceName,
+            CalculationType = Wire(rate.CalculationType.ToString()),
+            Percentage = rate.Percentage,
+            FixedAmount = rate.FixedAmount,
+            IsActive = rate.IsActive,
+            CreatedAt = rate.CreatedAt
+        };
 }
 
 /// <summary>Scoped commission overrides (staff / service / staff+service).</summary>

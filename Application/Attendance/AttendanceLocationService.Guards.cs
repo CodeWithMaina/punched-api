@@ -119,28 +119,28 @@ public partial class AttendanceLocationService
 
     private static AttendanceLocationDetailResponse MapDetail(
         AttendanceLocation location, bool hasActiveCredential, DateTime? lastUsedAt) => new()
-    {
-        Id = location.Id,
-        BusinessId = location.BusinessId,
-        Name = location.Name,
-        Description = location.Description,
-        IsActive = location.IsActive,
-        HasActiveCredential = hasActiveCredential,
-        LastUsedAt = lastUsedAt,
-        CreatedAt = location.CreatedAt,
-    };
+        {
+            Id = location.Id,
+            BusinessId = location.BusinessId,
+            Name = location.Name,
+            Description = location.Description,
+            IsActive = location.IsActive,
+            HasActiveCredential = hasActiveCredential,
+            LastUsedAt = lastUsedAt,
+            CreatedAt = location.CreatedAt,
+        };
 
     private static AttendanceLocationSummaryResponse MapSummary(
         AttendanceLocation location, bool hasActiveCredential, DateTime? lastUsedAt) => new()
-    {
-        Id = location.Id,
-        Name = location.Name,
-        Description = location.Description,
-        IsActive = location.IsActive,
-        HasActiveCredential = hasActiveCredential,
-        LastUsedAt = lastUsedAt,
-        CreatedAt = location.CreatedAt,
-    };
+        {
+            Id = location.Id,
+            Name = location.Name,
+            Description = location.Description,
+            IsActive = location.IsActive,
+            HasActiveCredential = hasActiveCredential,
+            LastUsedAt = lastUsedAt,
+            CreatedAt = location.CreatedAt,
+        };
 }
 
 /// <summary>Attendance audit action names (plan §19.2), recorded in DetailsJson.</summary>
@@ -150,7 +150,7 @@ internal static class AttendanceAuditActions
     public const string LocationUpdated = "ATTENDANCE_LOCATION_UPDATED";
     public const string LocationDeactivated = "ATTENDANCE_LOCATION_DEACTIVATED";
     public const string LocationDeleted = "ATTENDANCE_LOCATION_DELETED";
-        public const string QrCreated = "QR_CREATED";
+    public const string QrCreated = "QR_CREATED";
     public const string QrRegenerated = "QR_REGENERATED";
     public const string QrRevoked = "QR_REVOKED";
     public const string SettingsUpdated = "ATTENDANCE_SETTINGS_UPDATED";

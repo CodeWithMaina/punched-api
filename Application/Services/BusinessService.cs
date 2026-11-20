@@ -187,7 +187,10 @@ public partial class BusinessService : IBusinessService
                 .Where(variant => variant.Format is "webp" or "jpeg")
                 .Select(variant => new ServiceImageVariantResponse
                 {
-                    Url = variant.Url, Width = variant.Width, Height = variant.Height, Format = variant.Format
+                    Url = variant.Url,
+                    Width = variant.Width,
+                    Height = variant.Height,
+                    Format = variant.Format
                 }).ToList();
         }
         catch (JsonException)
@@ -1643,23 +1646,23 @@ public partial class BusinessService : IBusinessService
     /// </summary>
     private static BusinessCustomerResponse MapCustomerCard(
         LoyaltyCard card, int? stampsRequired, CustomerType type = CustomerType.Registered) => new()
-    {
-        UserId = card.CustomerId,
-        FullName = card.Customer.FullName,
-        Email = card.Customer.Email,
-        PhoneNumber = card.Customer.PhoneNumber,
-        DateOfBirth = card.Customer.DateOfBirth,
-        Gender = card.Customer.Gender,
-        AvatarUrl = card.Customer.AvatarUrl,
-        CardId = card.Id,
-        CustomerType = type == CustomerType.Guest ? "guest" : "registered",
-        TotalStamps = card.TotalStamps,
-        LifetimeStamps = card.LifetimeStamps,
-        TotalRedemptions = card.TotalRedemptions,
-        EnrolledAt = card.EnrolledAt,
-        LastStampAt = card.LastStampAt,
-        StampsRequired = stampsRequired
-    };
+        {
+            UserId = card.CustomerId,
+            FullName = card.Customer.FullName,
+            Email = card.Customer.Email,
+            PhoneNumber = card.Customer.PhoneNumber,
+            DateOfBirth = card.Customer.DateOfBirth,
+            Gender = card.Customer.Gender,
+            AvatarUrl = card.Customer.AvatarUrl,
+            CardId = card.Id,
+            CustomerType = type == CustomerType.Guest ? "guest" : "registered",
+            TotalStamps = card.TotalStamps,
+            LifetimeStamps = card.LifetimeStamps,
+            TotalRedemptions = card.TotalRedemptions,
+            EnrolledAt = card.EnrolledAt,
+            LastStampAt = card.LastStampAt,
+            StampsRequired = stampsRequired
+        };
 
     /// <summary>
     /// Distinct customers the staff member has served in their linked business
@@ -2308,9 +2311,9 @@ public partial class BusinessService : IBusinessService
             var periodStart = period switch
             {
                 "today" => now.Date,
-                "7d"    => now.AddDays(-7),
-                "30d"   => now.AddDays(-30),
-                _       => DateTime.MinValue  // "all"
+                "7d" => now.AddDays(-7),
+                "30d" => now.AddDays(-30),
+                _ => DateTime.MinValue  // "all"
             };
 
             var baseQuery = _context.Stamps
@@ -2318,10 +2321,10 @@ public partial class BusinessService : IBusinessService
 
             var periodQuery = baseQuery.Where(s => s.StampedAt >= periodStart);
 
-            var stampsIssued     = await periodQuery.CountAsync();
-            var customersServed  = await periodQuery.Select(s => s.Card.CustomerId).Distinct().CountAsync();
-            var totalStampsAllTime     = await baseQuery.CountAsync();
-            var totalCustomersAllTime  = await baseQuery.Select(s => s.Card.CustomerId).Distinct().CountAsync();
+            var stampsIssued = await periodQuery.CountAsync();
+            var customersServed = await periodQuery.Select(s => s.Card.CustomerId).Distinct().CountAsync();
+            var totalStampsAllTime = await baseQuery.CountAsync();
+            var totalCustomersAllTime = await baseQuery.Select(s => s.Card.CustomerId).Distinct().CountAsync();
 
             var apptBase = _context.Appointments.Where(a => a.StaffUserId == staffUserId && a.BusinessId == business.Id);
             var appointmentsToday = await apptBase.CountAsync(a => a.ScheduledAt >= now.Date);
@@ -2342,34 +2345,34 @@ public partial class BusinessService : IBusinessService
                     ActivityType = "stamp",
                     CustomerId = s.Card.CustomerId,
                     CustomerName = s.Card.Customer.FullName,
-                    StampNumber  = s.StampNumber,
+                    StampNumber = s.StampNumber,
                     Status = "completed",
-                    StampedAt    = s.StampedAt,
+                    StampedAt = s.StampedAt,
                 })
                 .ToListAsync();
 
             return ApiResponse<StaffMemberAnalyticsResponse>.Ok(new StaffMemberAnalyticsResponse
             {
-                StaffId              = staffUserId,
-                FullName             = staffUser.FullName,
-                Email                = staffUser.Email,
-                AvatarUrl            = staffUser.AvatarUrl,
-                Period               = period,
-                StampsIssued         = stampsIssued,
-                CustomersServed      = customersServed,
-                TotalStampsAllTime   = totalStampsAllTime,
+                StaffId = staffUserId,
+                FullName = staffUser.FullName,
+                Email = staffUser.Email,
+                AvatarUrl = staffUser.AvatarUrl,
+                Period = period,
+                StampsIssued = stampsIssued,
+                CustomersServed = customersServed,
+                TotalStampsAllTime = totalStampsAllTime,
                 TotalCustomersAllTime = totalCustomersAllTime,
-                DailyGoal            = apptGoalType == "appointments"
+                DailyGoal = apptGoalType == "appointments"
                     ? staffUser.AppointmentDailyGoalOverride ?? business.DefaultAppointmentDailyGoal
                     : staffUser.DailyGoalOverride ?? business.DefaultDailyGoal,
-                DailyGoalOverride    = staffUser.DailyGoalOverride,
-                DailyGoalType          = apptGoalType,
+                DailyGoalOverride = staffUser.DailyGoalOverride,
+                DailyGoalType = apptGoalType,
                 AppointmentDailyGoalOverride = staffUser.AppointmentDailyGoalOverride,
                 AppointmentDailyGoal = staffUser.AppointmentDailyGoalOverride ?? business.DefaultAppointmentDailyGoal,
                 AppointmentsToday = appointmentsToday,
                 AppointmentsLast7d = appointmentsLast7d,
                 AppointmentsIssued = appointmentsIssued,
-                RecentActivity       = recentActivity,
+                RecentActivity = recentActivity,
             });
         }
         catch (Exception ex)
@@ -2588,9 +2591,9 @@ public partial class BusinessService : IBusinessService
             var periodStart = period switch
             {
                 "today" => now.Date,
-                "7d"    => now.AddDays(-7),
-                "30d"   => now.AddDays(-30),
-                _       => DateTime.MinValue  // "all"
+                "7d" => now.AddDays(-7),
+                "30d" => now.AddDays(-30),
+                _ => DateTime.MinValue  // "all"
             };
 
             var stampsInPeriod = await _context.Stamps
@@ -2604,9 +2607,9 @@ public partial class BusinessService : IBusinessService
 
             return ApiResponse<CustomerPeriodStatsResponse>.Ok(new CustomerPeriodStatsResponse
             {
-                Period            = period,
-                StampsInPeriod    = stampsInPeriod,
-                VisitsInPeriod    = stampsInPeriod,   // each stamp = 1 QR scan visit
+                Period = period,
+                StampsInPeriod = stampsInPeriod,
+                VisitsInPeriod = stampsInPeriod,   // each stamp = 1 QR scan visit
                 LastVisitInPeriod = lastVisitInPeriod,
             });
         }
@@ -2694,8 +2697,14 @@ public partial class BusinessService : IBusinessService
                 .Where(c => c.BusinessId == businessId)
                 .Select(c => new
                 {
-                    c.Id, c.CustomerId, c.ProgramId, c.TotalStamps, c.LifetimeStamps,
-                    c.TotalRedemptions, c.LastStampAt, c.EnrolledAt,
+                    c.Id,
+                    c.CustomerId,
+                    c.ProgramId,
+                    c.TotalStamps,
+                    c.LifetimeStamps,
+                    c.TotalRedemptions,
+                    c.LastStampAt,
+                    c.EnrolledAt,
                     CustomerName = c.Customer.FullName
                 })
                 .AsNoTracking()
@@ -3123,7 +3132,7 @@ public partial class BusinessService : IBusinessService
         // is the only thing that grants access to it.
         return await _memberships.IsActiveMemberAsync(userId, businessId);
     }
-/// <summary>
+    /// <summary>
     /// Period-over-period comparison scoped strictly to the authenticated owner's business.
     /// The business is derived from <paramref name="ownerId"/> (JWT) — a client-supplied
     /// BusinessId is never trusted.

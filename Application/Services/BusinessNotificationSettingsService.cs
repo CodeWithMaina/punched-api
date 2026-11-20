@@ -243,11 +243,11 @@ public sealed class BusinessNotificationSettingsService
         return suppressed;
     }
 
-    private async Task<Dictionary<Guid, (string? Email, string? PhoneNumber)>> LoadContactsAsync(
+    private async Task<Dictionary<Guid, (string Email, string? PhoneNumber)>> LoadContactsAsync(
         IReadOnlyList<Guid> userIds,
         CancellationToken ct)
     {
-        if (userIds.Count == 0) return new Dictionary<Guid, (string?, string?)>();
+        if (userIds.Count == 0) return new Dictionary<Guid, (string, string?)>();
 
         return await _context.Users
             .AsNoTracking()

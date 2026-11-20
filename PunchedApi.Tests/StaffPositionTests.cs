@@ -125,7 +125,7 @@ public partial class StaffPositionTests
             new ReorderStaffPositionsRequest { OrderedIds = new[] { b.Data!.Id, c.Data!.Id, a.Data!.Id } });
 
         Assert.Equal(new[] { "B", "C", "A" }, reordered.Data!.Select(p => p.Name));
-        Assert.Equal(new[] { 0, 1, 2 }, reordered.Data.Select(p => p.SortOrder));
+        Assert.Equal(new[] { 0, 1, 2 }, reordered.Data!.Select(p => p.SortOrder));
     }
 
     [Fact]

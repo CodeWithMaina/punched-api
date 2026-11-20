@@ -37,7 +37,7 @@ public interface IAdminService
     Task<ApiResponse<AdminBusinessSummary>> GetBusinessDetailAsync(Guid businessId);
     Task<ApiResponse<MessageResponse>> DeleteBusinessAsync(Guid businessId);
 
-        // ── Reward / Stamp Management ───────────────────────────
+    // ── Reward / Stamp Management ───────────────────────────
     Task<ApiResponse<PaginatedResponse<RedemptionResponse>>> GetRedemptionsAsync(
         string? search, int page, int pageSize);
 

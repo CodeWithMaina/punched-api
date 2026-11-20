@@ -88,8 +88,8 @@ public sealed class GalleryEntryTests
         // The other image shifted down, and the sequence stayed dense.
         var gallery = await media.GetBusinessGalleryAsync(owner.Id, CancellationToken.None);
         Assert.Equal(new[] { second.Id, first.Id }, gallery.Data!.Select(entry => entry.MediaId));
-        Assert.Equal(new[] { 0, 1 }, gallery.Data.Select(entry => entry.SortOrder));
-        Assert.Equal("Balayage in progress", gallery.Data[0].Caption);
+        Assert.Equal(new[] { 0, 1 }, gallery.Data!.Select(entry => entry.SortOrder));
+        Assert.Equal("Balayage in progress", gallery.Data![0].Caption);
     }
 
     [Fact]

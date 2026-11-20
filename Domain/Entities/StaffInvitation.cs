@@ -90,7 +90,7 @@ public class StaffInvitation : BaseEntity
     /// </summary>
     public int ResendCount { get; set; }
 
-        // ── Navigation ──────────────────────────────────────────
+    // ── Navigation ──────────────────────────────────────────
     /// <summary>
     /// The business this invitation grants access to.
     /// </summary>

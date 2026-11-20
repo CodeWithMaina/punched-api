@@ -57,14 +57,14 @@ public static class PermissionCatalog
     {
         var list = new List<CatalogPermission>();
         foreach (var module in ModuleCatalog.Modules)
-        foreach (var permission in module.Permissions)
-        {
-            list.Add(new CatalogPermission(
-                Code: permission.Code,
-                Name: $"{module.Name}: {Humanize(Action(permission.Code))}",
-                Description: $"{Humanize(Action(permission.Code))} — {module.Description}",
-                ModuleKey: module.Key));
-        }
+            foreach (var permission in module.Permissions)
+            {
+                list.Add(new CatalogPermission(
+                    Code: permission.Code,
+                    Name: $"{module.Name}: {Humanize(Action(permission.Code))}",
+                    Description: $"{Humanize(Action(permission.Code))} — {module.Description}",
+                    ModuleKey: module.Key));
+            }
 
         return list
             .OrderBy(p => p.ModuleKey, StringComparer.Ordinal)

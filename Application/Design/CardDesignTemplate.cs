@@ -37,9 +37,9 @@ public static class CardDesignTemplate
         var background = config.Background;
         var backgroundValue = background.Type switch
         {
-          "gradient" => $"linear-gradient(135deg,{background.Value},{colors.Primary})",
-          "color" => background.Value ?? colors.Surface,
-          _ => colors.Surface
+            "gradient" => $"linear-gradient(135deg,{background.Value},{colors.Primary})",
+            "color" => background.Value ?? colors.Surface,
+            _ => colors.Surface
         };
 
         var sb = new StringBuilder();

@@ -71,31 +71,31 @@ public partial class LoyaltyRewardService
 
     internal static RewardEntitlementResponse MapEntitlement(
         RewardEntitlement e, string? programName = null, string? customerName = null) => new()
-    {
-        Id = e.Id,
-        BusinessId = e.BusinessId,
-        ProgramId = e.ProgramId,
-        ProgramName = programName,
-        CardId = e.CardId,
-        CustomerId = e.CustomerId,
-        CustomerName = customerName,
-        RewardId = e.RewardId,
-        RewardName = e.RewardName,
-        RequiredStamps = e.RequiredStamps,
-        StampsToConsume = e.StampsToConsume,
-        RewardValue = e.RewardValue,
-        Status = e.Status switch
         {
-            RewardEntitlementStatus.Redeemed => "redeemed",
-            RewardEntitlementStatus.Expired => "expired",
-            RewardEntitlementStatus.Cancelled => "cancelled",
-            _ => "unlocked"
-        },
-        UnlockedAt = e.UnlockedAt,
-        ExpiresAt = e.ExpiresAt,
-        RedeemedAt = e.RedeemedAt,
-        RedemptionId = e.RedemptionId,
-        CanRedeem = e.Status == RewardEntitlementStatus.Unlocked &&
+            Id = e.Id,
+            BusinessId = e.BusinessId,
+            ProgramId = e.ProgramId,
+            ProgramName = programName,
+            CardId = e.CardId,
+            CustomerId = e.CustomerId,
+            CustomerName = customerName,
+            RewardId = e.RewardId,
+            RewardName = e.RewardName,
+            RequiredStamps = e.RequiredStamps,
+            StampsToConsume = e.StampsToConsume,
+            RewardValue = e.RewardValue,
+            Status = e.Status switch
+            {
+                RewardEntitlementStatus.Redeemed => "redeemed",
+                RewardEntitlementStatus.Expired => "expired",
+                RewardEntitlementStatus.Cancelled => "cancelled",
+                _ => "unlocked"
+            },
+            UnlockedAt = e.UnlockedAt,
+            ExpiresAt = e.ExpiresAt,
+            RedeemedAt = e.RedeemedAt,
+            RedemptionId = e.RedemptionId,
+            CanRedeem = e.Status == RewardEntitlementStatus.Unlocked &&
                    (e.ExpiresAt == null || e.ExpiresAt > DateTime.UtcNow)
-    };
+        };
 }

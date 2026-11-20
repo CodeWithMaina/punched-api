@@ -18,7 +18,7 @@ public sealed class CleanupService : BackgroundService
     private static readonly TimeSpan RunInterval = TimeSpan.FromHours(1);
 
     // How long to retain already-used/revoked records before hard-deleting them
-    private static readonly TimeSpan UsedQrRetention     = TimeSpan.FromDays(1);
+    private static readonly TimeSpan UsedQrRetention = TimeSpan.FromDays(1);
     private static readonly TimeSpan RevokedTokenRetention = TimeSpan.FromDays(7);
 
     private readonly IServiceScopeFactory _scopeFactory;
@@ -31,7 +31,7 @@ public sealed class CleanupService : BackgroundService
         IOptions<NotificationWorkerOptions>? notificationOptions = null)
     {
         _scopeFactory = scopeFactory;
-        _logger       = logger;
+        _logger = logger;
         _notificationOptions = notificationOptions?.Value ?? new NotificationWorkerOptions();
     }
 
@@ -64,9 +64,9 @@ public sealed class CleanupService : BackgroundService
 
         var now = DateTime.UtcNow;
 
-        var qrDeleted       = await CleanQrTokensAsync(db, now, ct);
-        var refreshDeleted  = await CleanRefreshTokensAsync(db, now, ct);
-        var verifyCleared   = await CleanVerificationCodesAsync(db, now, ct);
+        var qrDeleted = await CleanQrTokensAsync(db, now, ct);
+        var refreshDeleted = await CleanRefreshTokensAsync(db, now, ct);
+        var verifyCleared = await CleanVerificationCodesAsync(db, now, ct);
         var idempotencyDeleted = await CleanIdempotencyKeysAsync(db, now, ct);
         var cardsExpired = await CleanExpiredStampsAsync(ct);
         var notificationsDeleted = await CleanNotificationsAsync(
@@ -197,9 +197,9 @@ public sealed class CleanupService : BackgroundService
 
         foreach (var auth in stale)
         {
-            auth.VerificationCode           = null;
-            auth.VerificationCodeExpiresAt  = null;
-            auth.VerificationCodeAttempts   = 0;
+            auth.VerificationCode = null;
+            auth.VerificationCodeExpiresAt = null;
+            auth.VerificationCodeAttempts = 0;
         }
 
         return await db.SaveChangesAsync(ct);

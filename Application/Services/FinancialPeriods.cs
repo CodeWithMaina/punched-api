@@ -86,23 +86,23 @@ public sealed record FinancialPeriod(string Key, DateTime FromUtc, DateTime ToUt
                 break;
 
             case Custom:
-            {
-                // A custom range is expressed in LOCAL dates (what the owner picked in the
-                // date picker). The end date is inclusive, so the window ends at the next
-                // local midnight. A missing or inverted range degrades to the last 30 days
-                // rather than silently returning nothing.
-                if (!from.HasValue || !to.HasValue || to.Value.Date < from.Value.Date)
                 {
-                    startLocal = today.AddDays(-29);
-                    endLocal = today.AddDays(1);
-                    normalised = Last30Days;
+                    // A custom range is expressed in LOCAL dates (what the owner picked in the
+                    // date picker). The end date is inclusive, so the window ends at the next
+                    // local midnight. A missing or inverted range degrades to the last 30 days
+                    // rather than silently returning nothing.
+                    if (!from.HasValue || !to.HasValue || to.Value.Date < from.Value.Date)
+                    {
+                        startLocal = today.AddDays(-29);
+                        endLocal = today.AddDays(1);
+                        normalised = Last30Days;
+                        break;
+                    }
+
+                    startLocal = from.Value.Date;
+                    endLocal = to.Value.Date.AddDays(1);
                     break;
                 }
-
-                startLocal = from.Value.Date;
-                endLocal = to.Value.Date.AddDays(1);
-                break;
-            }
 
             default:
                 normalised = Last30Days;

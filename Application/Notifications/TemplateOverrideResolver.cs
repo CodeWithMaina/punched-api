@@ -59,14 +59,14 @@ public sealed class TemplateOverrideResolver : ITemplateOverrideResolver
 
         return ToEffective(platformDefault, EffectiveTemplateSource.Override, overrideRow.Id, overrideRow.Version)
             with
-            {
-                Subject = overrideRow.SubjectTemplate ?? platformDefault.Subject,
-                Title = string.IsNullOrWhiteSpace(overrideRow.SubjectTemplate)
+        {
+            Subject = overrideRow.SubjectTemplate ?? platformDefault.Subject,
+            Title = string.IsNullOrWhiteSpace(overrideRow.SubjectTemplate)
                     ? platformDefault.Title
                     : overrideRow.SubjectTemplate,
-                Body = overrideRow.BodyTemplateText,
-                BodyHtml = overrideRow.BodyTemplateHtml,
-            };
+            Body = overrideRow.BodyTemplateText,
+            BodyHtml = overrideRow.BodyTemplateHtml,
+        };
     }
 
     private static EffectiveTemplate ToEffective(

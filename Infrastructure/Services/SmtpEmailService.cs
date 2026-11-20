@@ -14,13 +14,13 @@ public class SmtpEmailService : IEmailService
 {
     private readonly EmailSettings _settings;
     private readonly ILogger<SmtpEmailService> _logger;
-  private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IServiceScopeFactory _scopeFactory;
 
-  public SmtpEmailService(IOptions<EmailSettings> settings, ILogger<SmtpEmailService> logger, IServiceScopeFactory scopeFactory)
+    public SmtpEmailService(IOptions<EmailSettings> settings, ILogger<SmtpEmailService> logger, IServiceScopeFactory scopeFactory)
     {
         _settings = settings.Value;
         _logger = logger;
-    _scopeFactory = scopeFactory;
+        _scopeFactory = scopeFactory;
     }
 
     public Task<bool> SendVerificationCodeAsync(string email, string code)
@@ -179,10 +179,10 @@ public class SmtpEmailService : IEmailService
         return System.Text.RegularExpressions.Regex.Replace(decoded, @"\n{3,}", "\n\n").Trim();
     }
 
-        private async Task PersistAsync(string email, string? businessName, string channel, string templateType, string status, string? error)
+    private async Task PersistAsync(string email, string? businessName, string channel, string templateType, string status, string? error)
+    {
+        try
         {
-          try
-          {
             await using var scope = _scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
@@ -191,36 +191,36 @@ public class SmtpEmailService : IEmailService
               .FirstOrDefaultAsync(u => u.Email == email);
 
             if (user == null)
-              return;
+                return;
 
             Guid? businessId = null;
             if (!string.IsNullOrWhiteSpace(businessName))
             {
-              businessId = await db.Businesses
-                .IgnoreQueryFilters()
-                .Where(b => b.Name == businessName)
-                .Select(b => (Guid?)b.Id)
-                .FirstOrDefaultAsync();
+                businessId = await db.Businesses
+                  .IgnoreQueryFilters()
+                  .Where(b => b.Name == businessName)
+                  .Select(b => (Guid?)b.Id)
+                  .FirstOrDefaultAsync();
             }
 
             db.NotificationLogs.Add(new NotificationLog
             {
-              Id = Guid.NewGuid(),
-              UserId = user.Id,
-              BusinessId = businessId,
-              Channel = channel,
-              TemplateType = templateType,
-              Status = status,
-              SentAt = DateTime.UtcNow,
-              CreatedAt = DateTime.UtcNow,
-              Error = error
+                Id = Guid.NewGuid(),
+                UserId = user.Id,
+                BusinessId = businessId,
+                Channel = channel,
+                TemplateType = templateType,
+                Status = status,
+                SentAt = DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow,
+                Error = error
             });
 
             await db.SaveChangesAsync();
-          }
-          catch (Exception ex)
-          {
-            _logger.LogWarning(ex, "Failed to persist notification log for {Email}", email);
-          }
         }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to persist notification log for {Email}", email);
+        }
+    }
 }

@@ -181,7 +181,7 @@ public class CardDesignService : ICardDesignService
         var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Id == design.BusinessId.Value);
         return business?.Name;
     }
-/// <summary>
+    /// <summary>
     /// Resolves the sanitized template a preview should render. Untrusted input
     /// (raw HTML) is always validated + sanitized BEFORE rendering (plan §18).
     /// When <paramref name="enforceTenant"/> is true, only the platform default
@@ -256,7 +256,7 @@ public class CardDesignService : ICardDesignService
 
         return ApiResponse<List<CardDesignResponse>>.Ok(result);
     }
-// ── Admin: write ────────────────────────────────────────
+    // ── Admin: write ────────────────────────────────────────
 
     public async Task<ApiResponse<CardDesignResponse>> CreateDesignAsync(
         Guid businessId,
@@ -393,7 +393,7 @@ public class CardDesignService : ICardDesignService
             return ApiResponse<CardDesignResponse>.Fail("UPDATE_FAILED", "Failed to update the card design.");
         }
     }
-public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid designId, bool isActive)
+    public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid designId, bool isActive)
     {
         var design = await _unitOfWork.CardDesigns.FirstOrDefaultAsync(d => d.Id == designId);
         if (design == null)
@@ -520,7 +520,7 @@ public async Task<ApiResponse<CardDesignResponse>> SetDesignActiveAsync(Guid des
         return ApiResponse<PreviewCardDesignResponse>.Ok(
             BuildPreview(template, SampleContextFor(business, request, templateConfig), business.Id));
     }
-// ── Business: availability + validation ─────────────────
+    // ── Business: availability + validation ─────────────────
 
     public async Task<ApiResponse<List<AvailableCardDesignResponse>>> GetAvailableDesignsAsync(Guid ownerId)
     {

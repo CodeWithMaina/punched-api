@@ -101,7 +101,7 @@ public partial class BusinessController
     [Authorize(Policy = MembershipPolicies.Owner)]
     [RequireModule("attendance")]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
-        public async Task<IActionResult> DeleteAttendanceLocation(Guid locationId)
+    public async Task<IActionResult> DeleteAttendanceLocation(Guid locationId)
     {
         var userId = GetUserId();
         if (userId == null) return Unauthorized();

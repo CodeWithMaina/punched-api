@@ -1,11 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Moq;
 using PunchedApi.Application.DTOs;
-using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Services;
 using PunchedApi.Application.Settings;
 using PunchedApi.Domain.Entities;
@@ -48,9 +46,6 @@ public class OnboardingIdempotencyTests
             RefreshTokenExpiryDays = 30
         }));
 
-    private static IMapper CreateMapper()
-        => new MapperConfiguration(cfg => cfg.AddProfile<MappingProfile>()).CreateMapper();
-
     private static AuthService CreateAuthService(ApplicationDbContext context, Mock<IEmailService>? emailMock = null)
     {
         emailMock ??= new Mock<IEmailService>();
@@ -61,7 +56,6 @@ public class OnboardingIdempotencyTests
             new UnitOfWork(context),
             CreateJwtService(),
             emailMock.Object,
-            CreateMapper(),
             TestHelpers.CreateLogger<AuthService>(),
             new SubscriptionProvisioningService(context, TestHelpers.CreateLogger<SubscriptionProvisioningService>()),
             new BusinessSlugGenerator(context),

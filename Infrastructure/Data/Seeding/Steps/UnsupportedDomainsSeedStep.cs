@@ -15,7 +15,7 @@ public sealed class UnsupportedDomainsSeedStep : ISeedStep
 
     public Task ExecuteAsync(SeedExecutionContext context, CancellationToken cancellationToken)
     {
-        var messages = new[] 
+        var messages = new[]
         {
             "InventorySeeder skipped: the platform ships no product/stock/supplier tables.",
             "Granular RBAC seeding skipped: authority is the membership role enum (Owner/Staff/Customer) plus the static PermissionMatrix — there is no role/permission table to seed.",

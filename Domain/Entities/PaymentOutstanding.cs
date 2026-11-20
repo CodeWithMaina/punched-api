@@ -25,23 +25,23 @@ public static class PaymentOutstanding
         decimal amount,
         Guid? createdByUserId,
         DateTime now) => new()
-    {
-        Id = Guid.NewGuid(),
-        BusinessId = businessId,
-        CustomerId = customerId,
-        AppointmentId = appointmentId,
-        Type = PaymentType.BalancePayment,
-        Method = PaymentMethod.Unspecified,
-        // No provider call has happened or will happen without a channel; Cash is the
-        // enum's neutral default and is replaced the moment the money is collected.
-        Provider = PaymentProviderKind.Cash,
-        Status = PaymentStatus.Created,
-        Amount = decimal.Round(amount, 2, MidpointRounding.AwayFromZero),
-        Currency = "KES",
-        Reference = PaymentReferences.New(),
-        CreatedByUserId = createdByUserId,
-        CreatedAt = now
-    };
+        {
+            Id = Guid.NewGuid(),
+            BusinessId = businessId,
+            CustomerId = customerId,
+            AppointmentId = appointmentId,
+            Type = PaymentType.BalancePayment,
+            Method = PaymentMethod.Unspecified,
+            // No provider call has happened or will happen without a channel; Cash is the
+            // enum's neutral default and is replaced the moment the money is collected.
+            Provider = PaymentProviderKind.Cash,
+            Status = PaymentStatus.Created,
+            Amount = decimal.Round(amount, 2, MidpointRounding.AwayFromZero),
+            Currency = "KES",
+            Reference = PaymentReferences.New(),
+            CreatedByUserId = createdByUserId,
+            CreatedAt = now
+        };
 }
 
 /// <summary>

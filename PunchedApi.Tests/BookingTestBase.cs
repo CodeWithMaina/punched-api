@@ -1,11 +1,9 @@
-using AutoMapper;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Moq;
 using PunchedApi.Application.DomainEvents;
 using PunchedApi.Application.Notifications;
-using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Services;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Infrastructure.Data;
@@ -40,9 +38,6 @@ internal static class BookingTestBase
         return context;
     }
 
-    public static IMapper CreateMapper()
-        => new MapperConfiguration(cfg => cfg.AddProfile<AppointmentMappingProfile>()).CreateMapper();
-
     public static NotificationService CreateNotificationService(ApplicationDbContext context)
     {
         var unitOfWork = new UnitOfWork(context);
@@ -70,7 +65,6 @@ internal static class BookingTestBase
             new UnitOfWork(context),
             context,
             new AppointmentAvailabilityService(context, TestHelpers.CreateLogger<AppointmentAvailabilityService>()),
-            CreateMapper(),
             // The DB-backed permission service: appointment transitions check
             // business-scoped permissions (appointments.confirm, .complete,
             // .cancel, .no_show) and provision the default roles lazily.

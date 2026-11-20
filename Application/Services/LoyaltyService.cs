@@ -13,7 +13,7 @@ namespace PunchedApi.Application.Services;
 
 public class LoyaltyService : ILoyaltyService
 {
-        private readonly IUnitOfWork _unitOfWork;
+    private readonly IUnitOfWork _unitOfWork;
     private readonly ApplicationDbContext _context;
     private readonly IStampService _stampService;
     private readonly IProgramRuleEngine _ruleEngine;
@@ -469,8 +469,8 @@ public class LoyaltyService : ILoyaltyService
         }
     }
 
-        public async Task<ApiResponse<LoyaltyProgramResponse>> ActivateProgramAsync(Guid ownerId, Guid programId)
-        => await SetProgramStatusAsync(ownerId, programId, ProgramStatus.Active);
+    public async Task<ApiResponse<LoyaltyProgramResponse>> ActivateProgramAsync(Guid ownerId, Guid programId)
+    => await SetProgramStatusAsync(ownerId, programId, ProgramStatus.Active);
 
     public async Task<ApiResponse<LoyaltyProgramResponse>> PauseProgramAsync(Guid ownerId, Guid programId)
         => await SetProgramStatusAsync(ownerId, programId, ProgramStatus.Paused);
@@ -542,7 +542,7 @@ public class LoyaltyService : ILoyaltyService
         }
     }
 
-        public async Task<ApiResponse<ProgramDetailResponse>> GetProgramDetailAsync(Guid ownerId, Guid programId)
+    public async Task<ApiResponse<ProgramDetailResponse>> GetProgramDetailAsync(Guid ownerId, Guid programId)
     {
         var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
@@ -566,7 +566,7 @@ public class LoyaltyService : ILoyaltyService
 
         return ApiResponse<ProgramDetailResponse>.Ok(new ProgramDetailResponse
         {
-                Program = await MapProgramWithMediaAsync(program, business),
+            Program = await MapProgramWithMediaAsync(program, business),
             Summary = _ruleEngine.Describe(program),
             ActiveCustomers = activeCards,
             StampsIssued = stampsIssued,
@@ -615,7 +615,7 @@ public class LoyaltyService : ILoyaltyService
     private static DateTime? NormalizeUtc(DateTime? value) =>
         value.HasValue ? value.Value.ToUniversalTime() : null;
 
-        public async Task BackfillProgramHistoryAsync(CancellationToken cancellationToken = default)
+    public async Task BackfillProgramHistoryAsync(CancellationToken cancellationToken = default)
     {
         var programs = await _context.LoyaltyPrograms
             .IgnoreQueryFilters()
@@ -780,9 +780,14 @@ public class LoyaltyService : ILoyaltyService
             {
                 enrollment = new CustomerBusinessEnrollment
                 {
-                    Id = Guid.NewGuid(), CustomerId = customerId, BusinessId = business.Id,
-                    Status = CustomerBusinessEnrollmentStatus.Active, Source = "loyalty",
-                    EnrolledAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
+                    Id = Guid.NewGuid(),
+                    CustomerId = customerId,
+                    BusinessId = business.Id,
+                    Status = CustomerBusinessEnrollmentStatus.Active,
+                    Source = "loyalty",
+                    EnrolledAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = DateTime.UtcNow
                 };
                 await _unitOfWork.CustomerBusinessEnrollments.AddAsync(enrollment);
             }
@@ -828,7 +833,7 @@ public class LoyaltyService : ILoyaltyService
             };
 
             LoyaltyCardSnapshot.Apply(card, activeProgram, boundStampCard, now);
-                        await _unitOfWork.LoyaltyCards.AddAsync(card);
+            await _unitOfWork.LoyaltyCards.AddAsync(card);
 
             // Record the welcome stamp ledger entries via StampService so the
             // Source column and activity feed stay consistent.

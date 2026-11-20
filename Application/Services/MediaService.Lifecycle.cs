@@ -16,8 +16,11 @@ public sealed partial class MediaService
         var grant = await _store.PresignPutAsync(ObjectStoreBucket.PrivateSource, media.SourceKey, media.DeclaredMimeType ?? "application/octet-stream", expires, cancellationToken);
         return ApiResponse<MediaUploadGrantResponse>.Ok(new MediaUploadGrantResponse
         {
-            MediaId = media.Id, Status = media.Status.ToString(), UploadUrl = grant.Url.ToString(),
-            RequiredHeaders = grant.RequiredHeaders.ToDictionary(x => x.Key, x => x.Value), UploadGrantExpiresAt = grant.ExpiresAt
+            MediaId = media.Id,
+            Status = media.Status.ToString(),
+            UploadUrl = grant.Url.ToString(),
+            RequiredHeaders = grant.RequiredHeaders.ToDictionary(x => x.Key, x => x.Value),
+            UploadGrantExpiresAt = grant.ExpiresAt
         });
     }
 

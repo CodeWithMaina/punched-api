@@ -1,9 +1,9 @@
 using System.Text.Json;
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Mappings;
 using PunchedApi.Application.DomainEvents;
 using PunchedApi.Application.Notifications;
 using PunchedApi.Application.Scheduling;
@@ -23,7 +23,6 @@ public class AppointmentService : IAppointmentService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ApplicationDbContext _context;
     private readonly AppointmentAvailabilityService _availability;
-    private readonly IMapper _mapper;
     private readonly IPermissionService _permissionService;
     private readonly INotificationService _notifications;
     private readonly IDomainEventPublisher _domainEventPublisher;
@@ -60,7 +59,6 @@ public class AppointmentService : IAppointmentService
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
         AppointmentAvailabilityService availability,
-        IMapper mapper,
         IPermissionService permissionService,
         INotificationService notifications,
         IDomainEventPublisher domainEventPublisher,
@@ -73,7 +71,6 @@ public class AppointmentService : IAppointmentService
         _unitOfWork = unitOfWork;
         _context = context;
         _availability = availability;
-        _mapper = mapper;
         _permissionService = permissionService;
         _notifications = notifications;
         _domainEventPublisher = domainEventPublisher;
@@ -2159,66 +2156,66 @@ public class AppointmentService : IAppointmentService
                     BookingRequestKey = string.IsNullOrWhiteSpace(bookingRequestKey) ? null : bookingRequestKey
                 };
 
-            var sortOrder = 0;
-            foreach (var svc in services)
-            {
-                appointment.Resources.Add(new AppointmentResource
+                var sortOrder = 0;
+                foreach (var svc in services)
+                {
+                    appointment.Resources.Add(new AppointmentResource
+                    {
+                        Id = Guid.NewGuid(),
+                        AppointmentId = appointment.Id,
+                        ServiceCatalogItemId = svc.Id,
+                        Name = svc.Name,
+                        DurationMinutes = svc.DurationMinutes,
+                        Price = svc.Price ?? 0,
+                        SortOrder = sortOrder++,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+
+                await _unitOfWork.Appointments.AddAsync(appointment);
+
+                // A booking fee travels with the appointment: both rows are written by the one
+                // SaveChanges inside this transaction, so a paid-for slot can never exist
+                // without the payment that says what it is for.
+                if (bookingFeeFactory?.Invoke(appointment.Id) is Payment bookingFee)
+                    await _context.Payments.AddAsync(bookingFee);
+
+                // "Pay after service": the appointment's whole value becomes an outstanding
+                // payment, written inside the SAME transaction as the row it belongs to. If it
+                // cannot be written, the booking does not exist either — the two can never
+                // disagree about what is owed. Because the amount is the server's own sum of the
+                // service snapshots, the operator cannot set it.
+                if (payAfterService)
+                {
+                    var outstandingAmount = services.Sum(s => s.Price ?? 0);
+                    if (outstandingAmount > 0)
+                        await _context.Payments.AddAsync(PaymentOutstanding.Create(
+                            businessId,
+                            customerId,
+                            appointment.Id,
+                            outstandingAmount,
+                            changedByUserId == Guid.Empty ? null : changedByUserId,
+                            DateTime.UtcNow));
+                }
+
+                var historyChangedAt = DateTime.UtcNow;
+                await _unitOfWork.AppointmentStatusHistory.AddAsync(new AppointmentStatusHistory
                 {
                     Id = Guid.NewGuid(),
                     AppointmentId = appointment.Id,
-                    ServiceCatalogItemId = svc.Id,
-                    Name = svc.Name,
-                    DurationMinutes = svc.DurationMinutes,
-                    Price = svc.Price ?? 0,
-                    SortOrder = sortOrder++,
-                    CreatedAt = DateTime.UtcNow
+                    Status = appointment.Status,
+                    ChangedAt = historyChangedAt,
+                    ChangedByUserId = changedByUserId,
+                    Note = note,
+                    CreatedAt = historyChangedAt
                 });
-            }
 
-            await _unitOfWork.Appointments.AddAsync(appointment);
-
-            // A booking fee travels with the appointment: both rows are written by the one
-            // SaveChanges inside this transaction, so a paid-for slot can never exist
-            // without the payment that says what it is for.
-            if (bookingFeeFactory?.Invoke(appointment.Id) is Payment bookingFee)
-                await _context.Payments.AddAsync(bookingFee);
-
-            // "Pay after service": the appointment's whole value becomes an outstanding
-            // payment, written inside the SAME transaction as the row it belongs to. If it
-            // cannot be written, the booking does not exist either — the two can never
-            // disagree about what is owed. Because the amount is the server's own sum of the
-            // service snapshots, the operator cannot set it.
-            if (payAfterService)
-            {
-                var outstandingAmount = services.Sum(s => s.Price ?? 0);
-                if (outstandingAmount > 0)
-                    await _context.Payments.AddAsync(PaymentOutstanding.Create(
-                        businessId,
-                        customerId,
-                        appointment.Id,
-                        outstandingAmount,
-                        changedByUserId == Guid.Empty ? null : changedByUserId,
-                        DateTime.UtcNow));
-            }
-
-            var historyChangedAt = DateTime.UtcNow;
-            await _unitOfWork.AppointmentStatusHistory.AddAsync(new AppointmentStatusHistory
-            {
-                Id = Guid.NewGuid(),
-                AppointmentId = appointment.Id,
-                Status = appointment.Status,
-                ChangedAt = historyChangedAt,
-                ChangedByUserId = changedByUserId,
-                Note = note,
-                CreatedAt = historyChangedAt
-            });
-
-            // Phase 1: the booking-confirmation intent joins this transaction — it exists if
-            // and only if the appointment row does (intent-level outbox). Both notices are
-            // queued in ONE batch: the customer's confirmation and the assigned
-            // professional's, so the tenant-guard and idempotency reads are paid once.
-            var businessName = business?.Name ?? await GetBusinessNameAsync(appointment.BusinessId);
-            var bookingIntents = new List<NotificationRequest>
+                // Phase 1: the booking-confirmation intent joins this transaction — it exists if
+                // and only if the appointment row does (intent-level outbox). Both notices are
+                // queued in ONE batch: the customer's confirmation and the assigned
+                // professional's, so the tenant-guard and idempotency reads are paid once.
+                var businessName = business?.Name ?? await GetBusinessNameAsync(appointment.BusinessId);
+                var bookingIntents = new List<NotificationRequest>
             {
                 new(
                     "appointment.booked",
@@ -2233,44 +2230,44 @@ public class AppointmentService : IAppointmentService
                     $"appt:{appointment.Id}:booked")
             };
 
-            // The assigned professional is told the slot is theirs. Same transaction as the
-            // row, so the notice can never outlive a rollback.
-            if (appointment.StaffUserId is Guid assignedStaffId && assignedStaffId != Guid.Empty)
-            {
-                bookingIntents.Add(new NotificationRequest(
-                    "appointment.staff_assigned",
-                    assignedStaffId,
-                    appointment.BusinessId,
-                    new Dictionary<string, object?>
-                    {
-                        ["businessName"] = businessName,
-                        ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
-                        ["appointmentId"] = appointment.Id
-                    },
-                    $"appt:{appointment.Id}:staff-assigned:{assignedStaffId}"));
-            }
+                // The assigned professional is told the slot is theirs. Same transaction as the
+                // row, so the notice can never outlive a rollback.
+                if (appointment.StaffUserId is Guid assignedStaffId && assignedStaffId != Guid.Empty)
+                {
+                    bookingIntents.Add(new NotificationRequest(
+                        "appointment.staff_assigned",
+                        assignedStaffId,
+                        appointment.BusinessId,
+                        new Dictionary<string, object?>
+                        {
+                            ["businessName"] = businessName,
+                            ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+                            ["appointmentId"] = appointment.Id
+                        },
+                        $"appt:{appointment.Id}:staff-assigned:{assignedStaffId}"));
+                }
 
-            await QueueNotificationsSafelyAsync(bookingIntents);
+                await QueueNotificationsSafelyAsync(bookingIntents);
 
-            // Phase 2: the durable created-event and the reminder ladder join the same
-            // transaction — a crash can delay reminders but never lose them. The ladder JSON
-            // was read with the booking context; a row created in this transaction cannot
-            // already have queued jobs, so the dedupe lookup is skipped.
-            await PublishAppointmentCreatedAsync(appointment, business, default);
-            await CreatePendingReminderJobsAsync(
-                appointment, _context, default, reminderOffsetMinutesJson, skipExistingCheck: true);
+                // Phase 2: the durable created-event and the reminder ladder join the same
+                // transaction — a crash can delay reminders but never lose them. The ladder JSON
+                // was read with the booking context; a row created in this transaction cannot
+                // already have queued jobs, so the dedupe lookup is skipped.
+                await PublishAppointmentCreatedAsync(appointment, business, default);
+                await CreatePendingReminderJobsAsync(
+                    appointment, _context, default, reminderOffsetMinutesJson, skipExistingCheck: true);
 
-            // Reactivation: cancel any pending customer.lapsed jobs for this customer
-            // at this business so they stop receiving lapse nudges. A first-time customer
-            // has no such jobs by definition.
-            if (!skipWinBackCancel)
-            {
-                await CancelPendingWinBackJobsAsync(
-                    appointment.CustomerId, appointment.BusinessId, _context, default);
-            }
+                // Reactivation: cancel any pending customer.lapsed jobs for this customer
+                // at this business so they stop receiving lapse nudges. A first-time customer
+                // has no such jobs by definition.
+                if (!skipWinBackCancel)
+                {
+                    await CancelPendingWinBackJobsAsync(
+                        appointment.CustomerId, appointment.BusinessId, _context, default);
+                }
 
-            prepareMs = writeWatch.ElapsedMilliseconds - lockMs - keyMs - overlapMs;
-            await _unitOfWork.SaveChangesAsync();
+                prepareMs = writeWatch.ElapsedMilliseconds - lockMs - keyMs - overlapMs;
+                await _unitOfWork.SaveChangesAsync();
                 saveMs = writeWatch.ElapsedMilliseconds - lockMs - keyMs - overlapMs - prepareMs;
                 var commitWatch = System.Diagnostics.Stopwatch.StartNew();
                 await transaction.CommitAsync();
@@ -2358,7 +2355,7 @@ public class AppointmentService : IAppointmentService
     private async Task<AppointmentResponse> BuildCreatedResponseAsync(
         Appointment appointment, BookingCustomer customer, DateTime statusChangedAt)
     {
-        var response = _mapper.Map<AppointmentResponse>(appointment);
+        var response = appointment.ToAppointmentResponse();
         response.UpdatedAt = statusChangedAt;
         response.PendingReschedule = null;
 
@@ -3195,7 +3192,7 @@ public class AppointmentService : IAppointmentService
     /// </summary>
     private async Task<AppointmentResponse> ToResponseAsync(Appointment appointment)
     {
-        var response = _mapper.Map<AppointmentResponse>(appointment);
+        var response = appointment.ToAppointmentResponse();
 
         var latest = await _context.AppointmentStatusHistory
             .Where(h => h.AppointmentId == appointment.Id)
@@ -3278,7 +3275,7 @@ public class AppointmentService : IAppointmentService
     /// </summary>
     private AppointmentResponse MapResponse(Appointment appointment, Dictionary<Guid, DateTime> latestChanges)
     {
-        var response = _mapper.Map<AppointmentResponse>(appointment);
+        var response = appointment.ToAppointmentResponse();
         response.UpdatedAt = latestChanges.TryGetValue(appointment.Id, out var latest) && latest != default
             ? latest
             : appointment.CreatedAt;

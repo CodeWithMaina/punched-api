@@ -30,156 +30,165 @@ public partial class BusinessService
             catch (JsonException) { return null; }
         }
 
-            var live = await _context.Businesses.AsNoTracking()
-                .Where(b => b.Slug == normalized && !b.IsDeleted)
-                .Select(b => new { b.Id, Slug = b.Slug! })
-                .FirstOrDefaultAsync();
-            Guid businessId; string canonicalSlug; bool moved;
-            if (live != null) { businessId = live.Id; canonicalSlug = live.Slug; moved = false; }
-            else
-            {
-                var history = await (
-                    from h in _context.BusinessSlugHistories.AsNoTracking()
-                    join b in _context.Businesses.AsNoTracking() on h.BusinessId equals b.Id
-                    where h.Slug == normalized && !b.IsDeleted
-                    select new { h.BusinessId, Slug = b.Slug! }).FirstOrDefaultAsync();
-                if (history == null || string.IsNullOrEmpty(history.Slug))
-                    return ApiResponse<StorefrontBootstrapResponse>.Fail("NOT_FOUND", "Business not found.");
-                businessId = history.BusinessId; canonicalSlug = history.Slug; moved = true;
-            }
-            if (TenantBusinessId is Guid activeTenantId && businessId != activeTenantId)
+        var live = await _context.Businesses.AsNoTracking()
+            .Where(b => b.Slug == normalized && !b.IsDeleted)
+            .Select(b => new { b.Id, Slug = b.Slug! })
+            .FirstOrDefaultAsync();
+        Guid businessId; string canonicalSlug; bool moved;
+        if (live != null) { businessId = live.Id; canonicalSlug = live.Slug; moved = false; }
+        else
+        {
+            var history = await (
+                from h in _context.BusinessSlugHistories.AsNoTracking()
+                join b in _context.Businesses.AsNoTracking() on h.BusinessId equals b.Id
+                where h.Slug == normalized && !b.IsDeleted
+                select new { h.BusinessId, Slug = b.Slug! }).FirstOrDefaultAsync();
+            if (history == null || string.IsNullOrEmpty(history.Slug))
                 return ApiResponse<StorefrontBootstrapResponse>.Fail("NOT_FOUND", "Business not found.");
-            var business = await _context.Businesses.AsNoTracking()
-                .Where(b => b.Id == businessId && !b.IsDeleted)
-                .Select(b => new
-                {
-                    b.Id, b.Slug, b.Name, b.Category, b.Location, b.Description,
-                    b.LogoUrl, b.LogoMediaId, b.CoverMediaId, b.PhoneNumber, b.Email,
-                    ActiveProgram = b.LoyaltyPrograms
-                        .Where(p => p.IsActive && p.Status == ProgramStatus.Active)
-                        .OrderByDescending(p => p.CreatedAt)
-                        .Select(p => new { p.Id, p.Name, p.StampsRequired, p.RewardDescription, p.DefaultEnrollmentStamps })
-                        .FirstOrDefault(),
-                    HasReferral = b.ReferralProgram != null && b.ReferralProgram.IsActive,
-                }).FirstOrDefaultAsync();
-            if (business == null)
-                return ApiResponse<StorefrontBootstrapResponse>.Fail("NOT_FOUND", "Business not found.");
-            var moduleKeys = await _moduleEntitlementService.GetEffectiveModuleKeysAsync(businessId);
-            var capabilities = new Dictionary<string, bool>(CustomerCapabilityCatalog.Resolve(moduleKeys,
-                hasActiveLoyaltyProgram: business.ActiveProgram != null,
-                hasActiveReferralProgram: business.HasReferral));
-
-            // `capabilities.payments` means "this business can actually take a payment
-            // now": the module entitlement AND an enabled, complete manual M-PESA method.
-            // The booking wizard reads it to decide whether to show the payment step at
-            // all, so an entitled-but-unconfigured business must read false rather than
-            // render an empty step.
-            if (capabilities.GetValueOrDefault(CustomerCapabilityCatalog.Payments))
+            businessId = history.BusinessId; canonicalSlug = history.Slug; moved = true;
+        }
+        if (TenantBusinessId is Guid activeTenantId && businessId != activeTenantId)
+            return ApiResponse<StorefrontBootstrapResponse>.Fail("NOT_FOUND", "Business not found.");
+        var business = await _context.Businesses.AsNoTracking()
+            .Where(b => b.Id == businessId && !b.IsDeleted)
+            .Select(b => new
             {
-                var paymentConfig = await _context.BusinessPaymentConfigs.AsNoTracking()
-                    .FirstOrDefaultAsync(c => c.BusinessId == businessId);
-                if (paymentConfig?.HasManualMpesaDetails != true)
-                    capabilities[CustomerCapabilityCatalog.Payments] = false;
-            }
-            var galleryMediaIds = await _context.BusinessMedia.AsNoTracking()
-                .Where(x => x.BusinessId == businessId).Select(x => x.MediaId).ToListAsync();
-            var readyGalleryIds = galleryMediaIds.Count == 0 ? new List<Guid>()
-                : await _context.Media.AsNoTracking()
-                    .Where(m => galleryMediaIds.Contains(m.Id) && m.Status == MediaStatus.Ready)
-                    .Select(m => m.Id).ToListAsync();
-            var landingRow = await _context.BusinessLandingPageConfigs.AsNoTracking()
-                .Where(x => x.BusinessId == businessId)
-                .Select(x => new { x.HeroBackgroundMediaId, x.ConfigJson }).FirstOrDefaultAsync();
-            var logoMediaId = business.LogoMediaId;
-            var heroMediaId = landingRow?.HeroBackgroundMediaId ?? business.CoverMediaId;
-            string? logoVariantsJson = null; string? heroVariantsJson = null;
-            if (logoMediaId.HasValue || heroMediaId.HasValue)
+                b.Id,
+                b.Slug,
+                b.Name,
+                b.Category,
+                b.Location,
+                b.Description,
+                b.LogoUrl,
+                b.LogoMediaId,
+                b.CoverMediaId,
+                b.PhoneNumber,
+                b.Email,
+                ActiveProgram = b.LoyaltyPrograms
+                    .Where(p => p.IsActive && p.Status == ProgramStatus.Active)
+                    .OrderByDescending(p => p.CreatedAt)
+                    .Select(p => new { p.Id, p.Name, p.StampsRequired, p.RewardDescription, p.DefaultEnrollmentStamps })
+                    .FirstOrDefault(),
+                HasReferral = b.ReferralProgram != null && b.ReferralProgram.IsActive,
+            }).FirstOrDefaultAsync();
+        if (business == null)
+            return ApiResponse<StorefrontBootstrapResponse>.Fail("NOT_FOUND", "Business not found.");
+        var moduleKeys = await _moduleEntitlementService.GetEffectiveModuleKeysAsync(businessId);
+        var capabilities = new Dictionary<string, bool>(CustomerCapabilityCatalog.Resolve(moduleKeys,
+            hasActiveLoyaltyProgram: business.ActiveProgram != null,
+            hasActiveReferralProgram: business.HasReferral));
+
+        // `capabilities.payments` means "this business can actually take a payment
+        // now": the module entitlement AND an enabled, complete manual M-PESA method.
+        // The booking wizard reads it to decide whether to show the payment step at
+        // all, so an entitled-but-unconfigured business must read false rather than
+        // render an empty step.
+        if (capabilities.GetValueOrDefault(CustomerCapabilityCatalog.Payments))
+        {
+            var paymentConfig = await _context.BusinessPaymentConfigs.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.BusinessId == businessId);
+            if (paymentConfig?.HasManualMpesaDetails != true)
+                capabilities[CustomerCapabilityCatalog.Payments] = false;
+        }
+        var galleryMediaIds = await _context.BusinessMedia.AsNoTracking()
+            .Where(x => x.BusinessId == businessId).Select(x => x.MediaId).ToListAsync();
+        var readyGalleryIds = galleryMediaIds.Count == 0 ? new List<Guid>()
+            : await _context.Media.AsNoTracking()
+                .Where(m => galleryMediaIds.Contains(m.Id) && m.Status == MediaStatus.Ready)
+                .Select(m => m.Id).ToListAsync();
+        var landingRow = await _context.BusinessLandingPageConfigs.AsNoTracking()
+            .Where(x => x.BusinessId == businessId)
+            .Select(x => new { x.HeroBackgroundMediaId, x.ConfigJson }).FirstOrDefaultAsync();
+        var logoMediaId = business.LogoMediaId;
+        var heroMediaId = landingRow?.HeroBackgroundMediaId ?? business.CoverMediaId;
+        string? logoVariantsJson = null; string? heroVariantsJson = null;
+        if (logoMediaId.HasValue || heroMediaId.HasValue)
+        {
+            var ids = new List<Guid>();
+            if (logoMediaId.HasValue) ids.Add(logoMediaId.Value);
+            if (heroMediaId.HasValue && heroMediaId != logoMediaId) ids.Add(heroMediaId.Value);
+            var rows = await _context.Media.AsNoTracking()
+                .Where(m => ids.Contains(m.Id) && m.BusinessId == businessId &&
+                    m.Status == MediaStatus.Ready && m.Visibility == MediaVisibility.Public &&
+                    (m.Purpose == MediaPurposes.BusinessLogo || m.Purpose == MediaPurposes.BusinessCover))
+                .Select(m => new { m.Id, m.Purpose, m.VariantsJson }).ToListAsync();
+            if (logoMediaId.HasValue)
+                logoVariantsJson = rows.FirstOrDefault(r => r.Id == logoMediaId.Value)?.VariantsJson;
+            if (heroMediaId.HasValue)
+                heroVariantsJson = rows.FirstOrDefault(r => r.Id == heroMediaId.Value)?.VariantsJson;
+        }
+        if (string.IsNullOrWhiteSpace(heroVariantsJson)) heroMediaId = null;
+        var config = LandingPageDefaults.Merge(
+            landingRow == null ? null : ParseBootstrapLandingConfig(landingRow.ConfigJson));
+
+        // The rich Storefront Builder projection (published only). Null when the
+        // business has not published via the builder — the flat fields above then
+        // remain the source of truth for the renderer.
+        var storefront = _storefrontBuilder == null
+            ? null
+            : await _storefrontBuilder.GetPublishedForBusinessAsync(businessId);
+
+        return ApiResponse<StorefrontBootstrapResponse>.Ok(new StorefrontBootstrapResponse
+        {
+            BusinessId = businessId,
+            Slug = canonicalSlug,
+            Moved = moved,
+            Business = new PublicBusinessProfileResponse
             {
-                var ids = new List<Guid>();
-                if (logoMediaId.HasValue) ids.Add(logoMediaId.Value);
-                if (heroMediaId.HasValue && heroMediaId != logoMediaId) ids.Add(heroMediaId.Value);
-                var rows = await _context.Media.AsNoTracking()
-                    .Where(m => ids.Contains(m.Id) && m.BusinessId == businessId &&
-                        m.Status == MediaStatus.Ready && m.Visibility == MediaVisibility.Public &&
-                        (m.Purpose == MediaPurposes.BusinessLogo || m.Purpose == MediaPurposes.BusinessCover))
-                    .Select(m => new { m.Id, m.Purpose, m.VariantsJson }).ToListAsync();
-                if (logoMediaId.HasValue)
-                    logoVariantsJson = rows.FirstOrDefault(r => r.Id == logoMediaId.Value)?.VariantsJson;
-                if (heroMediaId.HasValue)
-                    heroVariantsJson = rows.FirstOrDefault(r => r.Id == heroMediaId.Value)?.VariantsJson;
-            }
-            if (string.IsNullOrWhiteSpace(heroVariantsJson)) heroMediaId = null;
-            var config = LandingPageDefaults.Merge(
-                landingRow == null ? null : ParseBootstrapLandingConfig(landingRow.ConfigJson));
-
-            // The rich Storefront Builder projection (published only). Null when the
-            // business has not published via the builder — the flat fields above then
-            // remain the source of truth for the renderer.
-            var storefront = _storefrontBuilder == null
-                ? null
-                : await _storefrontBuilder.GetPublishedForBusinessAsync(businessId);
-
-            return ApiResponse<StorefrontBootstrapResponse>.Ok(new StorefrontBootstrapResponse
+                Id = business.Id,
+                Name = business.Name,
+                Category = business.Category,
+                Location = business.Location,
+                Description = business.Description,
+                LogoUrl = business.LogoUrl,
+                PhoneNumber = business.PhoneNumber,
+                Email = business.Email,
+                LoyaltyProgram = business.ActiveProgram != null
+                    ? new PublicLoyaltyProgramSummary
+                    {
+                        Name = business.ActiveProgram.Name,
+                        StampsRequired = business.ActiveProgram.StampsRequired,
+                        RewardDescription = business.ActiveProgram.RewardDescription,
+                        DefaultEnrollmentStamps = business.ActiveProgram.DefaultEnrollmentStamps,
+                    }
+                    : null,
+                HasReferralProgram = business.HasReferral,
+                Capabilities = capabilities.ToDictionary(k => k.Key, k => k.Value),
+            },
+            LandingPage = new PublicLandingPageResponse
             {
                 BusinessId = businessId,
-                Slug = canonicalSlug,
-                Moved = moved,
-                Business = new PublicBusinessProfileResponse
+                HeroTitle = config.Hero.TitleOverride ?? business.Name,
+                HeroTagline = config.Hero.TaglineOverride ?? business.Description ?? string.Empty,
+                HeroDescription = config.Hero.DescriptionOverride,
+                ShowLogo = config.Hero.ShowLogo,
+                HeroBackgroundMediaId = heroMediaId,
+                HeroBackgroundVariants = new List<ServiceImageVariantResponse>(),
+                Navigation = new Dictionary<string, bool>
                 {
-                    Id = business.Id,
-                    Name = business.Name,
-                    Category = business.Category,
-                    Location = business.Location,
-                    Description = business.Description,
-                    LogoUrl = business.LogoUrl,
-                    PhoneNumber = business.PhoneNumber,
-                    Email = business.Email,
-                    LoyaltyProgram = business.ActiveProgram != null
-                        ? new PublicLoyaltyProgramSummary
-                        {
-                            Name = business.ActiveProgram.Name,
-                            StampsRequired = business.ActiveProgram.StampsRequired,
-                            RewardDescription = business.ActiveProgram.RewardDescription,
-                            DefaultEnrollmentStamps = business.ActiveProgram.DefaultEnrollmentStamps,
-                        }
-                        : null,
-                    HasReferralProgram = business.HasReferral,
-                    Capabilities = capabilities.ToDictionary(k => k.Key, k => k.Value),
+                    ["services"] = config.Navigation.Services,
+                    ["loyalty"] = config.Navigation.Loyalty,
+                    ["about"] = config.Navigation.About,
+                    ["reviews"] = config.Navigation.Reviews,
+                    ["contact"] = config.Navigation.Contact,
+                    ["gallery"] = config.Navigation.Gallery,
+                    ["booking"] = config.Navigation.Booking,
                 },
-                LandingPage = new PublicLandingPageResponse
-                {
-                    BusinessId = businessId,
-                    HeroTitle = config.Hero.TitleOverride ?? business.Name,
-                    HeroTagline = config.Hero.TaglineOverride ?? business.Description ?? string.Empty,
-                    HeroDescription = config.Hero.DescriptionOverride,
-                    ShowLogo = config.Hero.ShowLogo,
-                    HeroBackgroundMediaId = heroMediaId,
-                    HeroBackgroundVariants = new List<ServiceImageVariantResponse>(),
-                    Navigation = new Dictionary<string, bool>
+                Sections = config.Sections
+                    .Where(kv => kv.Value != null && kv.Value.Enabled)
+                    .Select(kv => new PublicLandingPageSection
                     {
-                        ["services"] = config.Navigation.Services,
-                        ["loyalty"] = config.Navigation.Loyalty,
-                        ["about"] = config.Navigation.About,
-                        ["reviews"] = config.Navigation.Reviews,
-                        ["contact"] = config.Navigation.Contact,
-                        ["gallery"] = config.Navigation.Gallery,
-                        ["booking"] = config.Navigation.Booking,
-                    },
-                    Sections = config.Sections
-                        .Where(kv => kv.Value != null && kv.Value.Enabled)
-                        .Select(kv => new PublicLandingPageSection
-                        {
-                            Key = kv.Key,
-                            Order = kv.Value.Order,
-                            Title = kv.Value.Title,
-                            Description = kv.Value.Description,
-                        })
-                        .ToList(),
-                    PrimaryCta = config.PrimaryCta,
-                    SecondaryCta = config.SecondaryCta,
-                    Storefront = storefront,
-                },
-            });
+                        Key = kv.Key,
+                        Order = kv.Value.Order,
+                        Title = kv.Value.Title,
+                        Description = kv.Value.Description,
+                    })
+                    .ToList(),
+                PrimaryCta = config.PrimaryCta,
+                SecondaryCta = config.SecondaryCta,
+                Storefront = storefront,
+            },
+        });
     }
 
     /// <summary>
@@ -219,8 +228,15 @@ public partial class BusinessService
             .Where(b => b.Id == businessId.Value && !b.IsDeleted)
             .Select(b => new
             {
-                b.Id, b.Name, b.Category, b.Location, b.Description, b.LogoUrl,
-                b.PhoneNumber, b.Email, b.Slug,
+                b.Id,
+                b.Name,
+                b.Category,
+                b.Location,
+                b.Description,
+                b.LogoUrl,
+                b.PhoneNumber,
+                b.Email,
+                b.Slug,
                 HasLoyalty = b.LoyaltyPrograms.Any(p => p.IsActive && p.Status == ProgramStatus.Active),
                 HasReferral = b.ReferralProgram != null && b.ReferralProgram.IsActive,
                 PolicyEnabled = b.ReminderPolicy == null ? (bool?)null : b.ReminderPolicy.Enabled,

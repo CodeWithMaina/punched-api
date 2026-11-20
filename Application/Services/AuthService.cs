@@ -1,8 +1,8 @@
 using System.Security.Cryptography;
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
@@ -21,7 +21,6 @@ public class AuthService : IAuthService
 
     /// <summary>Shared notification pipeline; null only in unit tests / legacy hosts.</summary>
     private readonly INotificationService? _notifications;
-    private readonly IMapper _mapper;
     private readonly ILogger<AuthService> _logger;
     private readonly ISubscriptionProvisioningService _subscriptionProvisioning;
     private readonly IBusinessSlugGenerator _slugGenerator;
@@ -49,7 +48,6 @@ public class AuthService : IAuthService
         IUnitOfWork unitOfWork,
         JwtTokenService jwtService,
         IEmailService emailService,
-        IMapper mapper,
         ILogger<AuthService> logger,
         ISubscriptionProvisioningService subscriptionProvisioning,
         IBusinessSlugGenerator slugGenerator,
@@ -70,7 +68,6 @@ public class AuthService : IAuthService
         _jwtService = jwtService;
         _emailService = emailService;
         _notifications = notifications;
-        _mapper = mapper;
         _logger = logger;
         _subscriptionProvisioning = subscriptionProvisioning;
         _slugGenerator = slugGenerator;
@@ -221,7 +218,7 @@ public class AuthService : IAuthService
         }
     }
 
-/// <inheritdoc />
+    /// <inheritdoc />
     /// <remarks>
     /// 1. Find UserAuth by email (404 if not found).
     /// 2. Check verification code not expired (410 if expired).
@@ -302,12 +299,12 @@ public class AuthService : IAuthService
                     "User profile not found.");
             }
 
-                    if (user.IsDeleted)
-                    {
-                    return ApiResponse<AuthResponse>.Fail(
-                        "ACCOUNT_DISABLED",
-                        "This account has been disabled.");
-                    }
+            if (user.IsDeleted)
+            {
+                return ApiResponse<AuthResponse>.Fail(
+                    "ACCOUNT_DISABLED",
+                    "This account has been disabled.");
+            }
 
             // Generate tokens. Tenant claims are minted only when the caller's
             // membership of the tenant host is verified server-side.
@@ -365,7 +362,7 @@ public class AuthService : IAuthService
                 AccessToken = accessToken,
                 RefreshToken = refreshTokenValue,
                 ExpiresIn = _jwtService.AccessTokenExpirySeconds,
-                User = _mapper.Map<UserProfileResponse>(user)
+                User = user.ToProfileResponse()
             });
         }
         catch (Exception ex)
@@ -454,12 +451,12 @@ public class AuthService : IAuthService
                     "User profile not found.");
             }
 
-                    if (user.IsDeleted)
-                    {
-                    return ApiResponse<AuthResponse>.Fail(
-                        "ACCOUNT_DISABLED",
-                        "This account has been disabled.");
-                    }
+            if (user.IsDeleted)
+            {
+                return ApiResponse<AuthResponse>.Fail(
+                    "ACCOUNT_DISABLED",
+                    "This account has been disabled.");
+            }
 
             // Generate tokens. Tenant-aware: signing in on java-house.punched.app
             // issues biz/bizRole claims once membership is verified.
@@ -486,7 +483,7 @@ public class AuthService : IAuthService
                 AccessToken = accessToken,
                 RefreshToken = refreshTokenValue,
                 ExpiresIn = _jwtService.AccessTokenExpirySeconds,
-                User = _mapper.Map<UserProfileResponse>(user)
+                User = user.ToProfileResponse()
             });
         }
         catch (Exception ex)
@@ -850,7 +847,7 @@ public class AuthService : IAuthService
             }
 
             return ApiResponse<UserProfileResponse>.Ok(
-                _mapper.Map<UserProfileResponse>(user));
+                user.ToProfileResponse());
         }
         catch (Exception ex)
         {

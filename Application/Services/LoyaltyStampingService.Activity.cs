@@ -92,54 +92,54 @@ public partial class LoyaltyStampingService
 
     internal static StampTransactionResponse MapTransaction(
         StampTransaction t, LoyaltyProgram? program, string? customerName = null, string? actorRole = null) => new()
-    {
-        Id = t.Id,
-        BusinessId = t.BusinessId,
-        ProgramId = t.ProgramId,
-        ProgramName = program?.Name ?? string.Empty,
-        CardId = t.CardId,
-        CustomerId = t.CustomerId,
-        CustomerName = customerName,
-        Amount = t.Amount,
-        Direction = t.Direction == StampTransactionDirection.Credit ? "credit" : "debit",
-        SignedAmount = t.SignedAmount,
-        Source = t.Source,
-        SourceId = t.SourceId,
-        EarningRuleId = t.EarningRuleId,
-        IsAutomatic = t.IsAutomatic,
-        Reason = t.Reason,
-        CreatedByUserId = t.CreatedByUserId,
-        CreatedByRole = t.CreatedByRole ?? actorRole,
-        CreatedAt = t.CreatedAt
-    };
+        {
+            Id = t.Id,
+            BusinessId = t.BusinessId,
+            ProgramId = t.ProgramId,
+            ProgramName = program?.Name ?? string.Empty,
+            CardId = t.CardId,
+            CustomerId = t.CustomerId,
+            CustomerName = customerName,
+            Amount = t.Amount,
+            Direction = t.Direction == StampTransactionDirection.Credit ? "credit" : "debit",
+            SignedAmount = t.SignedAmount,
+            Source = t.Source,
+            SourceId = t.SourceId,
+            EarningRuleId = t.EarningRuleId,
+            IsAutomatic = t.IsAutomatic,
+            Reason = t.Reason,
+            CreatedByUserId = t.CreatedByUserId,
+            CreatedByRole = t.CreatedByRole ?? actorRole,
+            CreatedAt = t.CreatedAt
+        };
 
     internal static RewardEntitlementResponse MapEntitlement(
         RewardEntitlement e, string? programName = null, string? customerName = null) => new()
-    {
-        Id = e.Id,
-        BusinessId = e.BusinessId,
-        ProgramId = e.ProgramId,
-        ProgramName = programName,
-        CardId = e.CardId,
-        CustomerId = e.CustomerId,
-        CustomerName = customerName,
-        RewardId = e.RewardId,
-        RewardName = e.RewardName,
-        RequiredStamps = e.RequiredStamps,
-        StampsToConsume = e.StampsToConsume,
-        RewardValue = e.RewardValue,
-        Status = e.Status switch
         {
-            RewardEntitlementStatus.Redeemed => "redeemed",
-            RewardEntitlementStatus.Expired => "expired",
-            RewardEntitlementStatus.Cancelled => "cancelled",
-            _ => "unlocked"
-        },
-        UnlockedAt = e.UnlockedAt,
-        ExpiresAt = e.ExpiresAt,
-        RedeemedAt = e.RedeemedAt,
-        RedemptionId = e.RedemptionId,
-        CanRedeem = e.Status == RewardEntitlementStatus.Unlocked &&
+            Id = e.Id,
+            BusinessId = e.BusinessId,
+            ProgramId = e.ProgramId,
+            ProgramName = programName,
+            CardId = e.CardId,
+            CustomerId = e.CustomerId,
+            CustomerName = customerName,
+            RewardId = e.RewardId,
+            RewardName = e.RewardName,
+            RequiredStamps = e.RequiredStamps,
+            StampsToConsume = e.StampsToConsume,
+            RewardValue = e.RewardValue,
+            Status = e.Status switch
+            {
+                RewardEntitlementStatus.Redeemed => "redeemed",
+                RewardEntitlementStatus.Expired => "expired",
+                RewardEntitlementStatus.Cancelled => "cancelled",
+                _ => "unlocked"
+            },
+            UnlockedAt = e.UnlockedAt,
+            ExpiresAt = e.ExpiresAt,
+            RedeemedAt = e.RedeemedAt,
+            RedemptionId = e.RedemptionId,
+            CanRedeem = e.Status == RewardEntitlementStatus.Unlocked &&
                    (e.ExpiresAt == null || e.ExpiresAt > DateTime.UtcNow)
-    };
+        };
 }

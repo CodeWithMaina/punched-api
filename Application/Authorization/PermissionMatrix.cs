@@ -23,13 +23,13 @@ public static class PermissionMatrix
     {
         var map = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var module in Modules.ModuleCatalog.Modules)
-        foreach (var perm in module.Permissions)
-        foreach (var role in perm.Roles)
-        {
-            if (!map.TryGetValue(role, out var set))
-                map[role] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            set.Add(perm.Code);
-        }
+            foreach (var perm in module.Permissions)
+                foreach (var role in perm.Roles)
+                {
+                    if (!map.TryGetValue(role, out var set))
+                        map[role] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    set.Add(perm.Code);
+                }
         return map.ToDictionary(kv => kv.Key, kv => (IReadOnlySet<string>)kv.Value.ToHashSet());
     }
 }

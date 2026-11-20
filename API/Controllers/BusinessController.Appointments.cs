@@ -445,7 +445,7 @@ public partial class BusinessController
         var userId = GetUserId();
         if (userId == null) return Unauthorized();
 
-                var result = await _appointmentService.MarkNoShowAsync(userId.Value, "Staff", id);
+        var result = await _appointmentService.MarkNoShowAsync(userId.Value, "Staff", id);
         return result.Success ? Ok(result) : MapFailure(result);
     }
 

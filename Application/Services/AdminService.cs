@@ -9,7 +9,7 @@ namespace PunchedApi.Application.Services;
 
 public class AdminService : IAdminService
 {
-        private readonly IUnitOfWork _unitOfWork;
+    private readonly IUnitOfWork _unitOfWork;
     private readonly ApplicationDbContext _context;
     private readonly IInsightService _insightService;
     private readonly IAnalyticsAggregationService _analyticsAggregator;
@@ -938,7 +938,7 @@ public class AdminService : IAdminService
         var avgDuration = stats?.AvgDuration ?? 0d;
         var errorRate = total > 0 ? ((double)(error4xx + error5xx) / total) * 100d : 0d;
 
-                return ApiResponse<AdminApiHealthResponse>.Ok(new AdminApiHealthResponse
+        return ApiResponse<AdminApiHealthResponse>.Ok(new AdminApiHealthResponse
         {
             PeriodDays = periodDays,
             TotalRequests = total,
@@ -970,7 +970,7 @@ public class AdminService : IAdminService
 
         return ApiResponse<MessageResponse>.Ok(new MessageResponse
         {
-                        Message = $"Analytics backfill started for {processed} business(es) from {from:yyyy-MM-dd} to {to:yyyy-MM-dd}."
+            Message = $"Analytics backfill started for {processed} business(es) from {from:yyyy-MM-dd} to {to:yyyy-MM-dd}."
         });
     }
 

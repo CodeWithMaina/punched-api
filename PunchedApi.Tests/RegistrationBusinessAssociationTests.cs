@@ -1,9 +1,7 @@
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Moq;
 using PunchedApi.Application.DTOs;
-using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Services;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
@@ -45,10 +43,6 @@ public class RegistrationBusinessAssociationTests
             AccessTokenExpiryMinutes = 60,
             RefreshTokenExpiryDays = 30
         }));
-
-    private static IMapper CreateMapper() =>
-        new MapperConfiguration(cfg => cfg.AddProfile<MappingProfile>()).CreateMapper();
-
     private static Business AddBusiness(ApplicationDbContext ctx, string name, string slug)
     {
         var owner = new User
@@ -104,8 +98,7 @@ public class RegistrationBusinessAssociationTests
             new UnitOfWork(ctx),
             CreateJwtService(),
             emailMock.Object,
-            CreateMapper(),
-            TestHelpers.CreateLogger<AuthService>(),
+                        TestHelpers.CreateLogger<AuthService>(),
             new SubscriptionProvisioningService(ctx, TestHelpers.CreateLogger<SubscriptionProvisioningService>()),
             new BusinessSlugGenerator(ctx),
             // Real membership view: one business_memberships read resolves

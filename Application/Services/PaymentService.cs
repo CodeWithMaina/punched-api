@@ -271,7 +271,7 @@ public partial class PaymentService : IPaymentService
         if (!await CanAccessPaymentAsync(payment, userId, role))
             return ApiResponse<PaymentResponse>.Fail("NOT_FOUND", "Payment not found.");
 
-                // Carry the customer's display name on the single-payment read too (the list
+        // Carry the customer's display name on the single-payment read too (the list
         // already resolves it for its page); without this the detail page cannot name them.
         var response = ToResponse(payment);
         if (payment.CustomerId is Guid customerId)
@@ -332,13 +332,13 @@ public partial class PaymentService : IPaymentService
                 break;
             case "Staff":
             case "Business":
-            {
-                var businessId = await ResolveBusinessIdAsync(userId, role);
-                if (businessId == null)
-                    return ApiResponse<PaymentListResponse>.Fail("FORBIDDEN", "No business scope for user.");
-                dbQuery = dbQuery.Where(p => p.BusinessId == businessId);
-                break;
-            }
+                {
+                    var businessId = await ResolveBusinessIdAsync(userId, role);
+                    if (businessId == null)
+                        return ApiResponse<PaymentListResponse>.Fail("FORBIDDEN", "No business scope for user.");
+                    dbQuery = dbQuery.Where(p => p.BusinessId == businessId);
+                    break;
+                }
             case "Admin":
                 break;
             default:
@@ -574,12 +574,12 @@ public partial class PaymentService : IPaymentService
                 break;
             case "Staff":
             case "Business":
-            {
-                var businessId = await ResolveBusinessIdAsync(userId, role);
-                if (businessId == null || appointment.BusinessId != businessId)
-                    return ApiResponse<PaymentResponse>.Fail("FORBIDDEN", "Appointment is outside your business.");
-                break;
-            }
+                {
+                    var businessId = await ResolveBusinessIdAsync(userId, role);
+                    if (businessId == null || appointment.BusinessId != businessId)
+                        return ApiResponse<PaymentResponse>.Fail("FORBIDDEN", "Appointment is outside your business.");
+                    break;
+                }
             default:
                 return ApiResponse<PaymentResponse>.Fail("FORBIDDEN", "Role cannot create payments.");
         }
@@ -1201,10 +1201,10 @@ public partial class PaymentService : IPaymentService
                 return payment.CustomerId == userId;
             case "Staff":
             case "Business":
-            {
-                var businessId = await ResolveBusinessIdAsync(userId, role);
-                return businessId != null && payment.BusinessId == businessId;
-            }
+                {
+                    var businessId = await ResolveBusinessIdAsync(userId, role);
+                    return businessId != null && payment.BusinessId == businessId;
+                }
             case "Admin":
                 return true;
             default:
@@ -1223,14 +1223,14 @@ public partial class PaymentService : IPaymentService
                 return (true, false, string.Empty);
             case "Staff":
             case "Business":
-            {
-                var businessId = await ResolveBusinessIdAsync(userId, role);
-                if (businessId == null)
-                    return (false, true, "Appointment not found.");
-                if (appointment.BusinessId != businessId)
-                    return (false, true, "Appointment not found.");
-                return (true, false, string.Empty);
-            }
+                {
+                    var businessId = await ResolveBusinessIdAsync(userId, role);
+                    if (businessId == null)
+                        return (false, true, "Appointment not found.");
+                    if (appointment.BusinessId != businessId)
+                        return (false, true, "Appointment not found.");
+                    return (true, false, string.Empty);
+                }
             case "Admin":
                 return (true, false, string.Empty);
             default:

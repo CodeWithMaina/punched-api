@@ -15,6 +15,10 @@
     "http://localhost:5173",
     "http://*.localhost:5173"
   ],
+  "Billing": {
+    "//": "Local-only placeholder for the simulated billing webhook. Deployed environments must set Billing__WebhookSecret to a real random value; the committed appsettings.json leaves it empty so the verifier fails closed.",
+    "WebhookSecret": "local-dev-webhook-secret-change-me"
+  },
   "Seed": {
     "Enabled": true,
     "RunOnStartup": false,

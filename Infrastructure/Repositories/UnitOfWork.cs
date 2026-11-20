@@ -22,7 +22,7 @@ public class UnitOfWork : IUnitOfWork
     private IRepository<LoyaltyCard>? _loyaltyCards;
     private IRepository<QrToken>? _qrTokens;
     private IRepository<Stamp>? _stamps;
-            private IRepository<Redemption>? _redemptions;
+    private IRepository<Redemption>? _redemptions;
     private IRepository<StampAdjustment>? _stampAdjustments;
     private IRepository<IdempotencyKey>? _idempotencyKeys;
     private IRepository<ApiEventLog>? _apiEventLogs;
@@ -100,14 +100,14 @@ public class UnitOfWork : IUnitOfWork
     public IRepository<Stamp> Stamps =>
         _stamps ??= new Repository<Stamp>(_context);
 
-        public IRepository<Redemption> Redemptions =>
-        _redemptions ??= new Repository<Redemption>(_context);
+    public IRepository<Redemption> Redemptions =>
+    _redemptions ??= new Repository<Redemption>(_context);
 
     public IRepository<StampAdjustment> StampAdjustments =>
         _stampAdjustments ??= new Repository<StampAdjustment>(_context);
 
-        public IRepository<IdempotencyKey> IdempotencyKeys =>
-        _idempotencyKeys ??= new Repository<IdempotencyKey>(_context);
+    public IRepository<IdempotencyKey> IdempotencyKeys =>
+    _idempotencyKeys ??= new Repository<IdempotencyKey>(_context);
 
     public IRepository<ApiEventLog> ApiEventLogs =>
         _apiEventLogs ??= new Repository<ApiEventLog>(_context);
@@ -211,7 +211,7 @@ public class UnitOfWork : IUnitOfWork
     public IRepository<Reward> Rewards =>
         _rewards ??= new Repository<Reward>(_context);
 
-        /// <inheritdoc />
+    /// <inheritdoc />
     public IRepository<RewardEntitlement> RewardEntitlements =>
         _rewardEntitlements ??= new Repository<RewardEntitlement>(_context);
 

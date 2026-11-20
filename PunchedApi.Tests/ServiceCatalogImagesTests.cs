@@ -113,7 +113,7 @@ public sealed class ServiceCatalogImagesTests
         var reordered = await env.Service.SetServiceImagesAsync(env.Owner.Id, serviceId, [photos[1].Id, photos[0].Id]);
 
         Assert.Equal(new[] { photos[1].Id, photos[0].Id }, reordered.Data!.Select(image => image.MediaId));
-        Assert.Equal(new[] { true, false }, reordered.Data.Select(image => image.IsCover));
+        Assert.Equal(new[] { true, false }, reordered.Data!.Select(image => image.IsCover));
 
         // A reorder is a metadata write only: the media rows survive, so no
         // storage object is orphaned and no re-upload is implied.
@@ -161,7 +161,7 @@ public sealed class ServiceCatalogImagesTests
 
         var reduced = await env.Service.SetServiceImagesAsync(env.Owner.Id, serviceId, [photos[1].Id]);
         Assert.Equal([photos[1].Id], reduced.Data!.Select(image => image.MediaId));
-        Assert.True(reduced.Data[0].IsCover);
+        Assert.True(reduced.Data![0].IsCover);
         Assert.Single(context.ServiceMedia.Where(link => link.ServiceCatalogItemId == serviceId));
 
         var cleared = await env.Service.SetServiceImagesAsync(env.Owner.Id, serviceId, []);

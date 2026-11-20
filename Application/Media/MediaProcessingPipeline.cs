@@ -190,13 +190,19 @@ public sealed class MediaProcessor(
                     var jpgKey = _keys.CreateDeliveryKey(media.Id, media.Purpose, targetWidth, "jpg");
                     RecordVariant(variants, new MediaVariantResponse
                     {
-                        Url = _urls.CreatePublicUrl(webpKey), Width = targetWidth, Height = targetHeight,
-                        Format = "webp", Transform = "public"
+                        Url = _urls.CreatePublicUrl(webpKey),
+                        Width = targetWidth,
+                        Height = targetHeight,
+                        Format = "webp",
+                        Transform = "public"
                     });
                     RecordVariant(variants, new MediaVariantResponse
                     {
-                        Url = _urls.CreatePublicUrl(jpgKey), Width = targetWidth, Height = targetHeight,
-                        Format = "jpeg", Transform = "public"
+                        Url = _urls.CreatePublicUrl(jpgKey),
+                        Width = targetWidth,
+                        Height = targetHeight,
+                        Format = "jpeg",
+                        Transform = "public"
                     });
 
                     // Fan the uploads out: encoding is already finished, so the only remaining

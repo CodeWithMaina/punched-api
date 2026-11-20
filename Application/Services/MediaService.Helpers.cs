@@ -23,10 +23,18 @@ public sealed partial class MediaService
         if (media.Status != MediaStatus.Ready) variants = [];
         return new MediaResponse
         {
-            Id = media.Id, Purpose = media.Purpose, Status = media.Status.ToString(), Visibility = media.Visibility.ToString(),
-            DeclaredMimeType = media.DeclaredMimeType, DetectedMimeType = media.DetectedMimeType,
-            Width = media.Width, Height = media.Height, SourceSizeBytes = media.SourceSizeBytes,
-            Variants = variants, CreatedAt = media.CreatedAt, UpdatedAt = media.UpdatedAt
+            Id = media.Id,
+            Purpose = media.Purpose,
+            Status = media.Status.ToString(),
+            Visibility = media.Visibility.ToString(),
+            DeclaredMimeType = media.DeclaredMimeType,
+            DetectedMimeType = media.DetectedMimeType,
+            Width = media.Width,
+            Height = media.Height,
+            SourceSizeBytes = media.SourceSizeBytes,
+            Variants = variants,
+            CreatedAt = media.CreatedAt,
+            UpdatedAt = media.UpdatedAt
         };
     }
 

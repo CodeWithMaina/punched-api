@@ -38,8 +38,11 @@ public sealed partial class R2ObjectStore : IObjectStore, IDisposable
         ValidateKey(key);
         var request = new GetPreSignedUrlRequest
         {
-            BucketName = Bucket(bucket), Key = key, Verb = HttpVerb.PUT,
-            Expires = expiresAt.UtcDateTime, Protocol = Protocol.HTTPS,
+            BucketName = Bucket(bucket),
+            Key = key,
+            Verb = HttpVerb.PUT,
+            Expires = expiresAt.UtcDateTime,
+            Protocol = Protocol.HTTPS,
             ContentType = contentType
         };
         return Task.FromResult(new PresignedObjectWrite(new Uri(_client.GetPreSignedURL(request)),
@@ -76,8 +79,11 @@ public sealed partial class R2ObjectStore : IObjectStore, IDisposable
         ValidateKey(key);
         return _client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = Bucket(bucket), Key = key, InputStream = content,
-            ContentType = contentType, UseChunkEncoding = false,
+            BucketName = Bucket(bucket),
+            Key = key,
+            InputStream = content,
+            ContentType = contentType,
+            UseChunkEncoding = false,
             Headers = { CacheControl = cacheControl }
         }, cancellationToken);
     }

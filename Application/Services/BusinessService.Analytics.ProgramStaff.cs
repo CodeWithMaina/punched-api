@@ -73,8 +73,14 @@ public partial class BusinessService
             if (staffPeriodStats.TryGetValue(kv.Key, out var s)) ps = s;
             staffPerformance.Add(new StaffPerformanceItem
             {
-                StaffId = kv.Key, Name = kv.Value, StampsIssued = ps.StampsIssued, CustomersServed = ps.CustomersServed,
-                StampsToday = today, StampsLast7Days = last7, StampsLast30Days = last30, StampsAllTime = allTime,
+                StaffId = kv.Key,
+                Name = kv.Value,
+                StampsIssued = ps.StampsIssued,
+                CustomersServed = ps.CustomersServed,
+                StampsToday = today,
+                StampsLast7Days = last7,
+                StampsLast30Days = last30,
+                StampsAllTime = allTime,
                 StampsPerActiveDay = activeDays > 0 ? Math.Round(ps.StampsIssued / (double)activeDays, 2) : 0,
                 PersonalBest = personalBest
             });

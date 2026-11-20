@@ -90,7 +90,7 @@ public class AdminSubscriptionService : IAdminSubscriptionService
             return ApiResponse<PaginatedResponse<AdminTierBusinessItem>>.Fail("LIST_FAILED", "Failed to list businesses on the tier.");
         }
     }
-public async Task<ApiResponse<BusinessSubscriptionDetail>> GetBusinessSubscriptionAsync(Guid businessId)
+    public async Task<ApiResponse<BusinessSubscriptionDetail>> GetBusinessSubscriptionAsync(Guid businessId)
     {
         try
         {

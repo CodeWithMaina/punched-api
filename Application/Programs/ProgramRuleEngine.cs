@@ -78,7 +78,7 @@ public sealed class ProgramRuleEngine : IProgramRuleEngine
             _ => true
         };
     }
-public int? NextRewardThreshold(LoyaltyProgram program, int currentStamps)
+    public int? NextRewardThreshold(LoyaltyProgram program, int currentStamps)
     {
         var rewards = ResolveConfig(program).Rewards
             .Where(r => r.Stamps > currentStamps)

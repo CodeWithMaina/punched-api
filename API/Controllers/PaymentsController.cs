@@ -64,9 +64,17 @@ public class PaymentsController : ControllerBase
         if (userId == null) return Unauthorized();
         var result = await _payments.ListPaymentsAsync(new PaymentListQuery
         {
-            AppointmentId = appointmentId, CustomerId = customerId, Status = status,
-            Method = method, Type = type, From = from, To = to, Search = search, Sort = sort,
-            Page = page, PageSize = pageSize
+            AppointmentId = appointmentId,
+            CustomerId = customerId,
+            Status = status,
+            Method = method,
+            Type = type,
+            From = from,
+            To = to,
+            Search = search,
+            Sort = sort,
+            Page = page,
+            PageSize = pageSize
         }, userId.Value, role!);
         return result.Success ? Ok(result) : MapFailure(result);
     }
@@ -181,7 +189,12 @@ public class PaymentsController : ControllerBase
         if (userId == null) return Unauthorized();
         var result = await _payments.GetVerificationQueueAsync(new PaymentVerificationQuery
         {
-            Status = status, Search = search, From = from, To = to, Page = page, PageSize = pageSize
+            Status = status,
+            Search = search,
+            From = from,
+            To = to,
+            Page = page,
+            PageSize = pageSize
         }, userId.Value, role!);
         return result.Success ? Ok(result) : MapFailure(result);
     }

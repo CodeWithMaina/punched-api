@@ -91,14 +91,24 @@ public class FinancesController : ControllerBase
 
         var result = await _analytics.GetCashbookAsync(new FinancialTransactionQuery
         {
-            From = from, To = to, Type = type, Direction = direction, Source = source,
-            Category = category, PaymentMethod = paymentMethod, Search = search,
-            RecordedByUserId = recordedByUserId, RecordedByName = recordedBy, Payee = customer,
-            MinAmount = minAmount, MaxAmount = maxAmount,
+            From = from,
+            To = to,
+            Type = type,
+            Direction = direction,
+            Source = source,
+            Category = category,
+            PaymentMethod = paymentMethod,
+            Search = search,
+            RecordedByUserId = recordedByUserId,
+            RecordedByName = recordedBy,
+            Payee = customer,
+            MinAmount = minAmount,
+            MaxAmount = maxAmount,
             // The book shows MOVEMENTS. A voided row moved nothing, so it is excluded unless the
             // owner explicitly asks to audit it.
             IncludeVoided = includeVoided,
-            Page = page, PageSize = pageSize
+            Page = page,
+            PageSize = pageSize
         }, userId.Value, role!);
 
         return result.Success ? Ok(result) : MapFailure(result);
@@ -497,9 +507,16 @@ public class FinancesController : ControllerBase
 
         var result = await _payments.GetVerificationQueueAsync(new PaymentVerificationQuery
         {
-            Status = status, Search = search, From = from, To = to,
-            TransactionFrom = transactionFrom, TransactionTo = transactionTo,
-            MinAmount = minAmount, MaxAmount = maxAmount, Page = page, PageSize = pageSize
+            Status = status,
+            Search = search,
+            From = from,
+            To = to,
+            TransactionFrom = transactionFrom,
+            TransactionTo = transactionTo,
+            MinAmount = minAmount,
+            MaxAmount = maxAmount,
+            Page = page,
+            PageSize = pageSize
         }, userId.Value, role!);
 
         return result.Success ? Ok(result) : MapFailure(result);

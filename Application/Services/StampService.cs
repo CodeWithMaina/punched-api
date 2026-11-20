@@ -19,9 +19,9 @@ public class StampService : IStampService
     private readonly ApplicationDbContext _context;
     private readonly ISseService _sseService;
     private readonly IReferralService _referralService;
-        private readonly IAnalyticsAggregationService _analyticsAggregationService;
+    private readonly IAnalyticsAggregationService _analyticsAggregationService;
     private readonly INotificationService _notificationService;
-        private readonly IBusinessScopeResolver _businessScopeResolver;
+    private readonly IBusinessScopeResolver _businessScopeResolver;
     private readonly IPermissionService _permissionService;
     private readonly IIdempotencyService _idempotencyService;
     private readonly ILogger<StampService> _logger;
@@ -44,18 +44,18 @@ public class StampService : IStampService
         _referralService = referralService;
         _analyticsAggregationService = analyticsAggregationService;
         _notificationService = notificationService;
-                _businessScopeResolver = businessScopeResolver;
+        _businessScopeResolver = businessScopeResolver;
         _permissionService = permissionService;
         _idempotencyService = idempotencyService;
         _logger = logger;
     }
 
-        public async Task<ApiResponse<StampAwardedResponse>> AwardStampAsync(Guid staffOrBusinessUserId,
-        AwardStampRequest request, string? idempotencyKey = null)
+    public async Task<ApiResponse<StampAwardedResponse>> AwardStampAsync(Guid staffOrBusinessUserId,
+    AwardStampRequest request, string? idempotencyKey = null)
     {
         try
         {
-                         // Hash the presented token for DB lookup
+            // Hash the presented token for DB lookup
             var tokenHash = HashToken(request.Token);
 
             // Idempotency: when a key is supplied, replays that share the same key
@@ -107,7 +107,7 @@ public class StampService : IStampService
             if (card == null)
                 return ApiResponse<StampAwardedResponse>.Fail("NOT_ENROLLED", "Customer is not enrolled in this business's loyalty program.");
 
-                        var now = DateTime.UtcNow;
+            var now = DateTime.UtcNow;
 
             // Validate the requested stamp count against the program's cap.
             var stampCount = request.StampCount ?? 1;
@@ -262,7 +262,7 @@ public class StampService : IStampService
                 }
             }
 
-                        // If this is the customer's first stamp at this business, process referral qualification
+            // If this is the customer's first stamp at this business, process referral qualification
             if (card.LifetimeStamps == 1)
             {
                 await _referralService.ProcessFirstStampReferralAsync(card.CustomerId, scopedBusinessId);
@@ -317,7 +317,7 @@ public class StampService : IStampService
         }
     }
 
-        public async Task<ApiResponse<Stamp>> CreateEnrollmentStampAsync(Guid cardId, int stampNumber)
+    public async Task<ApiResponse<Stamp>> CreateEnrollmentStampAsync(Guid cardId, int stampNumber)
     {
         var card = await _context.LoyaltyCards
             .Include(c => c.Customer)
@@ -364,7 +364,8 @@ public class StampService : IStampService
         var stamp = new Stamp
         {
             Id = Guid.NewGuid(),
-            CardId = cardId, StampNumber = (short)stampNumber,
+            CardId = cardId,
+            StampNumber = (short)stampNumber,
             StampedAt = now,
             QrTokenId = null,
             AwardedByUserId = staffUserId,
@@ -466,7 +467,7 @@ public class StampService : IStampService
     }
 
     /// <summary>Resolves actor role + scoped business id (shared by all scan endpoints).</summary>
-        private async Task<ApiResponse<ActorScope>> ResolveActorAsync(Guid userId)
+    private async Task<ApiResponse<ActorScope>> ResolveActorAsync(Guid userId)
     {
         var actor = await _unitOfWork.Users.GetByIdAsync(userId);
         if (actor == null)
@@ -560,7 +561,7 @@ public class StampService : IStampService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error resolving token for business {BusinessId}", request.BusinessId);
-                        return ApiResponse<ResolveQrResponse>.Fail("RESOLVE_FAILED", "Failed to resolve QR code.");
+            return ApiResponse<ResolveQrResponse>.Fail("RESOLVE_FAILED", "Failed to resolve QR code.");
         }
     }
 
@@ -695,7 +696,7 @@ public class StampService : IStampService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error adjusting stamps for card {CardId}", request.CardId);
-                        return ApiResponse<StampAdjustmentResponse>.Fail("ADJUST_FAILED", "Failed to adjust stamps.");
+            return ApiResponse<StampAdjustmentResponse>.Fail("ADJUST_FAILED", "Failed to adjust stamps.");
         }
     }
 
@@ -771,7 +772,7 @@ public class StampService : IStampService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error looking up customer by phone at business {BusinessId}", request.BusinessId);
-                            return ApiResponse<ManualLookupResponse>.Fail("LOOKUP_FAILED", "Failed to look up customer.");
+            return ApiResponse<ManualLookupResponse>.Fail("LOOKUP_FAILED", "Failed to look up customer.");
         }
     }
 
@@ -830,9 +831,9 @@ public class StampService : IStampService
             await using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
-                                var claimed = await _context.QrTokens
-                    .Where(t => t.Id == qrToken.Id && !t.IsUsed)
-                    .ExecuteUpdateAsync(u => u.SetProperty(x => x.IsUsed, true));
+                var claimed = await _context.QrTokens
+    .Where(t => t.Id == qrToken.Id && !t.IsUsed)
+    .ExecuteUpdateAsync(u => u.SetProperty(x => x.IsUsed, true));
                 if (claimed == 0)
                 {
                     await transaction.RollbackAsync();
@@ -935,7 +936,7 @@ public class StampService : IStampService
                     });
                 }
 
-                                _unitOfWork.LoyaltyCards.Update(card);
+                _unitOfWork.LoyaltyCards.Update(card);
 
                 // Audit: enroll-and-stamp with actor + target card + before/after counters.
                 await _unitOfWork.ApiEventLogs.AddAsync(new ApiEventLog
@@ -1011,7 +1012,7 @@ public class StampService : IStampService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error enroll-and-stamp for business {BusinessId}", request.BusinessId);
-                        return ApiResponse<StampAwardedResponse>.Fail("AWARD_FAILED", "Failed to enroll and stamp.");
+            return ApiResponse<StampAwardedResponse>.Fail("AWARD_FAILED", "Failed to enroll and stamp.");
         }
     }
 
@@ -1031,7 +1032,7 @@ public class StampService : IStampService
         var masked = parts.Select(p => char.ToUpperInvariant(p[0]) + new string('*', Math.Max(0, p.Length - 1)));
         return string.Join(" ", masked);
     }
-public async Task<ApiResponse<StampActivityPage>> GetActivityAsync(Guid actorUserId, StampActivityQuery query)
+    public async Task<ApiResponse<StampActivityPage>> GetActivityAsync(Guid actorUserId, StampActivityQuery query)
     {
         var resolver = await ResolveActorAsync(actorUserId);
         if (!resolver.Success || resolver.Data is null) return PropagateFailure<StampActivityPage>(resolver);

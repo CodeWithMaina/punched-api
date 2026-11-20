@@ -42,10 +42,16 @@ public sealed class ReviewService : IReviewService
         var now = _timeProvider.GetUtcNow().UtcDateTime;
         var review = new Review
         {
-            Id = Guid.NewGuid(), AppointmentId = appointment.Id, BusinessId = appointment.BusinessId,
-            CustomerId = customerId, StaffUserId = appointment.StaffUserId, Rating = request.Rating,
-            Comment = Normalize(request.Comment), Status = ReviewStatuses.Published,
-            CreatedAt = now, UpdatedAt = now
+            Id = Guid.NewGuid(),
+            AppointmentId = appointment.Id,
+            BusinessId = appointment.BusinessId,
+            CustomerId = customerId,
+            StaffUserId = appointment.StaffUserId,
+            Rating = request.Rating,
+            Comment = Normalize(request.Comment),
+            Status = ReviewStatuses.Published,
+            CreatedAt = now,
+            UpdatedAt = now
         };
         _context.Reviews.Add(review);
         try { await _context.SaveChangesAsync(); }
@@ -164,7 +170,9 @@ public sealed class ReviewService : IReviewService
             .ToDictionaryAsync(x => x.Rating, x => x.Count);
         return ApiResponse<ReviewSummaryResponse>.Ok(new ReviewSummaryResponse
         {
-            BusinessId = businessId, AverageRating = average, TotalCount = total,
+            BusinessId = businessId,
+            AverageRating = average,
+            TotalCount = total,
             RatingCounts = Enumerable.Range(1, 5).ToDictionary(i => i, i => grouped.GetValueOrDefault(i))
         });
     }
@@ -178,7 +186,10 @@ public sealed class ReviewService : IReviewService
         var rows = await query.OrderByDescending(r => r.CreatedAt).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
         return ApiResponse<PaginatedResponse<T>>.Ok(new PaginatedResponse<T>
         {
-            Items = await map(rows), TotalCount = total, Page = page, PageSize = pageSize
+            Items = await map(rows),
+            TotalCount = total,
+            Page = page,
+            PageSize = pageSize
         });
     }
 
@@ -223,7 +234,10 @@ public sealed class ReviewService : IReviewService
                 .Where(variant => variant.Format is "webp" or "jpeg")
                 .Select(variant => new ReviewImageVariantResponse
                 {
-                    Url = variant.Url, Width = variant.Width, Height = variant.Height, Format = variant.Format
+                    Url = variant.Url,
+                    Width = variant.Width,
+                    Height = variant.Height,
+                    Format = variant.Format
                 }).ToList();
         }
         catch (JsonException)
@@ -234,24 +248,45 @@ public sealed class ReviewService : IReviewService
 
     private static ReviewResponse MapCustomer(Review r) => new()
     {
-        Id = r.Id, AppointmentId = r.AppointmentId, BusinessId = r.BusinessId, Rating = r.Rating,
-        Comment = r.Comment, Status = r.Status, CreatedAt = r.CreatedAt, UpdatedAt = r.UpdatedAt
+        Id = r.Id,
+        AppointmentId = r.AppointmentId,
+        BusinessId = r.BusinessId,
+        Rating = r.Rating,
+        Comment = r.Comment,
+        Status = r.Status,
+        CreatedAt = r.CreatedAt,
+        UpdatedAt = r.UpdatedAt
     };
 
     private static PublicReviewResponse MapPublic(Review r, (string Name, string? Avatar, Guid? AvatarMediaId) customer, IReadOnlyList<ReviewImageMediaResponse> images) => new()
     {
-        Id = r.Id, BusinessId = r.BusinessId, Rating = r.Rating, Comment = r.Comment,
-        ReviewerDisplayName = DisplayName(customer.Name), ReviewerAvatar = customer.Avatar, ReviewerAvatarMediaId = customer.AvatarMediaId,
-        ImageMediaIds = images.Select(image => image.MediaId).ToList(), ImageMedia = images,
-        CreatedAt = r.CreatedAt, UpdatedAt = r.UpdatedAt
+        Id = r.Id,
+        BusinessId = r.BusinessId,
+        Rating = r.Rating,
+        Comment = r.Comment,
+        ReviewerDisplayName = DisplayName(customer.Name),
+        ReviewerAvatar = customer.Avatar,
+        ReviewerAvatarMediaId = customer.AvatarMediaId,
+        ImageMediaIds = images.Select(image => image.MediaId).ToList(),
+        ImageMedia = images,
+        CreatedAt = r.CreatedAt,
+        UpdatedAt = r.UpdatedAt
     };
 
     private static BusinessReviewResponse MapBusiness(Review r, (string Name, string? Avatar, Guid? AvatarMediaId) customer, IReadOnlyList<ReviewImageMediaResponse> images) => new()
     {
-        Id = r.Id, BusinessId = r.BusinessId, Rating = r.Rating, Comment = r.Comment, Status = r.Status,
-        ReviewerDisplayName = DisplayName(customer.Name), ReviewerAvatar = customer.Avatar, ReviewerAvatarMediaId = customer.AvatarMediaId,
-        ImageMediaIds = images.Select(image => image.MediaId).ToList(), ImageMedia = images,
-        CreatedAt = r.CreatedAt, UpdatedAt = r.UpdatedAt
+        Id = r.Id,
+        BusinessId = r.BusinessId,
+        Rating = r.Rating,
+        Comment = r.Comment,
+        Status = r.Status,
+        ReviewerDisplayName = DisplayName(customer.Name),
+        ReviewerAvatar = customer.Avatar,
+        ReviewerAvatarMediaId = customer.AvatarMediaId,
+        ImageMediaIds = images.Select(image => image.MediaId).ToList(),
+        ImageMedia = images,
+        CreatedAt = r.CreatedAt,
+        UpdatedAt = r.UpdatedAt
     };
 
     private static string? Normalize(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();

@@ -1314,7 +1314,7 @@ public class BusinessDashboardResponse
     [JsonPropertyName("totalRedemptions")]
     public int TotalRedemptions { get; set; }
 
-        [JsonPropertyName("rewardReadyCards")]
+    [JsonPropertyName("rewardReadyCards")]
     public int RewardReadyCards { get; set; }
 
     [JsonPropertyName("staffMini")]

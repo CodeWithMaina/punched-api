@@ -28,7 +28,7 @@ public interface IAttendanceLocationService
     /// <summary>Same as <see cref="MintQrAsync"/> but audited as <c>QR_REGENERATED</c> (distinct UI copy).</summary>
     Task<ApiResponse<AttendanceQrCredentialResponse>> RotateQrAsync(Guid ownerUserId, Guid locationId);
 
-        /// <summary>Revokes the Active credential, leaving the location unusable until a new one is minted.</summary>
+    /// <summary>Revokes the Active credential, leaving the location unusable until a new one is minted.</summary>
     Task<ApiResponse<bool>> RevokeQrAsync(Guid ownerUserId, Guid locationId);
 
     /// <summary>

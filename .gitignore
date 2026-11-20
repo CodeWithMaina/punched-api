@@ -115,3 +115,9 @@ tmp/
 *.db-wal
 *.sqlite
 *.sqlite3
+
+# Runtime-generated seeding report (Seed:ReportPath)
+seed-report.json
+
+# Stray npm artifact from running npm inside the API folder
+package-lock.json

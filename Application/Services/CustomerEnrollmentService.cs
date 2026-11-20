@@ -113,9 +113,15 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
             }
             var enrollment = new CustomerBusinessEnrollment
             {
-                Id = Guid.NewGuid(), CustomerId = customerId, BusinessId = businessId,
-                Status = CustomerBusinessEnrollmentStatus.Active, Type = type, Source = src,
-                EnrolledAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                BusinessId = businessId,
+                Status = CustomerBusinessEnrollmentStatus.Active,
+                Type = type,
+                Source = src,
+                EnrolledAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow
             };
             await _unitOfWork.CustomerBusinessEnrollments.AddAsync(enrollment);
 
@@ -156,8 +162,11 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
         // grant) in the SAME commit — the two can never disagree. An Owner or
         // Staff membership is never downgraded by a loyalty opt-out.
         var membership = await _memberships.FindAsync(customerId, businessId);
-        if (membership is { Role: BusinessMembershipRole.Customer,
-                            Status: BusinessMembershipStatus.Active })
+        if (membership is
+            {
+                Role: BusinessMembershipRole.Customer,
+                Status: BusinessMembershipStatus.Active
+            })
         {
             await _memberships.EndAsync(
                 customerId, businessId, BusinessMembershipStatus.Left);
@@ -212,9 +221,13 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
             }
             var m = new CustomerStampCard
             {
-                Id = Guid.NewGuid(), CustomerId = customerId, StampCardId = stampCardId,
-                Status = CustomerStampCardStatus.Active, JoinedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                StampCardId = stampCardId,
+                Status = CustomerStampCardStatus.Active,
+                JoinedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow
             };
             await _unitOfWork.CustomerStampCards.AddAsync(m);
             await _unitOfWork.SaveChangesAsync();
@@ -284,8 +297,12 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
         b ??= e.Business;
         return new CustomerBusinessDto
         {
-            Id = e.Id, BusinessId = e.BusinessId, BusinessName = b?.Name ?? string.Empty,
-            LogoUrl = b?.LogoUrl, Category = b?.Category, Location = b?.Location,
+            Id = e.Id,
+            BusinessId = e.BusinessId,
+            BusinessName = b?.Name ?? string.Empty,
+            LogoUrl = b?.LogoUrl,
+            Category = b?.Category,
+            Location = b?.Location,
             Status = e.Status == CustomerBusinessEnrollmentStatus.Active ? "active" : e.Status.ToString().ToLowerInvariant(),
             Source = e.Source,
             CustomerType = e.Type == CustomerType.Guest ? "guest" : "registered",
@@ -306,9 +323,13 @@ public class CustomerEnrollmentService : ICustomerEnrollmentService
         card ??= m.StampCard;
         return new CustomerStampCardDto
         {
-            Id = m.Id, StampCardId = m.StampCardId, BusinessId = card.BusinessId,
-            BusinessName = card.Business?.Name ?? string.Empty, Name = card.Name,
-            RewardDescription = card.RewardDescription, StampsRequired = card.StampsRequired,
+            Id = m.Id,
+            StampCardId = m.StampCardId,
+            BusinessId = card.BusinessId,
+            BusinessName = card.Business?.Name ?? string.Empty,
+            Name = card.Name,
+            RewardDescription = card.RewardDescription,
+            StampsRequired = card.StampsRequired,
             CurrentStamps = current,
             Status = m.Status == CustomerStampCardStatus.Active ? "active" : "removed",
             JoinedAt = m.JoinedAt

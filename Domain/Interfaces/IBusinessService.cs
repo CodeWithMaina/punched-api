@@ -88,7 +88,7 @@ public interface IBusinessService
     string sortDirection = "asc",
     int page = 1,
     int pageSize = 20);
-Task<ApiResponse<StaffOverviewResponse>> GetStaffOverviewAsync(Guid ownerId);
+    Task<ApiResponse<StaffOverviewResponse>> GetStaffOverviewAsync(Guid ownerId);
     Task<ApiResponse<StaffMemberAnalyticsResponse>> GetStaffMemberAnalyticsAsync(Guid ownerId, Guid staffUserId, string period);
     Task<ApiResponse<StaffActivityFeedResponse>> GetStaffActivityForOwnerAsync(Guid ownerId, Guid staffUserId, StaffActivityFilterRequest request);
     Task<ApiResponse<StaffActivityFeedResponse>> GetMyStaffActivityAsync(Guid staffUserId, StaffActivityFilterRequest request);

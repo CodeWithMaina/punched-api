@@ -100,7 +100,6 @@ internal static class BusinessOperationsTestBase
             context,
             new AppointmentAvailabilityService(
                 context, TestHelpers.CreateLogger<AppointmentAvailabilityService>(), timeProvider),
-            BookingTestBase.CreateMapper(),
             new PermissionService(CreatePermissionService(context)),
             BookingTestBase.CreateNotificationService(context),
             new Mock<IDomainEventPublisher>().Object,

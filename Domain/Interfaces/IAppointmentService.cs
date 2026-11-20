@@ -169,13 +169,13 @@ public interface IAppointmentService
 
     Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetBusinessAppointmentsAsync(Guid ownerUserId, string? status, DateTime? from, DateTime? to, Guid? staffUserId, Guid? customerId, Guid? serviceId, int page, int pageSize);
 
-        /// <summary>
-        /// Lists a staff member's own appointments — backend-driven search,
-        /// price filtering, sorting and pagination (page/pageSize/totalCount/totalPages).
-        /// </summary>
-        Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetStaffAppointmentsAsync(
-            Guid staffUserId, string? status, string? search, string? priceFilter, string? sort,
-            DateTime? from, DateTime? to, int page, int pageSize);
+    /// <summary>
+    /// Lists a staff member's own appointments — backend-driven search,
+    /// price filtering, sorting and pagination (page/pageSize/totalCount/totalPages).
+    /// </summary>
+    Task<ApiResponse<PaginatedResponse<AppointmentResponse>>> GetStaffAppointmentsAsync(
+        Guid staffUserId, string? status, string? search, string? priceFilter, string? sort,
+        DateTime? from, DateTime? to, int page, int pageSize);
 
     /// <summary>
     /// Staff: book an appointment for themselves at their linked business.

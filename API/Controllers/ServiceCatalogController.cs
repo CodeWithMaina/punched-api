@@ -17,7 +17,7 @@ namespace PunchedApi.API.Controllers;
 [ApiController]
 [Route("v1/services")]
 [Produces("application/json")]
-    [RequireModule("serviceCatalog")]
+[RequireModule("serviceCatalog")]
 [EnableRateLimiting("general")]
 public class ServiceCatalogController : ControllerBase
 {

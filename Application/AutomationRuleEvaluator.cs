@@ -458,10 +458,15 @@ public sealed class AutomationRuleEvaluator
             {
                 JobType = jobType,
                 DedupeKey = $"rule:{rule.Id}:sched:{jobType}:{recipient.UserId}:{scheduledFor:yyyyMMddHHmm}",
-                AggregateType = "appointment", AggregateId = null,
-                BusinessId = rule.BusinessId, PayloadJson = payloadJson,
-                ScheduledForUtc = scheduledFor, Status = "pending",
-                Attempts = 0, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+                AggregateType = "appointment",
+                AggregateId = null,
+                BusinessId = rule.BusinessId,
+                PayloadJson = payloadJson,
+                ScheduledForUtc = scheduledFor,
+                Status = "pending",
+                Attempts = 0,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
             };
             await _context.ScheduledJobs.AddAsync(job, ct);
         }

@@ -20,7 +20,6 @@ using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DomainEvents;
 using PunchedApi.Application.Handlers;
 using PunchedApi.Application.Loyalty;
-using PunchedApi.Application.Mappings;
 using PunchedApi.Application.Modules;
 using PunchedApi.Application.Notifications;
 using PunchedApi.Application.Media;
@@ -93,6 +92,28 @@ try
     builder.Services.Configure<JwtSettings>(jwtSettings);
     builder.Services.Configure<SeedOptions>(
         builder.Configuration.GetSection(SeedOptions.SectionName));
+
+    // Fail fast on a signing secret that was never replaced. appsettings.json ships a
+    // documented placeholder so the project boots locally; a deployed environment that
+    // still carries it would sign real access tokens with a publicly known key, which
+    // is a complete authentication bypass. Refusing to start is the only safe outcome.
+    if (!builder.Environment.IsDevelopment() && !builder.Environment.IsEnvironment("Testing"))
+    {
+        var configuredSecret = jwtSettings["Secret"];
+        var isPlaceholder =
+            string.IsNullOrWhiteSpace(configuredSecret)
+            || configuredSecret.Length < 32
+            || configuredSecret.Contains("CHANGE_THIS", StringComparison.OrdinalIgnoreCase)
+            || configuredSecret.Contains("dev-secret-key", StringComparison.OrdinalIgnoreCase);
+
+        if (isPlaceholder)
+        {
+            throw new InvalidOperationException(
+                "JwtSettings:Secret is missing, shorter than 32 characters, or still a development " +
+                "placeholder. Set JwtSettings__Secret (or JwtSettings:Secret in user secrets) to a random " +
+                "value of at least 32 characters before running outside Development.");
+        }
+    }
 
     builder.Services.AddAuthentication(options =>
     {
@@ -221,7 +242,7 @@ try
     builder.Services.AddScoped<IBusinessSlugBackfill, BusinessSlugBackfill>();
 
     builder.Services.AddScoped<ILoyaltyService, LoyaltyService>();
-            builder.Services.AddScoped<IStampService, StampService>();
+    builder.Services.AddScoped<IStampService, StampService>();
 
     // ── Loyalty module (earning rules, stamp ledger, rewards) ──
     // Subscription-gated via the existing module entitlement system:
@@ -469,8 +490,8 @@ try
     builder.Services.AddScoped<IPaymentDecisionGuard, PaymentDecisionGuard>();
     if (workersEnabled)
         builder.Services.AddHostedService<PaymentLedgerWorker>();
-builder.Services.Configure<BillingOptions>(builder.Configuration.GetSection(BillingOptions.SectionName));
-builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisioningService>();
+    builder.Services.Configure<BillingOptions>(builder.Configuration.GetSection(BillingOptions.SectionName));
+    builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisioningService>();
 
     // ── Subscription admin module (tier lifecycle + audit) ──
     builder.Services.AddScoped<ISubscriptionAuditService, SubscriptionAuditService>();
@@ -502,10 +523,10 @@ builder.Services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisi
     builder.Services.AddScoped<IOperatingModeService, OperatingModeService>();
     builder.Services.AddScoped<IStaffPositionService, StaffPositionService>();
 
-// Staff management: one member's profile, services, working week and state.
-// Separate from BusinessService so the staff console's per-member surface has a
-// single owner and cannot drift from the staff list it sits beside.
-builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
+    // Staff management: one member's profile, services, working week and state.
+    // Separate from BusinessService so the staff console's per-member surface has a
+    // single owner and cannot drift from the staff list it sits beside.
+    builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
     builder.Services.AddScoped<IBusinessRoleService, BusinessRoleService>();
     // Commission configuration resolution (specificity-ranked: staff+service >
     // service > staff > business default) and the ledger service itself.
@@ -516,6 +537,15 @@ builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
     // Host chooses the page; the token chooses the data. None of these
     // services grant access — membership/authorization stay server-side.
     builder.Services.Configure<SessionCookieSettings>(builder.Configuration.GetSection(SessionCookieSettings.SectionName));
+    // The shared session cookie carries the refresh token, so it must never travel
+    // over plain HTTP in a deployed environment. `RequireSecure` is forced on outside
+    // Development/Testing (where TLS is terminated in front of the app and the request
+    // reaching Kestrel can look like HTTP), so a missing or stale appsettings value
+    // cannot silently downgrade it.
+    if (!builder.Environment.IsDevelopment() && !builder.Environment.IsEnvironment("Testing"))
+    {
+        builder.Services.PostConfigure<SessionCookieSettings>(settings => settings.RequireSecure = true);
+    }
     builder.Services.AddSingleton<ITenantHostResolver, TenantHostResolver>();
     builder.Services.AddSingleton<ITenantUrlBuilder, TenantUrlBuilder>();
     builder.Services.AddSingleton<ISessionCookieService, SessionCookieService>();
@@ -588,10 +618,7 @@ builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
     builder.Services.AddScoped<IDomainEventHandler, AppointmentCancelledHandler>();
     builder.Services.AddScoped<IDomainEventHandler, AppointmentCreatedHandler>();
     builder.Services.AddScoped<IDomainEventHandler, SubscriptionExpiringHandler>();
-builder.Services.AddScoped<AutomationRuleEvaluator>();
-
-    // ── AutoMapper ──────────────────────────────────────────
-    builder.Services.AddAutoMapper(typeof(MappingProfile));
+    builder.Services.AddScoped<AutomationRuleEvaluator>();
 
     // ── FluentValidation ────────────────────────────────────
     builder.Services.AddFluentValidationAutoValidation();
@@ -684,7 +711,7 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
                 {
                     PermitLimit = RateLimit("general", 1000),
                     Window = TimeSpan.FromHours(1),
-                                        QueueLimit = 0
+                    QueueLimit = 0
                 }));
 
         // Media upload grants: 30 per hour per authenticated user and IP.
@@ -701,7 +728,9 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
             var key = $"{httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown"}:{userId}";
             return RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = RateLimit("media-upload", 200), Window = TimeSpan.FromHours(1), QueueLimit = 0
+                PermitLimit = RateLimit("media-upload", 200),
+                Window = TimeSpan.FromHours(1),
+                QueueLimit = 0
             });
         });
 
@@ -1021,7 +1050,34 @@ builder.Services.AddScoped<AutomationRuleEvaluator>();
 
     // ── Middleware Pipeline ──────────────────────────────────
     app.UseMiddleware<ExceptionMiddleware>();
+    // Browser-hardening headers for every response (set before anything can write).
+    app.UseMiddleware<SecurityHeadersMiddleware>();
     app.UseMiddleware<ApiEventLoggingMiddleware>();
+
+    // ── Forwarded headers (TLS-terminating proxy) ────────────
+    // Railway (and any container platform that terminates TLS in front of Kestrel)
+    // delivers plain HTTP to the app, so `Request.IsHttps` would be false and the
+    // session cookie would be issued without the Secure flag. ASPNETCORE_FORWARDEDHEADERS_ENABLED=true
+    // is the platform-documented switch for "I am behind a trusted proxy": it is
+    // opt-in (never assumed) so a directly exposed deployment cannot be spoofed
+    // with a forged X-Forwarded-For/Proto header.
+    if (string.Equals(
+            Environment.GetEnvironmentVariable("ASPNETCORE_FORWARDEDHEADERS_ENABLED"),
+            "true",
+            StringComparison.OrdinalIgnoreCase))
+    {
+        var forwardedOptions = new Microsoft.AspNetCore.Builder.ForwardedHeadersOptions
+        {
+            ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor
+                | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
+        };
+        // The proxy address is not known ahead of time in a managed platform, so the
+        // known-network/known-proxy lists are cleared — which is exactly why this block
+        // only runs when the operator explicitly opts in above.
+        forwardedOptions.KnownNetworks.Clear();
+        forwardedOptions.KnownProxies.Clear();
+        app.UseForwardedHeaders(forwardedOptions);
+    }
 
     app.UseResponseCompression();
 
@@ -1141,8 +1197,8 @@ finally
 
 static string ResolveConnectionString(IConfiguration configuration)
 {
-var databaseUrl = configuration["DATABASE_URL"]
-                         ?? Environment.GetEnvironmentVariable("DATABASE_URL");
+    var databaseUrl = configuration["DATABASE_URL"]
+                             ?? Environment.GetEnvironmentVariable("DATABASE_URL");
     if (!string.IsNullOrWhiteSpace(databaseUrl))
     {
         if (!Uri.TryCreate(databaseUrl, UriKind.Absolute, out var uri) ||

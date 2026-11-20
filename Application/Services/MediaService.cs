@@ -87,10 +87,16 @@ public sealed partial class MediaService : IMediaService
         }
         var media = new Domain.Entities.Media
         {
-            Id = Guid.NewGuid(), BusinessId = scope.BusinessId, OwnerUserId = scope.OwnerUserId,
-            UploadedByUserId = userId, Purpose = purpose, SourceKey = "pending/generated-after-validation",
-            Status = MediaStatus.Pending, DeclaredMimeType = request.DeclaredMimeType!.Trim().ToLowerInvariant(),
-            ExpectedSizeBytes = request.SizeBytes, OriginalFileName = SanitizeFileName(request.FileName),
+            Id = Guid.NewGuid(),
+            BusinessId = scope.BusinessId,
+            OwnerUserId = scope.OwnerUserId,
+            UploadedByUserId = userId,
+            Purpose = purpose,
+            SourceKey = "pending/generated-after-validation",
+            Status = MediaStatus.Pending,
+            DeclaredMimeType = request.DeclaredMimeType!.Trim().ToLowerInvariant(),
+            ExpectedSizeBytes = request.SizeBytes,
+            OriginalFileName = SanitizeFileName(request.FileName),
             UploadGrantExpiresAt = DateTime.UtcNow.AddMinutes(_options.PresignMinutes)
         };
         media.SourceKey = _keys.CreatePendingKey(media);

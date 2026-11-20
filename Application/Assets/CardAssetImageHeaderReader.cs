@@ -111,31 +111,31 @@ public static class CardAssetImageHeaderReader
         switch (chunk)
         {
             case "VP8 ": // lossy
-            {
-                // frame tag (3) + start code (3) then width/height as 14-bit LE.
-                if (b.Length < 30) return null;
-                if (b[23] != 0x9D || b[24] != 0x01 || b[25] != 0x2A) return null;
-                var width = (b[26] | (b[27] << 8)) & 0x3FFF;
-                var height = (b[28] | (b[29] << 8)) & 0x3FFF;
-                return new CardAssetFormat("WebP", "image/webp", "webp", width, height);
-            }
+                {
+                    // frame tag (3) + start code (3) then width/height as 14-bit LE.
+                    if (b.Length < 30) return null;
+                    if (b[23] != 0x9D || b[24] != 0x01 || b[25] != 0x2A) return null;
+                    var width = (b[26] | (b[27] << 8)) & 0x3FFF;
+                    var height = (b[28] | (b[29] << 8)) & 0x3FFF;
+                    return new CardAssetFormat("WebP", "image/webp", "webp", width, height);
+                }
 
             case "VP8L": // lossless
-            {
-                if (b.Length < 25 || b[20] != 0x2F) return null;
-                var bits = (uint)(b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24));
-                var width = (int)(bits & 0x3FFF) + 1;
-                var height = (int)((bits >> 14) & 0x3FFF) + 1;
-                return new CardAssetFormat("WebP", "image/webp", "webp", width, height);
-            }
+                {
+                    if (b.Length < 25 || b[20] != 0x2F) return null;
+                    var bits = (uint)(b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24));
+                    var width = (int)(bits & 0x3FFF) + 1;
+                    var height = (int)((bits >> 14) & 0x3FFF) + 1;
+                    return new CardAssetFormat("WebP", "image/webp", "webp", width, height);
+                }
 
             case "VP8X": // extended
-            {
-                if (b.Length < 30) return null;
-                var width = (b[24] | (b[25] << 8) | (b[26] << 16)) + 1;
-                var height = (b[27] | (b[28] << 8) | (b[29] << 16)) + 1;
-                return new CardAssetFormat("WebP", "image/webp", "webp", width, height);
-            }
+                {
+                    if (b.Length < 30) return null;
+                    var width = (b[24] | (b[25] << 8) | (b[26] << 16)) + 1;
+                    var height = (b[27] | (b[28] << 8) | (b[29] << 16)) + 1;
+                    return new CardAssetFormat("WebP", "image/webp", "webp", width, height);
+                }
 
             default:
                 return null;

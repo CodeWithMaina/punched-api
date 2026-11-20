@@ -371,24 +371,26 @@ public static class StorefrontPrototypeAdapter
     /// <summary>`a`/`b` (or already a production variant) → the production variant.</summary>
     public static string SectionVariantToProduction(string key, string? variant)
     {
-        if (string.IsNullOrWhiteSpace(variant)) return StorefrontSectionCatalog.NormaliseVariant(key, null);
+        var sectionKey = key ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(variant)) return StorefrontSectionCatalog.NormaliseVariant(sectionKey, null);
 
         var letter = variant.Trim();
-        if (SectionVariantMap.TryGetValue(key ?? string.Empty, out var map))
+        if (SectionVariantMap.TryGetValue(sectionKey, out var map))
         {
             if (letter.Equals("a", StringComparison.OrdinalIgnoreCase)) return map.A;
             if (letter.Equals("b", StringComparison.OrdinalIgnoreCase)) return map.B;
         }
 
         // Anything else is already a production variant name.
-        return StorefrontSectionCatalog.NormaliseVariant(key, letter);
+        return StorefrontSectionCatalog.NormaliseVariant(sectionKey, letter);
     }
 
     /// <summary>The production variant → the design's `a`/`b`.</summary>
     public static string SectionVariantToPrototype(string key, string? variant)
     {
-        if (!SectionVariantMap.TryGetValue(key ?? string.Empty, out var map)) return "a";
-        var current = StorefrontSectionCatalog.NormaliseVariant(key, variant);
+        var sectionKey = key ?? string.Empty;
+        if (!SectionVariantMap.TryGetValue(sectionKey, out var map)) return "a";
+        var current = StorefrontSectionCatalog.NormaliseVariant(sectionKey, variant);
         return current.Equals(map.B, StringComparison.OrdinalIgnoreCase) ? "b" : "a";
     }
 
