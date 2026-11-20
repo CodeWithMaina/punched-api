@@ -1189,6 +1189,10 @@ catch (Microsoft.Extensions.Hosting.HostAbortedException)
 catch (Exception ex)
 {
     Log.Fatal(ex, "Application terminated unexpectedly");
+    // A fatal startup failure must be visible to the supervisor: without a
+    // non-zero exit code a container platform (or `dotnet ef`) records the run
+    // as successful even though the API never served a request.
+    Environment.ExitCode = 1;
 }
 finally
 {
