@@ -183,6 +183,25 @@ public partial class PaymentService : IPaymentService
             response.CustomerName = names.GetValueOrDefault(customerId);
         }
 
+        // The cashbook row this payment became, when it became one. The detail screen must be able
+        // to say "this is the entry, recorded by this person" instead of guessing from the status —
+        // and it must be blank when no row exists, which is exactly what a null link says.
+        var ledger = await _context.FinancialTransactions.AsNoTracking()
+            .Where(t => t.SourcePaymentId == payment.Id && !t.IsVoided)
+            .Select(t => new { t.Id, t.Reference, t.CreatedByUserId })
+            .FirstOrDefaultAsync();
+
+        if (ledger != null)
+        {
+            response.FinancialTransactionId = ledger.Id;
+            response.LedgerReference = ledger.Reference;
+            if (ledger.CreatedByUserId is Guid recorder)
+            {
+                var recorderNames = await FinancialAccess.ResolveUserNamesAsync(_context, new[] { (Guid?)recorder });
+                response.LedgerRecordedByName = recorderNames.GetValueOrDefault(recorder);
+            }
+        }
+
         return ApiResponse<PaymentResponse>.Ok(response);
     }
 
@@ -213,9 +232,30 @@ public partial class PaymentService : IPaymentService
 
         if (query.AppointmentId.HasValue) dbQuery = dbQuery.Where(p => p.AppointmentId == query.AppointmentId);
         if (query.CustomerId.HasValue) dbQuery = dbQuery.Where(p => p.CustomerId == query.CustomerId);
-        if (!string.IsNullOrWhiteSpace(query.Status) &&
-            PaymentStatuses.TryParse(query.Status, out var status))
+
+        // `claims` is a GROUP, not a status: the "Needs verification" tab must page and count the
+        // claims the owner still has to decide (submitted, under review, flagged) as ONE list. A
+        // single-status filter would silently leave flagged claims out of the queue they belong to.
+        var statusFilter = query.Status?.Trim();
+        if (IsClaimsFilter(statusFilter))
+        {
+            dbQuery = dbQuery.Where(p =>
+                p.Status == PaymentStatus.Submitted
+                || p.Status == PaymentStatus.UnderReview
+                || p.Status == PaymentStatus.Flagged);
+        }
+        else if (!string.IsNullOrWhiteSpace(statusFilter) &&
+            PaymentStatuses.TryParse(statusFilter, out var status))
+        {
             dbQuery = dbQuery.Where(p => p.Status == status);
+        }
+        else if (!string.IsNullOrWhiteSpace(statusFilter))
+        {
+            // An unreadable status must not quietly widen the register to every payment: a money
+            // screen that says "filtered" while showing everything is the one failure mode this
+            // register can never have. Fail closed with an empty page instead.
+            dbQuery = dbQuery.Where(p => false);
+        }
         if (!string.IsNullOrWhiteSpace(query.Method) &&
             Enum.TryParse<PaymentMethod>(query.Method, true, out var method))
             dbQuery = dbQuery.Where(p => p.Method == method);
@@ -250,8 +290,7 @@ public partial class PaymentService : IPaymentService
         var pageSize = Math.Clamp(query.PageSize, 1, 100);
 
         var total = await dbQuery.CountAsync();
-        var items = await dbQuery
-            .OrderByDescending(p => p.CreatedAt)
+        var items = await OrderPayments(dbQuery, query.Sort)
             .Skip((page - 1) * pageSize).Take(pageSize)
             .Include(p => p.Attempts.OrderBy(a => a.AttemptNumber))
             .ToListAsync();
@@ -276,6 +315,45 @@ public partial class PaymentService : IPaymentService
             TotalCount = total,
             TotalPages = pageSize <= 0 ? 1 : (int)Math.Ceiling(total / (double)pageSize)
         });
+    }
+
+    /// <summary>
+    /// True when a status filter names the awaiting-verification GROUP rather than one status.
+    /// Accepts the labels a client naturally sends: <c>claims</c>, <c>awaiting</c>,
+    /// <c>needs_verification</c>, <c>awaiting_verification</c>.
+    /// </summary>
+    private static bool IsClaimsFilter(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+
+        var folded = new string(value.Where(char.IsLetter).ToArray()).ToLowerInvariant();
+        return folded is "claims" or "awaiting" or "awaitingverification" or "needsverification";
+    }
+
+    /// <summary>
+    /// The register's ordering, server-side. Unknown/blank values fall back to newest-first, so a
+    /// list request can never fail because of an ordering name.
+    /// </summary>
+    private IOrderedQueryable<Payment> OrderPayments(IQueryable<Payment> query, string? sort)
+    {
+        var key = string.IsNullOrWhiteSpace(sort) ? "date-d" : sort.Trim().ToLowerInvariant();
+
+        return key switch
+        {
+            "date-a" or "oldest" or "oldest-first" =>
+                query.OrderBy(p => p.CreatedAt).ThenBy(p => p.Id),
+            "amt-d" or "amount-desc" or "highest" =>
+                query.OrderByDescending(p => p.Amount).ThenByDescending(p => p.CreatedAt),
+            "amt-a" or "amount-asc" or "lowest" =>
+                query.OrderBy(p => p.Amount).ThenByDescending(p => p.CreatedAt),
+            "name-a" or "name" or "name-asc" =>
+                query.OrderBy(p => _context.Users
+                        .Where(u => u.Id == p.CustomerId)
+                        .Select(u => u.FullName)
+                        .FirstOrDefault() ?? string.Empty)
+                    .ThenByDescending(p => p.CreatedAt),
+            _ => query.OrderByDescending(p => p.CreatedAt).ThenBy(p => p.Id)
+        };
     }
 
     /// <summary>Server-computed payment summary for an appointment (service total, paid, balance, status).</summary>

@@ -57,14 +57,16 @@ public class PaymentsController : ControllerBase
     public async Task<IActionResult> List(
         [FromQuery] Guid? appointmentId, [FromQuery] Guid? customerId, [FromQuery] string? status,
         [FromQuery] string? method, [FromQuery] string? type, [FromQuery] DateTime? from,
-        [FromQuery] DateTime? to, [FromQuery] string? search, [FromQuery] int page = 1, [FromQuery] int pageSize = 25)
+        [FromQuery] DateTime? to, [FromQuery] string? search, [FromQuery] string? sort = null,
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 25)
     {
         var (userId, role) = GetIdentity();
         if (userId == null) return Unauthorized();
         var result = await _payments.ListPaymentsAsync(new PaymentListQuery
         {
             AppointmentId = appointmentId, CustomerId = customerId, Status = status,
-            Method = method, Type = type, From = from, To = to, Search = search, Page = page, PageSize = pageSize
+            Method = method, Type = type, From = from, To = to, Search = search, Sort = sort,
+            Page = page, PageSize = pageSize
         }, userId.Value, role!);
         return result.Success ? Ok(result) : MapFailure(result);
     }

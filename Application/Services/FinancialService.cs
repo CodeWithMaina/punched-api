@@ -118,6 +118,11 @@ public partial class FinancialService : IFinancialService
                 .FirstOrDefaultAsync();
         }
 
+        // A payer who is not a registered customer still has a name worth recording: the register
+        // searches it, and a cashbook row that says only "Income" is impossible to match later.
+        if (customerName == null && !string.IsNullOrWhiteSpace(request.CustomerName))
+            customerName = FinancialLedgerService.Truncate(request.CustomerName.Trim(), 120);
+
         // The unique SourcePaymentId index cannot help here (there is no payment), so a reused
         // receipt code is checked explicitly.
         if (reference != null)

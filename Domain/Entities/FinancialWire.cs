@@ -87,6 +87,27 @@ public static class FinancialWire
             or FinancialPaymentMethod.MpesaPaybill
             or FinancialPaymentMethod.MpesaSendMoney;
 
+    /// <summary>
+    /// The short label a person reads ("M-Pesa", "Cash", "Bank"). Every M-Pesa route folds into
+    /// one label on purpose: a breakdown by channel would be four bars saying M-Pesa.
+    /// </summary>
+    public static string MethodLabel(FinancialPaymentMethod value) => MethodGroup(value).Label;
+
+    /// <summary>
+    /// The grouping a breakdown panel uses: a stable key plus the label that goes with it, so the
+    /// three M-Pesa routes total into ONE row and a chart cannot show two bars called "M-Pesa".
+    /// </summary>
+    public static (string Key, string Label) MethodGroup(FinancialPaymentMethod value) => value switch
+    {
+        FinancialPaymentMethod.MpesaTill => ("mpesa", "M-Pesa"),
+        FinancialPaymentMethod.MpesaPaybill => ("mpesa", "M-Pesa"),
+        FinancialPaymentMethod.MpesaSendMoney => ("mpesa", "M-Pesa"),
+        FinancialPaymentMethod.Cash => ("cash", "Cash"),
+        FinancialPaymentMethod.BankTransfer => ("bank", "Bank"),
+        FinancialPaymentMethod.Card => ("card", "Card"),
+        _ => ("other", "Other")
+    };
+
     // ── Verification status ─────────────────────────────────
     public static string ToWire(FinancialVerificationStatus value) => value switch
     {

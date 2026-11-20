@@ -173,6 +173,21 @@ public class FinancialTransactionListResponse
     /// <summary>Total pages for the FILTERED result set, so a client never guesses.</summary>
     [JsonPropertyName("totalPages")]
     public int TotalPages { get; set; }
+
+    /// <summary>
+    /// Expenses in the filtered result that still count — voided rows excluded. Only the expense
+    /// register populates it; the general ledger list leaves it at 0, where `totalCount` is right.
+    /// </summary>
+    [JsonPropertyName("expenseCount")]
+    public int ExpenseCount { get; set; }
+
+    /// <summary>
+    /// The filtered, non-voided expenses grouped by category. Only the expense register populates
+    /// it, and it is what the "spending by category" panel reads — a total per category that cannot
+    /// drift from the list, because both come from the same filtered query.
+    /// </summary>
+    [JsonPropertyName("categoryBreakdown")]
+    public List<FinancialBreakdownItem> CategoryBreakdown { get; set; } = new();
 }
 
 /// <summary>One labelled slice of a breakdown (revenue source, payment method, category, staff).</summary>
@@ -389,4 +404,30 @@ public class CashbookResponse
 
     [JsonPropertyName("currency")]
     public string Currency { get; set; } = "KES";
+
+    /// <summary>
+    /// Movements the book holds in the window — voided rows excluded — regardless of the caller's
+    /// list filters. This is the "N entries" badge, so it does not jump when a filter is applied.
+    /// </summary>
+    [JsonPropertyName("entryCount")]
+    public int EntryCount { get; set; }
+
+    /// <summary>Verified income in the WHOLE window (filters ignored).</summary>
+    [JsonPropertyName("windowInflows")]
+    public decimal WindowInflows { get; set; }
+
+    /// <summary>Expenses + refunds in the WHOLE window (filters ignored).</summary>
+    [JsonPropertyName("windowOutflows")]
+    public decimal WindowOutflows { get; set; }
+
+    /// <summary>Window inflows − window outflows. Not a bank balance, and not affected by filters.</summary>
+    [JsonPropertyName("windowNetCashMovement")]
+    public decimal WindowNetCashMovement { get; set; }
+
+    /// <summary>
+    /// Verified income in the window grouped by payment method, computed from the same unfiltered
+    /// window as the totals. Only income counts here: an expense did not arrive by any method.
+    /// </summary>
+    [JsonPropertyName("paymentMethodBreakdown")]
+    public List<FinancialBreakdownItem> PaymentMethodBreakdown { get; set; } = new();
 }

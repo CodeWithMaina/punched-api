@@ -87,6 +87,9 @@ public class ExpenseService : IExpenseService
             ExternalReference = FinancialLedgerService.Truncate(request.TransactionReference, 100),
             Category = category,
             Description = FinancialLedgerService.Truncate(request.Description!.Trim(), 500),
+            CustomerName = string.IsNullOrWhiteSpace(request.Payee)
+                ? null
+                : FinancialLedgerService.Truncate(request.Payee.Trim(), 120),
             TransactionDate = request.TransactionDate?.ToUniversalTime() ?? DateTime.UtcNow,
             RecordedAt = DateTime.UtcNow,
             VerifiedAt = DateTime.UtcNow,
@@ -147,6 +150,7 @@ public class ExpenseService : IExpenseService
             expense.Category,
             expense.PaymentMethod,
             expense.Description,
+            expense.CustomerName,
             expense.ExternalReference,
             expense.TransactionDate
         };
@@ -181,6 +185,9 @@ public class ExpenseService : IExpenseService
         if (request.Description != null)
             expense.Description = FinancialLedgerService.Truncate(request.Description.Trim(), 500);
 
+        if (request.Payee != null)
+            expense.CustomerName = FinancialLedgerService.Truncate(request.Payee.Trim(), 120);
+
         if (request.TransactionReference != null)
             expense.ExternalReference = FinancialLedgerService.Truncate(request.TransactionReference.Trim(), 100);
 
@@ -197,6 +204,7 @@ public class ExpenseService : IExpenseService
             expense.Category,
             expense.PaymentMethod,
             expense.Description,
+            expense.CustomerName,
             expense.ExternalReference,
             expense.TransactionDate
         };
@@ -279,10 +287,27 @@ public class ExpenseService : IExpenseService
 
         var amounts = await filtered
             .Where(t => !t.IsVoided)
-            .Select(t => t.Amount)
+            .Select(t => new { t.Amount, t.Category })
             .ToListAsync();
 
-        var expenseTotal = amounts.Sum();
+        var expenseTotal = amounts.Sum(a => a.Amount);
+
+        // The category panel and the list read the SAME filtered query, so a total can never
+        // describe a set of rows the register does not show.
+        var categoryBreakdown = amounts
+            .GroupBy(a => a.Category ?? "other")
+            .Select(group => new FinancialBreakdownItem
+            {
+                Key = group.Key,
+                Label = ExpenseCategories.Label(group.Key),
+                Amount = group.Sum(a => a.Amount),
+                Count = group.Count(),
+                Percentage = expenseTotal <= 0
+                    ? 0
+                    : Math.Round(group.Sum(a => a.Amount) / expenseTotal * 100m, 1, MidpointRounding.AwayFromZero)
+            })
+            .OrderByDescending(item => item.Amount)
+            .ToList();
 
         var rows = await FinancialQueries.ApplySort(filtered, query.Sort, query.SortDirection)
             .Skip(skip)
@@ -316,6 +341,8 @@ public class ExpenseService : IExpenseService
             TotalCount = total,
             ExpenseTotal = expenseTotal,
             CurrentMonthExpenseTotal = monthAmounts.Sum(),
+            ExpenseCount = amounts.Count,
+            CategoryBreakdown = categoryBreakdown,
             TotalPages = pageSize <= 0 ? 1 : (int)Math.Ceiling(total / (double)pageSize)
         });
     }

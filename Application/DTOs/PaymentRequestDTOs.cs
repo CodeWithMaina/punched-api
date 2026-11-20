@@ -244,6 +244,15 @@ public class PaymentListQuery
 
     /// <summary>Free-text search across reference, phone, M-Pesa code and customer name/email.</summary>
     public string? Search { get; set; }
+
+    /// <summary>
+    /// The order the register is read in: <c>date-d</c> / <c>newest</c> (default), <c>date-a</c> /
+    /// <c>oldest</c>, <c>amt-d</c> / <c>amount-desc</c>, <c>amt-a</c> / <c>amount-asc</c>,
+    /// <c>name-a</c> / <c>name</c>. Unknown values fall back to newest-first; the read never fails
+    /// because a client sent an ordering it does not recognise.
+    /// </summary>
+    public string? Sort { get; set; }
+
     public int Page { get; set; } = 1;
     public int PageSize { get; set; } = 25;
 }

@@ -52,35 +52,56 @@ public partial class FinancialAnalyticsService
 
         var total = await recognised.CountAsync();
 
-        // One narrow read of the whole window feeds EVERY figure on this screen: the
-        // in/out totals, the running balance, and (through the page below) the register.
-        // Doing it in one pass is what makes it impossible for the total above and the rows
-        // below to be describing different sets of money. Summed in memory for the same reason
-        // the overview's are: the figures must mean the same thing on every provider.
-        var windowRows = await recognised
+        // Two scopes, deliberately kept apart (the reference design shows both):
+        //
+        //  - the VIEW totals (`inflows`… below) describe the rows the reader has filtered to, so
+        //    "net in this view" is true even while a category or search is applied;
+        //  - the WINDOW figures (running balance, entry count, method breakdown, `window*`) describe
+        //    the whole verified book for the period and never move when a filter changes.
+        //
+        // A running balance that started at the first row of a search result would be a different
+        // number on every keystroke — and none of them the book's.
+        var windowRows = await _context.FinancialTransactions.AsNoTracking()
+            .Where(t => t.BusinessId == business
+                        && t.VerificationStatus == FinancialVerificationStatus.Verified
+                        && t.TransactionDate >= window.FromUtc
+                        && t.TransactionDate < window.ToUtc)
             .Select(t => new LedgerMovementRow(
-                t.Id, t.TransactionDate, t.Amount, t.Type, t.VerificationStatus, t.IsVoided, t.CreatedByUserId))
+                t.Id, t.TransactionDate, t.Amount, t.Type, t.PaymentMethod,
+                t.VerificationStatus, t.IsVoided, t.CreatedByUserId))
             .ToListAsync();
 
-        var inflows = windowRows
-            .Where(r => !r.IsVoided
-                        && r.Type == FinancialTransactionType.Income
-                        && r.VerificationStatus == FinancialVerificationStatus.Verified)
+        // SQLite cannot SUM a decimal, and this service must answer identically on every provider,
+        // so the filtered figures are summed in memory from one narrow projection — exactly as the
+        // window totals are.
+        var viewMovements = await recognised
+            .Select(t => new { t.Amount, t.Type, t.IsVoided })
+            .ToListAsync();
+
+        var inflows = viewMovements
+            .Where(t => !t.IsVoided && t.Type == FinancialTransactionType.Income)
+            .Sum(t => t.Amount);
+
+        var expenses = viewMovements
+            .Where(t => !t.IsVoided && t.Type == FinancialTransactionType.Expense)
+            .Sum(t => t.Amount);
+
+        var refunds = viewMovements
+            .Where(t => !t.IsVoided && t.Type == FinancialTransactionType.Refund)
+            .Sum(t => t.Amount);
+
+        var windowInflows = windowRows
+            .Where(r => !r.IsVoided && r.Type == FinancialTransactionType.Income)
             .Sum(r => r.Amount);
 
-        var expenses = windowRows
-            .Where(r => !r.IsVoided && r.Type == FinancialTransactionType.Expense)
-            .Sum(r => r.Amount);
-
-        var refunds = windowRows
-            .Where(r => !r.IsVoided
-                        && r.Type == FinancialTransactionType.Refund
-                        && r.VerificationStatus == FinancialVerificationStatus.Verified)
+        var windowOutflows = windowRows
+            .Where(r => !r.IsVoided && r.Type is FinancialTransactionType.Expense or FinancialTransactionType.Refund)
             .Sum(r => r.Amount);
 
         // The running balance, oldest first, starting at zero on the first day of the window.
         // Punched has never seen an opening balance, so none is invented: this is the running NET
-        // of what was recorded inside the window, not the balance of any account.
+        // of what was recorded inside the window, not the balance of any account. Voided rows moved
+        // nothing, so they leave the cumulative figure untouched.
         var runningBalances = new Dictionary<Guid, decimal>(windowRows.Count);
         var cumulative = 0m;
 
@@ -97,6 +118,24 @@ public partial class FinancialAnalyticsService
 
             runningBalances[row.Id] = cumulative;
         }
+
+        // Verified income by method, over the same window and the same rule as `windowInflows` — so
+        // the bars can never add up to a different number than the legend above them.
+        var methodBreakdown = windowRows
+            .Where(r => !r.IsVoided && r.Type == FinancialTransactionType.Income)
+            .GroupBy(r => FinancialWire.MethodGroup(r.PaymentMethod))
+            .Select(group => new FinancialBreakdownItem
+            {
+                Key = group.Key.Key,
+                Label = group.Key.Label,
+                Amount = group.Sum(r => r.Amount),
+                Count = group.Count(),
+                Percentage = windowInflows <= 0
+                    ? 0
+                    : Math.Round(group.Sum(r => r.Amount) / windowInflows * 100m, 1, MidpointRounding.AwayFromZero)
+            })
+            .OrderByDescending(item => item.Amount)
+            .ToList();
 
         var rows = await FinancialQueries.ApplySort(recognised, query.Sort, query.SortDirection)
             .Skip(skip)
@@ -123,6 +162,11 @@ public partial class FinancialAnalyticsService
             Expenses = expenses,
             Refunds = refunds,
             NetCashMovement = inflows - expenses - refunds,
+            EntryCount = windowRows.Count(r => !r.IsVoided),
+            WindowInflows = windowInflows,
+            WindowOutflows = windowOutflows,
+            WindowNetCashMovement = windowInflows - windowOutflows,
+            PaymentMethodBreakdown = methodBreakdown,
             TotalPages = pageSize <= 0 ? 1 : (int)Math.Ceiling(total / (double)pageSize),
             Currency = "KES"
         });

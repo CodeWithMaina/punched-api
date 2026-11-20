@@ -69,6 +69,7 @@ internal sealed record LedgerMovementRow(
     DateTime TransactionDate,
     decimal Amount,
     FinancialTransactionType Type,
+    FinancialPaymentMethod PaymentMethod,
     FinancialVerificationStatus VerificationStatus,
     bool IsVoided,
     Guid? CreatedByUserId);

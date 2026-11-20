@@ -240,6 +240,80 @@ public partial class FinancialService
     }
 
     // ═══════════════════════════════════════════════════════════
+    //  VOIDING A MANUAL INCOME ROW
+    // ═══════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Voids a manually recorded income row (a walk-in, a product sale, a hand-entered receipt).
+    ///
+    /// <para>Three things are deliberately refused, because each has a truthful path elsewhere:
+    /// income that a PAYMENT produced is reversed through that payment (voiding the ledger row
+    /// would leave the payment "paid" while the books say the money never came), a refund has its
+    /// own linked row, and an income row that has already been refunded is history that must stay
+    /// legible. The row itself is never deleted — it is marked voided, drops out of every total and
+    /// running balance, and keeps the reason.</para>
+    /// </summary>
+    public async Task<ApiResponse<FinancialTransactionResponse>> VoidTransactionAsync(
+        Guid id, VoidFinancialRecordRequest request, Guid userId, string role)
+    {
+        var businessId = await FinancialAccess.ResolveBusinessIdAsync(_context, userId);
+        if (businessId is not Guid business)
+            return ApiResponse<FinancialTransactionResponse>.Fail("FORBIDDEN", "No business scope for user.");
+
+        if (string.IsNullOrWhiteSpace(request.Reason))
+            return ApiResponse<FinancialTransactionResponse>.Fail(
+                "VALIDATION_FAILED", "A reason is required when voiding an entry.");
+
+        var transaction = await _context.FinancialTransactions
+            .FirstOrDefaultAsync(t => t.Id == id && t.BusinessId == business);
+
+        if (transaction == null)
+            return ApiResponse<FinancialTransactionResponse>.Fail("NOT_FOUND", "Entry not found.");
+
+        // Already voided: idempotent, and the first reason is the one that stands.
+        if (transaction.IsVoided)
+            return ApiResponse<FinancialTransactionResponse>.Ok(FinancialMapper.ToResponse(transaction));
+
+        if (transaction.Type == FinancialTransactionType.Refund)
+            return ApiResponse<FinancialTransactionResponse>.Fail(
+                "INVALID_STATUS_TRANSITION",
+                "A refund cannot be voided. Reverse the payment it belongs to instead.");
+
+        if (transaction.Type != FinancialTransactionType.Income)
+            return ApiResponse<FinancialTransactionResponse>.Fail(
+                "INVALID_STATUS_TRANSITION", "Only income and expenses can be voided here.");
+
+        if (transaction.SourcePaymentId != null)
+            return ApiResponse<FinancialTransactionResponse>.Fail(
+                "INVALID_STATUS_TRANSITION",
+                "This income came from a payment. Reverse the payment instead — voiding it here would leave the payment and the books disagreeing.");
+
+        var refunded = await SumRefundsAsync(business, new[] { transaction.Id });
+        if (refunded.GetValueOrDefault(transaction.Id) > 0)
+            return ApiResponse<FinancialTransactionResponse>.Fail(
+                "INVALID_STATUS_TRANSITION",
+                "This entry already has a refund recorded against it and cannot be voided.");
+
+        transaction.IsVoided = true;
+        transaction.VoidedAt = DateTime.UtcNow;
+        transaction.VoidedByUserId = userId;
+        transaction.VoidReason = FinancialLedgerService.Truncate(request.Reason!.Trim(), 500);
+        transaction.UpdatedAt = DateTime.UtcNow;
+
+        await _uow.SaveChangesAsync();
+
+        await WriteAuditAsync(business, "transaction", transaction.Id, "voided", userId, transaction.Reference,
+            transaction.VoidReason,
+            Changes(new { IsVoided = false }, new { IsVoided = true }));
+
+        _logger.LogWarning(
+            "Ledger income {Reference} voided by user {UserId} for business {BusinessId}: {Reason}",
+            transaction.Reference, userId, business, transaction.VoidReason);
+
+        return ApiResponse<FinancialTransactionResponse>.Ok(FinancialMapper.ToResponse(transaction));
+    }
+
+    // ═══════════════════════════════════════════════════════════
     //  REFUNDS
     // ═══════════════════════════════════════════════════════════
 

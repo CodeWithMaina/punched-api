@@ -59,6 +59,14 @@ public interface IFinancialService
     Task<ApiResponse<FinancialTransactionResponse>> RejectTransactionAsync(
         Guid id, RejectFinancialTransactionRequest request, Guid userId, string role);
 
+    /// <summary>
+    /// Voids a manually recorded income row. Voiding is not deleting: the row stays with the
+    /// reason, drops out of every total, and income that came from a payment is refused (that money
+    /// is reversed through the payment, never erased here).
+    /// </summary>
+    Task<ApiResponse<FinancialTransactionResponse>> VoidTransactionAsync(
+        Guid id, VoidFinancialRecordRequest request, Guid userId, string role);
+
     /// <summary>Records a full or partial refund against an income row. Never mutates the original.</summary>
     Task<ApiResponse<FinancialTransactionResponse>> RecordRefundAsync(
         RecordRefundRequest request, Guid userId, string role);

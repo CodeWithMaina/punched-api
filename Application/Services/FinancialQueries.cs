@@ -136,6 +136,12 @@ internal static class FinancialQueries
             "reference" => descending
                 ? query.OrderByDescending(t => t.Reference).ThenByDescending(t => t.Id)
                 : query.OrderBy(t => t.Reference).ThenBy(t => t.Id),
+            // A-to-Z by what the row is CALLED. Rows without a description fall back to their
+            // reference so they sort where a reader would look for them instead of clustering at
+            // the top as nulls.
+            "description" or "name" => descending
+                ? query.OrderByDescending(t => t.Description ?? t.Reference).ThenByDescending(t => t.Id)
+                : query.OrderBy(t => t.Description ?? t.Reference).ThenBy(t => t.Id),
             _ => descending
                 ? query.OrderByDescending(t => t.TransactionDate).ThenByDescending(t => t.Id)
                 : query.OrderBy(t => t.TransactionDate).ThenBy(t => t.Id)

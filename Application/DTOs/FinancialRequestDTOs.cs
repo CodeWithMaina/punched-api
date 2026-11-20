@@ -35,6 +35,13 @@ public class RecordIncomeRequest
     [JsonPropertyName("customerId")]
     public Guid? CustomerId { get; set; }
 
+    /// <summary>
+    /// Optional name of whoever paid, when they are not a registered customer (a walk-in, a
+    /// product sale). Stored on the row and matched by the register's customer/payee search.
+    /// </summary>
+    [JsonPropertyName("customerName")]
+    public string? CustomerName { get; set; }
+
     /// <summary>Optional free-text description ("Haircut + beard trim").</summary>
     [JsonPropertyName("description")]
     public string? Description { get; set; }
@@ -68,6 +75,10 @@ public class CreateExpenseRequest
     [JsonPropertyName("description")]
     public string? Description { get; set; }
 
+    /// <summary>Optional supplier/payee the money was paid to; searchable on the register.</summary>
+    [JsonPropertyName("payee")]
+    public string? Payee { get; set; }
+
     /// <summary>Optional receipt/bank reference.</summary>
     [JsonPropertyName("transactionReference")]
     public string? TransactionReference { get; set; }
@@ -96,6 +107,10 @@ public class UpdateExpenseRequest
 
     [JsonPropertyName("transactionReference")]
     public string? TransactionReference { get; set; }
+
+    /// <summary>Optional supplier/payee, when the entry is corrected.</summary>
+    [JsonPropertyName("payee")]
+    public string? Payee { get; set; }
 
     [JsonPropertyName("transactionDate")]
     public DateTime? TransactionDate { get; set; }

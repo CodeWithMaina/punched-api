@@ -100,6 +100,21 @@ public class PaymentResponse
 
     [JsonPropertyName("attempts")]
     public List<PaymentAttemptResponse> Attempts { get; set; } = new();
+
+    /// <summary>
+    /// The ledger row this payment was recognised as, once the money is settled. Null while the
+    /// payment is unpaid: a cashbook entry exists only where the money really is.
+    /// </summary>
+    [JsonPropertyName("financialTransactionId")]
+    public Guid? FinancialTransactionId { get; set; }
+
+    /// <summary>The cashbook reference (FIN-…) of that ledger row.</summary>
+    [JsonPropertyName("ledgerReference")]
+    public string? LedgerReference { get; set; }
+
+    /// <summary>Who recorded the income in the books, when the server could resolve it.</summary>
+    [JsonPropertyName("ledgerRecordedByName")]
+    public string? LedgerRecordedByName { get; set; }
 }
 
 /// <summary>One entry of a manual M-PESA payment's verification trail.</summary>

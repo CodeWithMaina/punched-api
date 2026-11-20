@@ -256,6 +256,26 @@ public class FinancesController : ControllerBase
         return result.Success ? Ok(result) : MapFailure(result);
     }
 
+    /// <summary>
+    /// Void a hand-recorded income row. Not a delete: the row stays, marked voided with a reason,
+    /// and stops counting. Income that a payment produced is refused here — it is reversed through
+    /// the payment so the two records cannot disagree.
+    /// </summary>
+    [HttpPost("transactions/{id:guid}/void")]
+    [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
+    [RequirePermission("finances.record_income")]
+    [ProducesResponseType(typeof(ApiResponse<FinancialTransactionResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Void(Guid id, [FromBody] VoidFinancialRecordRequest? request)
+    {
+        var (userId, role) = GetIdentity();
+        if (userId == null) return Unauthorized();
+
+        var result = await _finances.VoidTransactionAsync(
+            id, request ?? new VoidFinancialRecordRequest(), userId.Value, role!);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
     /// <summary>Record the owner's reconciliation verdict on a transaction (independent of verification).</summary>
     [HttpPost("transactions/{id:guid}/reconcile")]
     [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
