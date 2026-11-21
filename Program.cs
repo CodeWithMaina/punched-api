@@ -1492,82 +1492,75 @@ static string ResolveConnectionString(IConfiguration configuration, string role)
                 builder.SslMode);
         }
 
-        // ── Pool behaviour on a remote, serverless database ──────────────────
-        // Neon suspends a compute after five minutes without activity. A non-zero
-        // Minimum Pool Size holds sockets open permanently, so the compute can never
-        // suspend and the monthly compute allowance is consumed around the clock.
-        // The minimum therefore defaults to 0: an idle deployment keeps no socket
-        // open, and the first request after a quiet period pays one cold start
-        // (~1–3 s on Neon) instead of every request paying for a permanently warm pool.
+        // ── Connection lifecycle (pool + keepalive) ─────────────────────────
+        // Bound into one validated object so the numbers are judged together and the
+        // same values are logged. Two keepalives are deliberately distinguished:
         //
-        //   Minimum Pool Size   0 — let the pool drain when the deployment is idle.
-        //   Connection Lifetime refresh pooled sockets periodically so a plan change,
-        //                       endpoint move or server restart cannot leave a stale
-        //                       socket in the pool forever.
-        //   Idle Lifetime       longer than Neon's 5-minute window: a connection that
-        //                       is still in the pool must not be mid-suspend.
-        //   Keepalive           holds the pooled socket across NAT/proxy timeouts.
-        //   Timeout             fails fast on a dead link instead of stalling a request.
+        //   KeepAliveSeconds           Npgsql APPLICATION-level keepalive. Npgsql's
+        //                              documented behaviour is to act on an otherwise
+        //                              idle connection; its own default is 0 (off).
+        //                              Enabled, it is traffic a scale-to-zero database
+        //                              never asked for, so the Free profile forbids it
+        //                              (see ConnectionLifecycleSettings.Validate).
+        //   TcpKeepAlive / *Time       OPERATING-SYSTEM keepalive on the socket, for
+        //                              NAT/proxy reliability. Explicit opt-in only; it
+        //                              never sends application data and is not a
+        //                              substitute for the setting above.
         //
-        // Every value is overridable, and none of them influences when Neon suspends:
-        // suspension is controlled by the dashboard / Neon API (see infra/NEON.md),
-        // while these settings only decide what this process does between queries.
-        var minimumPoolSize = int.TryParse(configuration["Database:MinimumPoolSize"], out var configuredMin)
-            ? configuredMin
-            : 0;
-        builder.MinPoolSize = Math.Clamp(minimumPoolSize, 0, 100);
+        //   Minimum Pool Size          0 — let the pool drain, so an idle deployment
+        //                              holds no socket open (MinimumPoolSize > 0 is
+        //                              still allowed, but warns in scale-to-zero mode).
+        //   Connection Idle Lifetime   how long an idle pooled socket survives.
+        //   Connection Pruning         how often the pool looks for expired sockets.
+        //   Connection Lifetime        forced recycle, 0 = never.
+        //   Timeout                    connect timeout; a dead link fails fast.
+        //
+        // None of these influences WHEN Neon suspends: suspension is the dashboard's
+        // (or Neon API's) decision. These only decide what this process does between
+        // queries.
+        var lifecycle = configuration.GetSection(ConnectionLifecycleSettings.SectionName)
+                            .Get<ConnectionLifecycleSettings>()
+                        ?? new ConnectionLifecycleSettings();
 
-        builder.ConnectionLifetime = Math.Clamp(
-            int.TryParse(configuration["Database:ConnectionLifetimeSeconds"], out var configuredLifetime)
-                ? configuredLifetime
-                : 0,
-            0,
-            86_400);
+        // The deployment's own scale-to-zero switch decides whether an application
+        // keepalive is acceptable. Read from the same section the workers use, so one
+        // profile flip moves both.
+        var scaleToZeroFriendly = configuration.GetValue(
+            $"{BackgroundProcessingOptions.SectionName}:ScaleToZeroFriendlyMode", false);
 
-        builder.ConnectionIdleLifetime = Math.Clamp(
-            int.TryParse(configuration["Database:ConnectionIdleLifetimeSeconds"], out var configuredIdleLifetime)
-                ? configuredIdleLifetime
-                : 300,
-            5,
-            3_600);
+        var lifecycleProblems = lifecycle.Validate(scaleToZeroFriendly);
+        if (lifecycleProblems.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Invalid database connection lifecycle configuration:" +
+                Environment.NewLine +
+                string.Join(Environment.NewLine, lifecycleProblems.Select(problem => " - " + problem)));
+        }
 
-        builder.ConnectionPruningInterval = Math.Clamp(
-            int.TryParse(configuration["Database:ConnectionPruningIntervalSeconds"], out var configuredPruning)
-                ? configuredPruning
-                : 30,
-            1,
-            300);
+        foreach (var warning in lifecycle.Warnings(scaleToZeroFriendly))
+        {
+            Log.Warning("Database connection lifecycle: {Warning}", warning);
+        }
 
-        builder.KeepAlive = Math.Clamp(
-            int.TryParse(configuration["Database:KeepAliveSeconds"], out var configuredKeepAlive)
-                ? configuredKeepAlive
-                : 30,
-            0,
-            300);
+        builder.MinPoolSize = Math.Clamp(lifecycle.MinimumPoolSize, 0, 100);
+        builder.MaxPoolSize = Math.Clamp(lifecycle.MaximumPoolSize, Math.Max(builder.MinPoolSize, 1), 200);
+        builder.KeepAlive = Math.Clamp(lifecycle.KeepAliveSeconds, 0, 300);
+        builder.TcpKeepAlive = lifecycle.TcpKeepAlive;
+        if (lifecycle.TcpKeepAliveTimeSeconds > 0)
+        {
+            builder.TcpKeepAliveTime = lifecycle.TcpKeepAliveTimeSeconds;
+        }
 
-        builder.Timeout = Math.Clamp(
-            int.TryParse(configuration["Database:TimeoutSeconds"], out var configuredTimeout)
-                ? configuredTimeout
-                : 15,
-            3,
-            120);
+        if (lifecycle.TcpKeepAliveIntervalSeconds > 0)
+        {
+            builder.TcpKeepAliveInterval = lifecycle.TcpKeepAliveIntervalSeconds;
+        }
 
-        // Ceiling on simultaneous connections. Neon allocates memory per
-        // connection and enforces a hard limit per compute; the API and the worker
-        // each run their own pool, so the two maxima must add up to something the
-        // database can actually serve.
-        var maximumPoolSize = int.TryParse(configuration["Database:MaximumPoolSize"], out var configuredMax)
-            ? configuredMax
-            : 8;
-        builder.MaxPoolSize = Math.Clamp(maximumPoolSize, Math.Max(builder.MinPoolSize, 1), 200);
-
-        // A single statement may not outlive its request by much: a runaway query
-        // would otherwise keep a pooled socket busy long after the API already
-        // answered the client.
-        var commandTimeoutSeconds = int.TryParse(configuration["Database:CommandTimeoutSeconds"], out var configuredCommandTimeout)
-            ? configuredCommandTimeout
-            : 30;
-        builder.CommandTimeout = Math.Clamp(commandTimeoutSeconds, 5, 300);
+        builder.ConnectionIdleLifetime = Math.Clamp(lifecycle.ConnectionIdleLifetimeSeconds, 5, 3_600);
+        builder.ConnectionPruningInterval = Math.Clamp(lifecycle.ConnectionPruningIntervalSeconds, 1, 300);
+        builder.ConnectionLifetime = Math.Clamp(lifecycle.ConnectionLifetimeSeconds, 0, 86_400);
+        builder.Timeout = Math.Clamp(lifecycle.TimeoutSeconds, 3, 120);
+        builder.CommandTimeout = Math.Clamp(lifecycle.CommandTimeoutSeconds, 5, 300);
 
         // ── Connection budget ───────────────────────────────────────────────
         // Neon's per-compute limit is max_connections (112 on the 0.25 CU free
@@ -1635,20 +1628,16 @@ static string ResolveConnectionString(IConfiguration configuration, string role)
         // credentials and includes no connection string.
         Log.Information(
             "Database connection resolved: host={Host}, database={Database}, ssl={SslMode}, endpoint={Endpoint}, " +
-            "pool={MinPoolSize}-{MaxPoolSize} (role budget {Budget}), commandTimeout={CommandTimeout}s, " +
-            "conn lifetime={Lifetime}s, idle lifetime={IdleLifetime}s, keepalive={KeepAlive}s, connect timeout={Timeout}s",
+            "role budget={Budget}",
             builder.Host,
             builder.Database,
             builder.SslMode,
             usesPooler ? "pooled" : "direct",
-            builder.MinPoolSize,
-            builder.MaxPoolSize,
-            connectionBudget,
-            builder.CommandTimeout,
-            builder.ConnectionLifetime,
-            builder.ConnectionIdleLifetime,
-            builder.KeepAlive,
-            builder.Timeout);
+            connectionBudget);
+
+        // The effective, non-secret lifecycle settings. `appKeepalive` is the one to
+        // watch for scale-to-zero: it must read "off" on the Free profile.
+        Log.Information("Database connection lifecycle: {Lifecycle}", lifecycle.Describe());
 
         Log.Information("Database connection plan: {Plan}", budgetPlan.Describe(role, builder.MaxPoolSize));
 

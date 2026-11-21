@@ -50,15 +50,23 @@ public static class PollingSharedTick
     }
 
     /// <summary>
-    /// Rounds a period up to a whole number of shared ticks. Cleanup every 24 h and
-    /// payment expiry every 5 min both land on the same 6-minute grid this way.
+    /// Quantises a worker's period onto the shared tick lattice, <b>never lengthening
+    /// it</b>: a documented maximum delay (for example "reschedule requests expire
+    /// within 15 minutes") must not become 18 minutes just because the tick is 6.
+    ///
+    /// <para>900 s with a 360 s tick becomes 720 s (two ticks), not 1080 s. A period
+    /// shorter than one tick cannot be honoured without waking the database more often
+    /// than the tick allows, so it becomes exactly one tick — and the caller logs that
+    /// adjustment at startup so it is never silent.</para>
     /// </summary>
     public static int AlignPeriodSeconds(int periodSeconds, int tickSeconds)
     {
         var tick = Math.Max(60, tickSeconds);
-        var period = Math.Max(60, periodSeconds);
+        var period = Math.Max(1, periodSeconds);
 
-        var ticks = (int)Math.Ceiling(period / (double)tick);
-        return ticks * tick;
+        if (period <= tick) return tick;
+
+        var wholeTicks = (int)Math.Floor(period / (double)tick);
+        return Math.Max(1, wholeTicks) * tick;
     }
 }

@@ -51,12 +51,13 @@ public class PollingSharedTickTests
     }
 
     [Theory]
-    [InlineData(300, 360, 360)]
-    [InlineData(900, 360, 1080)]
-    [InlineData(3600, 360, 3600)]
+    [InlineData(300, 360, 360)]    // shorter than one tick -> exactly one tick (logged)
+    [InlineData(900, 360, 720)]    // 15 min must not stretch to 18 min
+    [InlineData(3600, 360, 3600)]  // exactly 10 ticks
     [InlineData(86400, 360, 86400)]
     [InlineData(10, 360, 360)]
-    public void Periods_round_up_to_whole_ticks(int configured, int tick, int expected)
+    public void Periods_quantise_onto_ticks_without_exceeding_the_configured_interval(
+        int configured, int tick, int expected)
     {
         Assert.Equal(expected, PollingSharedTick.AlignPeriodSeconds(configured, tick));
     }

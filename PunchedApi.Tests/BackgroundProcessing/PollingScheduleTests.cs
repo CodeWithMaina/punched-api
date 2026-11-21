@@ -117,10 +117,11 @@ public class PollingScheduleTests
     }
 
     [Fact]
-    public void Scale_to_zero_ceiling_is_quantised_to_whole_ticks()
+    public void Scale_to_zero_ceiling_is_quantised_to_whole_ticks_without_lengthening_it()
     {
-        // 900 s must become a multiple of the 360 s tick, otherwise the 15-minute
-        // sweep would drift off the shared lattice and wake the database on its own.
+        // 900 s must land on the 360 s lattice. Rounding down to 720 s keeps the
+        // worker inside its documented maximum delay; rounding up to 1080 s would
+        // silently stretch a 15-minute guarantee to 18 minutes.
         var profile = Profile(p =>
         {
             p.ScaleToZeroFriendly = true;
@@ -128,7 +129,7 @@ public class PollingScheduleTests
             p.MaxIdleIntervalSeconds = 900;
         });
 
-        Assert.Equal(1080, profile.EffectiveMaxIdleIntervalSeconds);
+        Assert.Equal(720, profile.EffectiveMaxIdleIntervalSeconds);
     }
 
     [Fact]
