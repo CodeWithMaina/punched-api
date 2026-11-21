@@ -1,10 +1,15 @@
-# Docker context ignore - PunchedApi (.NET 8 API)
+# Docker context ignore - PunchedApi (.NET 8 API + worker)
 # Governs what `COPY . ./` in PunchedApi/Dockerfile can reach.
 # appsettings.json IS required (base config) -> it stays.
 
 # Build outputs
 bin/
 obj/
+
+# Nested test project: builds its own binaries and is excluded from this
+# project's compile items in PunchedApi.csproj. Keeping it out of the context
+# stops the test tree's bin/obj from inflating every build.
+PunchedApi.Tests/
 
 # NuGet / IDE / editor user files
 *.user
@@ -38,16 +43,21 @@ next-env.d.ts
 
 # .NET environment override that may hold real secrets -> keep local
 appsettings.Development.json
+appsettings.Development.json.example
 appsettings.Production.json
 appsettings.Staging.json
 appsettings.*.json.user
 # (appsettings.json stays tracked & is copied into the image)
+
+# Local filesystem object store (MediaStorage:Provider=local)
+App_Data/
 
 # Dev scratch / docs / tests
 notes.md
 *.md
 SEEDING.md
 docs/
+scripts/
 tests/
 test/
 TestResults/
@@ -56,8 +66,10 @@ coverage/
 # Logs
 *.log
 logs/
+seed-report.json
 
 # OS
 .DS_Store
 Thumbs.db
+
 

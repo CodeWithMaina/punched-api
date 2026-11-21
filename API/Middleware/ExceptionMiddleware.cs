@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using PunchedApi.Application.DTOs;
 
 namespace PunchedApi.API.Middleware;
@@ -113,6 +114,17 @@ public class ExceptionMiddleware
                 "CONFLICT",
                 "The request could not be completed because it conflicts with the current state of the data."),
 
+            // Transient PostgreSQL failures — a saturated Npgsql pool, a Neon compute
+            // that is still resuming from scale-to-zero, a dropped socket. These are
+            // capacity/availability conditions with a retry path, so the client gets
+            // 503 + Retry-After instead of a 500 that reads like a bug. IsTransient is
+            // the provider's own classification; non-transient data errors keep
+            // falling through to the generic case below.
+            NpgsqlException { IsTransient: true } => (
+                HttpStatusCode.ServiceUnavailable,
+                "DATABASE_UNAVAILABLE",
+                "The service is temporarily busy. Please retry in a few seconds."),
+
             _ => (
                 HttpStatusCode.InternalServerError,
                 "SERVER_ERROR",
@@ -123,6 +135,13 @@ public class ExceptionMiddleware
 
         context.Response.StatusCode = (int)statusCode;
         context.Response.Headers["X-Correlation-ID"] = context.TraceIdentifier;
+
+        // A 503 is a "come back shortly" signal: without Retry-After every client
+        // retries immediately and deepens the saturation that caused it.
+        if (statusCode == HttpStatusCode.ServiceUnavailable)
+        {
+            context.Response.Headers["Retry-After"] = "5";
+        }
 
         var response = ApiResponse<object>.Fail(errorCode, message);
 

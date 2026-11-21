@@ -11,6 +11,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using Microsoft.AspNetCore.Http.Timeouts;
+using PunchedApi.API.Hosting;
 using PunchedApi.API.Middleware;
 using PunchedApi.Application;
 using PunchedApi.Application.Attendance;
@@ -29,6 +31,7 @@ using PunchedApi.Application.Settings;
 using PunchedApi.Application.Validators;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
+using PunchedApi.Infrastructure.Caching;
 using PunchedApi.Infrastructure.Data;
 using PunchedApi.Infrastructure.Data.Seeding;
 using PunchedApi.Infrastructure.Data.Seeding.Demo.AureliaLuxe;
@@ -39,6 +42,7 @@ using PunchedApi.Infrastructure.Repositories;
 using PunchedApi.Infrastructure.Services;
 using PunchedApi.Infrastructure.Services.Storage;
 using Serilog;
+using Serilog.Events;
 
 // ═══════════════════════════════════════════════════════════════
 //  SERILOG BOOTSTRAP
@@ -52,6 +56,72 @@ try
     Log.Information("Starting Punched API...");
 
     var builder = WebApplication.CreateBuilder(args);
+
+    // ═══════════════════════════════════════════════════════════
+    //  PROCESS ROLE, HOST LIMITS AND TIMEOUTS
+    // ═══════════════════════════════════════════════════════════
+
+    // PUNCHED_ROLE selects the container's job (see API/Hosting/HostRole.cs).
+    // Unset means "api", which is the historical single-process behaviour.
+    var hostRole = HostRole.Resolve(builder.Configuration);
+    var isWorkerProcess = hostRole == HostRole.Worker;
+
+    // Kestrel is never the public listener (Caddy is), but it still owns the
+    // first-line limits. Sizes are configuration-driven so one deployment can be
+    // tuned without a rebuild.
+    var maxRequestBodyBytes = builder.Configuration.GetValue<long?>("Http:MaxRequestBodySizeBytes")
+        ?? 16L * 1024 * 1024;
+    var requestTimeoutSeconds = builder.Configuration.GetValue<int?>("Http:RequestTimeoutSeconds") ?? 30;
+
+    builder.WebHost.ConfigureKestrel(options =>
+    {
+        // No `Server: Kestrel` banner: version disclosure for free reconnaissance.
+        options.AddServerHeader = false;
+
+        // Media never arrives here (browsers PUT straight to R2 with a presigned
+        // URL). The largest legitimate body is an 8 MB card-template asset, so a
+        // 16 MB ceiling leaves multipart headroom and still bounds abuse.
+        options.Limits.MaxRequestBodySize = maxRequestBodyBytes;
+        options.Limits.MaxRequestHeadersTotalSize = 32 * 1024;
+        options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(30);
+        options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(2);
+    });
+
+    // Per-request ceiling that returns a consistent JSON 504 instead of letting a
+    // request sit on a slow upstream until the client gives up. Endpoints that
+    // stream (SSE) opt out with [DisableRequestTimeout].
+    builder.Services.AddRequestTimeouts(options =>
+    {
+        options.DefaultPolicy = new RequestTimeoutPolicy
+        {
+            Timeout = TimeSpan.FromSeconds(requestTimeoutSeconds),
+            TimeoutStatusCode = StatusCodes.Status504GatewayTimeout,
+            // Same envelope the exception middleware uses, so a client only ever
+            // has to parse one error shape.
+            WriteTimeoutResponse = async context =>
+            {
+                if (context.Response.HasStarted)
+                {
+                    return;
+                }
+
+                context.Response.ContentType = "application/json";
+                context.Response.StatusCode = StatusCodes.Status504GatewayTimeout;
+                await context.Response.WriteAsJsonAsync(
+                    PunchedApi.Application.DTOs.ApiResponse<object>.Fail(
+                        "REQUEST_TIMEOUT",
+                        "The request took longer than the server allows. Please retry."));
+            }
+        };
+    });
+
+    // Graceful shutdown: an in-flight request or a worker's current job gets time
+    // to finish (and hosted services see the stopping token) before SIGKILL.
+    builder.Services.Configure<HostOptions>(options =>
+    {
+        options.ShutdownTimeout = TimeSpan.FromSeconds(
+            builder.Configuration.GetValue<int?>("Http:ShutdownTimeoutSeconds") ?? 30);
+    });
 
     // ── Configuration ──────────────────────────────────────
     // WebApplication.CreateBuilder registers the standard providers in the
@@ -85,6 +155,13 @@ try
 
     // ── Caching / tenant scope resolution ───────────────────
     builder.Services.AddMemoryCache();
+    // Cache-aside layer for short-lived, non-authoritative lookups: Redis when
+    // Redis:Enabled=true (the compose stack), in-process memory otherwise. The
+    // durable queue is PostgreSQL, not Redis (see Infrastructure/Caching).
+    builder.Services.AddPunchedCache(builder.Configuration);
+    // Bounded, cached dependency probes used by /health/ready (and the docker
+    // health checks that gate deployment).
+    builder.Services.AddSingleton<ReadinessProbe>();
     builder.Services.AddSingleton<IBusinessScopeResolver, BusinessScopeResolver>();
 
     // ── JWT Settings ────────────────────────────────────────
@@ -263,7 +340,26 @@ try
     // abstraction, so an object store can replace it without touching the service.
     builder.Services.AddScoped<ICardAssetService, CardAssetService>();
     builder.Services.AddSingleton<ICardAssetStorage, LocalCardAssetStorage>();
-    builder.Services.AddDataProtection().SetApplicationName("PunchedApi");
+    // DataProtection backs the card-asset delivery tokens and unsubscribe links.
+    // Its default key ring lives in the process user profile, which is read-only
+    // (and wiped on restart) inside the container: without a persistent, shared
+    // location every restart invalidates outstanding emailed links, and the worker
+    // could not decrypt what the API protected.
+    var dataProtection = builder.Services
+        .AddDataProtection()
+        .SetApplicationName("PunchedApi");
+
+    var dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"];
+    if (!string.IsNullOrWhiteSpace(dataProtectionKeysPath))
+    {
+        var keyDirectory = new DirectoryInfo(dataProtectionKeysPath);
+        if (!keyDirectory.Exists)
+        {
+            keyDirectory.Create();
+        }
+
+        dataProtection.PersistKeysToFileSystem(keyDirectory);
+    }
     builder.Services.AddSingleton<ICardAssetDeliveryTokenService, CardAssetDeliveryTokenService>();
     builder.Services.Configure<CardAssetSettings>(
         builder.Configuration.GetSection(CardAssetSettings.SectionName));
@@ -973,6 +1069,17 @@ try
     // ═══════════════════════════════════════════════════════════
     var app = builder.Build();
 
+    // ── Fail-fast deployment configuration checks ───────────
+    // Runs before any request is served (and before migrations): a deployment
+    // with an http public URL, a localhost CORS origin or a passwordless Redis
+    // connection fails at startup instead of surfacing hours later.
+    ProductionConfiguration.ValidateForDeployment(app.Configuration, app.Environment, app.Logger);
+    app.Logger.LogInformation(
+        "Process role: {Role} (PUNCHED_ROLE), workers enabled: {WorkersEnabled}, environment: {Environment}",
+        hostRole,
+        app.Configuration.GetValue("WORKERS_ENABLED", true),
+        app.Environment.EnvironmentName);
+
     if (args.Length > 0)
     {
         using var cliScope = app.Services.CreateScope();
@@ -1052,32 +1159,127 @@ try
     app.UseMiddleware<ExceptionMiddleware>();
     // Browser-hardening headers for every response (set before anything can write).
     app.UseMiddleware<SecurityHeadersMiddleware>();
+
+    // One structured completion line per request: method, path, status code and
+    // elapsed time. This is the cheapest useful latency signal in the stack and it
+    // needs no collector.
+    //
+    // Privacy: only the path is templated (never the query string, body or any
+    // header). Health probes and the SSE stream are logged at Verbose so they fall
+    // below the configured minimum level and are dropped — EventSource carries
+    // `?access_token=` in the query string and must never reach a log sink.
+    app.UseSerilogRequestLogging(options =>
+    {
+        options.MessageTemplate = "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
+        options.GetLevel = (httpContext, _, exception) =>
+        {
+            if (exception is not null || httpContext.Response.StatusCode >= 500)
+            {
+                return LogEventLevel.Error;
+            }
+
+            var path = httpContext.Request.Path;
+            return path.StartsWithSegments("/health") || path.StartsWithSegments("/v1/sse")
+                ? LogEventLevel.Verbose
+                : LogEventLevel.Information;
+        };
+        options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
+        {
+            // Correlation id only: the ASP.NET trace identifier is what
+            // X-Correlation-ID echoes back, so an operator can pivot from a
+            // customer report to every line of one request.
+            diagnosticContext.Set("CorrelationId", httpContext.TraceIdentifier);
+            diagnosticContext.Set("ClientIp", httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+        };
+    });
+
     app.UseMiddleware<ApiEventLoggingMiddleware>();
 
     // ── Forwarded headers (TLS-terminating proxy) ────────────
-    // Railway (and any container platform that terminates TLS in front of Kestrel)
-    // delivers plain HTTP to the app, so `Request.IsHttps` would be false and the
-    // session cookie would be issued without the Secure flag. ASPNETCORE_FORWARDEDHEADERS_ENABLED=true
-    // is the platform-documented switch for "I am behind a trusted proxy": it is
-    // opt-in (never assumed) so a directly exposed deployment cannot be spoofed
-    // with a forged X-Forwarded-For/Proto header.
-    if (string.Equals(
+    // Caddy terminates TLS and forwards plain HTTP to Kestrel, so
+    // `Request.IsHttps` would be false (and the session cookie would lose its
+    // Secure flag) and every request would appear to come from the proxy IP
+    // (collapsing all per-IP rate limits into one bucket).
+    //
+    // Trust is explicit and narrow:
+    //   • ForwardedHeaders:Enabled=true opts in.
+    //   • KnownNetworks/KnownProxies are honoured from configuration and default
+    //     to the Docker frontend subnet, i.e. only Caddy can assert these headers.
+    //     A directly exposed deployment therefore cannot be spoofed with a forged
+    //     X-Forwarded-For.
+    //   • ASPNETCORE_FORWARDEDHEADERS_ENABLED=true keeps the previous managed-
+    //     platform behaviour (any proxy) for environments without a fixed subnet.
+    var forwardedHeadersEnabled =
+        builder.Configuration.GetValue("ForwardedHeaders:Enabled", false)
+        || string.Equals(
             Environment.GetEnvironmentVariable("ASPNETCORE_FORWARDEDHEADERS_ENABLED"),
             "true",
-            StringComparison.OrdinalIgnoreCase))
+            StringComparison.OrdinalIgnoreCase);
+
+    if (forwardedHeadersEnabled)
     {
         var forwardedOptions = new Microsoft.AspNetCore.Builder.ForwardedHeadersOptions
         {
             ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor
-                | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
+                | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto,
+            ForwardLimit = 2
         };
-        // The proxy address is not known ahead of time in a managed platform, so the
-        // known-network/known-proxy lists are cleared — which is exactly why this block
-        // only runs when the operator explicitly opts in above.
+
+        var knownNetworks = builder.Configuration.GetSection("ForwardedHeaders:KnownNetworks").Get<string[]>();
+        var knownProxies = builder.Configuration.GetSection("ForwardedHeaders:KnownProxies").Get<string[]>();
+
+        if ((knownNetworks?.Length ?? 0) == 0 && (knownProxies?.Length ?? 0) == 0
+            && !string.Equals(
+                Environment.GetEnvironmentVariable("ASPNETCORE_FORWARDEDHEADERS_ENABLED"),
+                "true",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "ForwardedHeaders:Enabled is true but no ForwardedHeaders:KnownNetworks/KnownProxies are " +
+                "configured. Set ForwardedHeaders__KnownNetworks__0 to the proxy network " +
+                "(the compose stack uses the frontend subnet) so forwarded headers cannot be spoofed by " +
+                "a directly connected client.");
+        }
+
         forwardedOptions.KnownNetworks.Clear();
         forwardedOptions.KnownProxies.Clear();
+
+        foreach (var network in knownNetworks ?? [])
+        {
+            // CIDR → prefix address + prefix length. Parsed by hand because the
+            // ASP.NET Core known-network collection takes its own IPNetwork type.
+            var separator = network.IndexOf('/');
+            if (separator <= 0
+                || !System.Net.IPAddress.TryParse(network[..separator], out var prefix)
+                || !int.TryParse(network[(separator + 1)..], out var prefixLength))
+            {
+                throw new InvalidOperationException(
+                    $"ForwardedHeaders:KnownNetworks entry '{network}' is not a valid CIDR range.");
+            }
+
+            forwardedOptions.KnownNetworks.Add(
+                new Microsoft.AspNetCore.HttpOverrides.IPNetwork(prefix, prefixLength));
+        }
+
+        foreach (var proxy in knownProxies ?? [])
+        {
+            if (System.Net.IPAddress.TryParse(proxy, out var address))
+            {
+                forwardedOptions.KnownProxies.Add(address);
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    $"ForwardedHeaders:KnownProxies entry '{proxy}' is not a valid IP address.");
+            }
+        }
+
         app.UseForwardedHeaders(forwardedOptions);
     }
+
+    // Bound every request (GatewayTimeout with a JSON body) instead of letting it
+    // hang. Streaming endpoints opt out individually via [DisableRequestTimeout].
+    app.UseRequestTimeouts();
 
     app.UseResponseCompression();
 
@@ -1094,7 +1296,13 @@ try
     // CORS must answer before HTTPS redirection: a 307 on a preflight would
     // drop the CORS headers and fail the browser request.
     app.UseCors(CorsOriginPolicy.PolicyName);
-    app.UseHttpsRedirection();
+    // Only the API sits behind the TLS-terminating proxy. The worker has no HTTPS
+    // port to redirect to (and receives only plain-HTTP health probes from
+    // Docker), so the middleware there would just log a warning per probe.
+    if (!isWorkerProcess)
+    {
+        app.UseHttpsRedirection();
+    }
     app.UseRateLimiter();
     app.UseAuthentication();
     // Host ↔ token consistency is UX-only: it detects a token minted for a
@@ -1109,75 +1317,21 @@ try
     app.UseAuthorization();
     app.UseOutputCache();
 
-    app.MapControllers();
-
-    // ── Health check endpoint ───────────────────────────────
-    // Explicitly anonymous: the deny-by-default fallback policy protects every
-    // endpoint that does not opt out, and liveness probes carry no token.
-    app.MapGet("/", () => Results.Ok(new { status = "healthy", service = "Punched API", version = "1.0.0" }))
-        .AllowAnonymous();
-    app.MapGet("/health", async (
-        ApplicationDbContext db,
-        IOptions<EmailSettings> emailOptions,
-        IOptions<VapidSettings> vapidOptions,
-        IOptions<SmsSettings> smsOptions) =>
+    // ── Endpoint mapping ────────────────────────────────────
+    // The worker container runs hosted services only: mapping controllers there
+    // would expose an un-hardened HTTP surface with no traffic and no purpose.
+    if (!isWorkerProcess)
     {
-        var dbOk = false;
-        try
-        {
-            // Simple connectivity probe: can we reach the database?
-            dbOk = await db.Database.CanConnectAsync();
-        }
-        catch
-        {
-            // CanConnectAsync may throw on some providers; treat as unhealthy.
-        }
-        var workersEnabled = Environment.GetEnvironmentVariable("WORKERS_ENABLED") ?? "true";
-        var workersEnabledBool = workersEnabled.Equals("true", StringComparison.OrdinalIgnoreCase);
+        app.MapControllers();
 
-        // Queue depth: pending notification outbox rows waiting for the delivery worker.
-        long queueDepth = -1;
-        try
-        {
-            queueDepth = await db.NotificationLogs
-                .AsNoTracking()
-                .CountAsync(n => n.Status == "pending");
-        }
-        catch
-        {
-            // If the table doesn't exist yet (migrations not applied), report unknown.
-        }
+        app.MapGet("/", () => Results.Ok(new { status = "healthy", service = "Punched API", version = "1.0.0" }))
+            .AllowAnonymous();
+    }
 
-        var overall = dbOk && (workersEnabledBool || queueDepth <= 0)
-            ? "healthy"
-            : "unhealthy";
-
-        // Channel readiness: the same predicates the preference view and the
-        // dispatch path use, surfaced so "is email/push actually configured here?"
-        // is answerable from one HTTP call.
-        var email = emailOptions.Value;
-        var vapid = vapidOptions.Value;
-        var sms = smsOptions.Value;
-
-        return Results.Ok(new
-        {
-            status = overall,
-            database = dbOk ? "connected" : "disconnected",
-            workers = workersEnabledBool ? "enabled" : "disabled",
-            queue_depth = queueDepth,
-            channels = new
-            {
-                in_app = "ready",
-                email = email.Enabled && !string.IsNullOrWhiteSpace(email.Host) && !string.IsNullOrWhiteSpace(email.FromAddress)
-                    ? "ready" : "unconfigured",
-                push = vapid.Enabled && !string.IsNullOrWhiteSpace(vapid.PublicKey) && !string.IsNullOrWhiteSpace(vapid.PrivateKey)
-                    ? "ready" : "unconfigured",
-                sms = sms.Enabled && !string.IsNullOrWhiteSpace(sms.ApiKey)
-                    ? "ready" : "unconfigured"
-            }
-        });
-    })
-        .AllowAnonymous();
+    // /health/live, /health/ready and the diagnostic /health are mapped in both
+    // roles: docker gates rollouts on /health/live for the API and the worker
+    // alike, and none of them performs an expensive query.
+    app.MapPunchedHealthEndpoints();
 
     app.Run();
 }
@@ -1223,8 +1377,28 @@ static string ResolveConnectionString(IConfiguration configuration)
         };
 
         var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
-        if (string.Equals(query["sslmode"], "require", StringComparison.OrdinalIgnoreCase))
+
+        // Every sslmode value Neon documents is honoured — previously only
+        // `require` was mapped and `verify-full` was silently ignored, which
+        // downgraded certificate verification without a word.
+        var requestedSslMode = query["sslmode"];
+        if (!string.IsNullOrWhiteSpace(requestedSslMode))
         {
+            var normalized = requestedSslMode.Replace("-", string.Empty).Replace("_", string.Empty);
+            if (!Enum.TryParse<Npgsql.SslMode>(normalized, ignoreCase: true, out var sslMode))
+            {
+                throw new InvalidOperationException(
+                    $"DATABASE_URL has an unrecognised sslmode '{requestedSslMode}'. " +
+                    "Use one of: disable, allow, prefer, require, verify-ca, verify-full.");
+            }
+
+            builder.SslMode = sslMode;
+        }
+        else if (!uri.IsLoopback && !string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            // A remote database without an explicit mode must not be allowed to
+            // fall back to an unencrypted connection. Local development keeps
+            // Npgsql's permissive default so a stock local PostgreSQL still works.
             builder.SslMode = Npgsql.SslMode.Require;
         }
 
@@ -1233,9 +1407,17 @@ static string ResolveConnectionString(IConfiguration configuration)
             builder["Channel Binding"] = query["channel_binding"];
         }
 
-        var resolvedHost = builder.Host;
-        var resolvedDatabase = builder.Database;
-        Log.Information("Database connection resolved: host={Host}, database={Database}", resolvedHost, resolvedDatabase);
+        // Encryption without verification accepts any certificate that claims to be
+        // the database host. Neon publishes a chain that validates cleanly, so a
+        // production URL can and should say `sslmode=verify-full`; say so once at
+        // startup rather than leaving it as folklore.
+        if (builder.SslMode is not (Npgsql.SslMode.VerifyFull or Npgsql.SslMode.VerifyCA))
+        {
+            Log.Warning(
+                "DATABASE_URL uses sslmode={SslMode}: the connection is encrypted but the server certificate is " +
+                "not verified against a trusted CA. Use sslmode=verify-full (and channel_binding=require) to close that gap.",
+                builder.SslMode);
+        }
 
         // ── Pool behaviour on a remote database ─────────────────────────────
         // Measured against the hosted database this deployment uses: opening a
@@ -1259,6 +1441,81 @@ static string ResolveConnectionString(IConfiguration configuration)
         builder.ConnectionIdleLifetime = 300;
         builder.KeepAlive = 30;
         builder.Timeout = 15;
+
+        // Ceiling on simultaneous connections. Neon allocates memory per
+        // connection and enforces a hard limit per compute; the API and the worker
+        // each run their own pool, so the two maxima must add up to something the
+        // database can actually serve. 20 is the documented default.
+        var maximumPoolSize = int.TryParse(configuration["Database:MaximumPoolSize"], out var configuredMax)
+            ? configuredMax
+            : 20;
+        builder.MaxPoolSize = Math.Clamp(maximumPoolSize, Math.Max(builder.MinPoolSize, 1), 200);
+
+        // A single statement may not outlive its request by much: the EF default is
+        // 30 s, and a runaway query would otherwise keep a pooled socket busy long
+        // after the API already answered 504 to the client.
+        var commandTimeoutSeconds = int.TryParse(configuration["Database:CommandTimeoutSeconds"], out var configuredCommandTimeout)
+            ? configuredCommandTimeout
+            : 30;
+        builder.CommandTimeout = Math.Clamp(commandTimeoutSeconds, 5, 300);
+
+        // ── Connection budget ───────────────────────────────────────────────
+        // Neon's per-compute limit is max_connections (112 on the 0.25 CU free
+        // compute, 7 of them reserved for the superuser → 105 usable). Each
+        // container has its OWN Npgsql pool, so the deployment's consumption is
+        // the SUM of every role, not one shared number.
+        //
+        //   pooled endpoint  (-pooler, PgBouncer, transaction mode)
+        //       client connections ≤ 10,000; the pooler multiplexes them onto
+        //       ~90% of max_connections server sockets. This is what the API and
+        //       the worker must use.
+        //   direct endpoint
+        //       costs one real backend per connection and is shared with the
+        //       console, psql, pg_dump and migrations — it is reserved for them.
+        //
+        // A single role may never claim more than the budget, so a copy/paste of
+        // the same env file into both containers cannot silently double it.
+        var connectionBudget = Math.Clamp(
+            int.TryParse(configuration["Database:ConnectionBudget"], out var configuredBudget) ? configuredBudget : 40,
+            1,
+            105);
+
+        if (builder.MaxPoolSize > connectionBudget)
+        {
+            throw new InvalidOperationException(
+                $"Database:MaximumPoolSize ({builder.MaxPoolSize}) exceeds Database:ConnectionBudget " +
+                $"({connectionBudget}) for role '{configuration[HostRole.ConfigurationKey] ?? HostRole.Api}'. " +
+                "Neon's 0.25 CU free compute allows 112 connections in total (105 usable); the API and the worker " +
+                "each hold their own pool, so one role must stay well inside that shared limit.");
+        }
+
+        var usesPooler = builder.Host.Contains("-pooler", StringComparison.OrdinalIgnoreCase);
+        if (!usesPooler && !uri.IsLoopback && !string.Equals(uri.Host, "localhost", StringComparison.Ordinal))
+        {
+            // Direct connections to a remote Neon compute are expensive and scarce:
+            // 105 usable sockets shared with the console, migrations and tooling.
+            // Pointing application traffic here is a capacity incident waiting for
+            // load, so say it once, loudly.
+            Log.Warning(
+                "DATABASE_URL points at the DIRECT endpoint ({Host}). Application traffic should use the pooled " +
+                "endpoint (…-pooler.…neon.tech), which multiplexes many client connections onto a small server " +
+                "pool; reserve the direct endpoint for migrations and administrative work.",
+                builder.Host);
+        }
+
+        // Logged after every value is final: this line is the single place an
+        // operator can see what the deployment is actually using.
+        Log.Information(
+            "Database connection resolved: host={Host}, database={Database}, ssl={SslMode}, endpoint={Endpoint}, " +
+            "pool={MinPoolSize}-{MaxPoolSize} (budget {Budget}), commandTimeout={CommandTimeout}s",
+            builder.Host,
+            builder.Database,
+            builder.SslMode,
+            usesPooler ? "pooled" : "direct",
+            builder.MinPoolSize,
+            builder.MaxPoolSize,
+            connectionBudget,
+            builder.CommandTimeout);
 
         return builder.ConnectionString;
     }

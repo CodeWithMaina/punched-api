@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Mvc;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Interfaces;
@@ -37,7 +38,13 @@ public class SseController : ControllerBase
     /// Only the owning customer may subscribe to a card's event stream.
     /// Sends heartbeat comments every 15 seconds to keep the connection alive.
     /// </summary>
+    /// <remarks>
+    /// [DisableRequestTimeout] because the global request timeout
+    /// (Http:RequestTimeoutSeconds) exists for request/response calls: applying it
+    /// here would kill every healthy stream mid-flight.
+    /// </remarks>
     [HttpGet("cards/{cardId:guid}")]
+    [DisableRequestTimeout]
     public async Task Subscribe(Guid cardId, CancellationToken ct)
     {
         var customerId = GetUserId();
