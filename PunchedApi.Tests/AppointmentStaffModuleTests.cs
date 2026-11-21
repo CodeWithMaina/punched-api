@@ -158,6 +158,226 @@ public class AppointmentStaffModuleTests
         Assert.Equal("STAFF_NOT_FOUND", result.Error?.Code);
     }
 
+    [Fact]
+    public async Task StaffModuleDisabled_FullyBookedOwner_StillOffersTheRosteredTeam()
+    {
+        // The reported defect: a multi_staff business whose Staff *module* is switched off
+        // showed every morning as booked. Availability was collapsed to the owner, and the
+        // owner happened to be booked all day, while the rostered team sat idle.
+        using var holder = SqliteConnectionHolder.Create();
+        var env = await CreateEnvAsync(holder);
+
+        // The owner takes the whole working day (09:00-18:00 UTC in this fixture).
+        var ownerBusyFrom = Ten.Date.AddHours(9);
+        var ownerBusy = BookingTestBase.CreateAppointment(
+            env.Business.Id, env.Customer.Id, env.Owner.Id,
+            ownerBusyFrom, ownerBusyFrom.AddHours(9));
+        ownerBusy.Resources.Add(BookingTestBase.CreateResource(
+            ownerBusy.Id, env.Service.Id, env.Service.Name, 60, 500m, 0));
+        await BookingTestBase.SeedAsync(env.Context, ownerBusy);
+
+        // The Staff module is not entitled, but the roster still exists and is bookable.
+        var loader = new BookingReadContextLoader(
+            env.Context, new StubModuleEntitlements("appointments"));
+        var availability = new AppointmentAvailabilityService(
+            env.Context,
+            TestHelpers.CreateLogger<AppointmentAvailabilityService>(),
+            timeProvider: null,
+            providerEligibility: null,
+            businessSchedule: null,
+            readContexts: loader);
+
+        var result = await availability.GetAvailableSlotsAsync(
+            env.Business.Id, new[] { env.Service.Id }, null, Day, Day);
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.NotEmpty(result.Data!);
+
+        // The staff member's free hours are offered; the owner's booked day is not the
+        // whole business's diary.
+        Assert.Contains(result.Data!, slot => slot.StaffUserId == env.Staff.Id);
+        Assert.All(
+            result.Data!.Where(slot => slot.StaffUserId == env.Staff.Id),
+            slot =>
+            {
+                Assert.True(slot.StartAtUtc.TimeOfDay >= TimeSpan.FromHours(9));
+                Assert.True(slot.EndAtUtc.TimeOfDay <= TimeSpan.FromHours(18));
+            });
+    }
+
+    // ── Staff-module entitlement vs scheduling capacity ────────────────────────
+    //
+    // The module flag governs staff *management* and staff *selection*. Capacity comes
+    // from the operating mode and the roster. These cover the required regression
+    // scenarios end-to-end through the services the product actually uses.
+
+    private static AppointmentAvailabilityService AvailabilityWith(
+        Env env, IModuleEntitlementService entitlements)
+    {
+        var loader = new BookingReadContextLoader(env.Context, entitlements);
+        return new AppointmentAvailabilityService(
+            env.Context,
+            TestHelpers.CreateLogger<AppointmentAvailabilityService>(),
+            timeProvider: null,
+            providerEligibility: null,
+            businessSchedule: null,
+            readContexts: loader);
+    }
+
+    [Fact]
+    public async Task StaffModuleDisabled_BookingWithoutStaffId_AssignsAnEligibleStaffMember()
+    {
+        // Scenario 3: the owner is NOT the allocation. The service is explicitly assigned
+        // to the staff member only, so an owner assignment would be ineligible.
+        using var holder = SqliteConnectionHolder.Create();
+        var env = await CreateEnvAsync(holder);
+        var service = BookingTestBase.CreateAppointmentService(
+            env.Context, new StubModuleEntitlements("appointments"));
+
+        var result = await service.CreateAppointmentOnBehalfAsync(
+            env.Owner.Id, "Business", OnBehalf(env, null));
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(env.Staff.Id, result.Data!.StaffUserId);
+        Assert.NotEqual(env.Owner.Id, result.Data.StaffUserId);
+
+        // The assignment is persisted, not just echoed.
+        var stored = await env.Context.Appointments.SingleAsync();
+        Assert.Equal(env.Staff.Id, stored.StaffUserId);
+    }
+
+    [Fact]
+    public async Task StaffModuleDisabled_BreaksStillBlockTheAllocatedProvider()
+    {
+        // Scenario 8: hiding the staff screens must not hide their lunch break.
+        using var holder = SqliteConnectionHolder.Create();
+        var env = await CreateEnvAsync(holder);
+
+        var shift = await env.Context.StaffShifts.SingleAsync(s => s.StaffUserId == env.Staff.Id);
+        shift.BreakStartMinute = 12 * 60;
+        shift.BreakEndMinute = 13 * 60;
+        await env.Context.SaveChangesAsync();
+
+        var availability = AvailabilityWith(env, new StubModuleEntitlements("appointments"));
+        var result = await availability.GetAvailableSlotsAsync(
+            env.Business.Id, new[] { env.Service.Id }, null, Day, Day);
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.NotEmpty(result.Data!);
+
+        var breakStart = Day.ToDateTime(TimeOnly.MinValue).AddHours(12);
+        var breakEnd = breakStart.AddHours(1);
+        Assert.All(result.Data!, slot =>
+            Assert.False(
+                slot.StartAtUtc < breakEnd && slot.EndAtUtc > breakStart,
+                $"Slot {slot.StartAtUtc:HH:mm}-{slot.EndAtUtc:HH:mm} overlaps the provider's break."));
+    }
+
+    [Fact]
+    public async Task StaffModuleDisabled_NoEligibleProvider_OffersNoSlots()
+    {
+        // Scenario 11: a category nobody holds means nobody can serve it — the module
+        // flag must not conjure the owner as a provider.
+        using var holder = SqliteConnectionHolder.Create();
+        var env = await CreateEnvAsync(holder);
+
+        var category = new ServiceCategory
+        {
+            Id = Guid.NewGuid(),
+            BusinessId = env.Business.Id,
+            Name = "Colour",
+            CreatedAt = DateTime.UtcNow
+        };
+
+        var specialised = BookingTestBase.CreateService(env.Business.Id, "Colour", 60, 900m);
+        specialised.CategoryId = category.Id;
+        await BookingTestBase.SeedAsync(env.Context, category, specialised);
+
+        var availability = AvailabilityWith(env, new StubModuleEntitlements("appointments"));
+        var result = await availability.GetAvailableSlotsAsync(
+            env.Business.Id, new[] { specialised.Id }, null, Day, Day);
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Empty(result.Data!);
+    }
+
+    [Fact]
+    public async Task StaffModuleDisabled_OverlappingBookingForTheSameProviderIsRejected()
+    {
+        // Scenario 9: the auto-allocated provider is the conflict resource, so a second
+        // booking inside the first one's interval cannot succeed.
+        using var holder = SqliteConnectionHolder.Create();
+        var env = await CreateEnvAsync(holder);
+        var service = BookingTestBase.CreateAppointmentService(
+            env.Context, new StubModuleEntitlements("appointments"));
+
+        var first = await service.CreateAppointmentOnBehalfAsync(
+            env.Owner.Id, "Business", OnBehalf(env, null));
+        Assert.True(first.Success, first.Error?.Message);
+
+        var overlapping = OnBehalf(env, null);
+        overlapping.ScheduledAt = Ten.AddMinutes(30);
+        var second = await service.CreateAppointmentOnBehalfAsync(
+            env.Owner.Id, "Business", overlapping);
+
+        Assert.False(second.Success);
+        Assert.Single(await env.Context.Appointments.ToListAsync());
+    }
+
+    [Fact]
+    public async Task StaffModuleReEnabled_RestoresExplicitSelectionAndKeepsTheSameRoster()
+    {
+        // Scenarios 10 and 12: toggling entitlement changes the *selection surface* and
+        // nothing else — no duplicate providers, no lost records.
+        using var holder = SqliteConnectionHolder.Create();
+        var env = await CreateEnvAsync(holder);
+
+        var entitlements = new StubModuleEntitlements("appointments");
+        var service = BookingTestBase.CreateAppointmentService(env.Context, entitlements);
+
+        // Off: an explicit selection is refused.
+        var refused = await service.CreateAppointmentOnBehalfAsync(
+            env.Owner.Id, "Business", OnBehalf(env, env.Staff.Id));
+        Assert.False(refused.Success);
+        Assert.Equal("STAFF_MODULE_DISABLED", refused.Error?.Code);
+
+        // On: the same request is accepted, against the same staff record.
+        entitlements.Enable("staff");
+        var accepted = await service.CreateAppointmentOnBehalfAsync(
+            env.Owner.Id, "Business", OnBehalf(env, env.Staff.Id));
+        Assert.True(accepted.Success, accepted.Error?.Message);
+        Assert.Equal(env.Staff.Id, accepted.Data!.StaffUserId);
+
+        Assert.Single(await env.Context.Appointments.ToListAsync());
+        Assert.Single(await env.Context.BusinessMemberships
+            .Where(m => m.BusinessId == env.Business.Id && m.Role == BusinessMembershipRole.Staff)
+            .ToListAsync());
+    }
+
+    [Fact]
+    public async Task Solo_WithARoster_RefusesExplicitSelectionAndStillBooksTheOwner()
+    {
+        // Scenarios 4 and 5: solo scheduling never reaches the roster, whichever way the
+        // Staff entitlement points.
+        using var holder = SqliteConnectionHolder.Create();
+        var env = await CreateEnvAsync(holder);
+
+        env.Business.OperatingMode = "solo";
+        await env.Context.SaveChangesAsync();
+
+        var entitlements = new StubModuleEntitlements("appointments", "staff");
+        var service = BookingTestBase.CreateAppointmentService(env.Context, entitlements);
+
+        var refused = await service.CreateAppointmentOnBehalfAsync(
+            env.Owner.Id, "Business", OnBehalf(env, env.Staff.Id));
+        Assert.False(refused.Success);
+
+        var booked = await service.CreateAppointmentOnBehalfAsync(
+            env.Owner.Id, "Business", OnBehalf(env, null));
+        Assert.True(booked.Success, booked.Error?.Message);
+        Assert.Equal(env.Owner.Id, booked.Data!.StaffUserId);
+    }
+
     private static Appointment Historic(Env env, Guid? staffUserId, int hourOffset)
     {
         var start = Ten.AddHours(hourOffset);

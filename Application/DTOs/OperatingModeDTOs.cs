@@ -20,7 +20,13 @@ public class OperatingModeResponse
 
     /// <summary>
     /// The effective provider model after resolving the mode against module
-    /// entitlements: <c>solo</c> | <c>owner_only</c> | <c>category_based</c>.
+    /// entitlements: <c>solo</c> | <c>owner_only</c> | <c>automatic</c> |
+    /// <c>category_based</c>.
+    ///
+    /// <para><c>automatic</c> means the Staff module is off but the business still has
+    /// bookable staff: no provider picker is shown, and the engine allocates an eligible,
+    /// available staff member per booking. It is not the same as <c>owner_only</c>, which
+    /// means there are no bookable staff at all.</para>
     /// </summary>
     [JsonPropertyName("effectiveProviderModel")] public string EffectiveProviderModel { get; set; } = "category_based";
 

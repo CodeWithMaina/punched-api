@@ -155,7 +155,9 @@ public sealed class OperatingModeService : IOperatingModeService
         EffectiveProviderModel.Solo =>
             "You work alone and provide every service yourself. Customers book directly with you — no staff selection is shown.",
         EffectiveProviderModel.OwnerOnly =>
-            "The Staff module is not enabled on your plan, so you are the provider for every service. Your business stays fully operational without staff.",
+            "The Staff module is not enabled and there are no bookable staff yet, so you are the provider for every service. Your business stays fully operational without staff.",
+        EffectiveProviderModel.Automatic =>
+            "The Staff module is off, so staff management and staff selection are hidden. Your existing team still provides services: each booking is assigned automatically to an eligible, available staff member, using their own shifts, breaks and appointments.",
         _ =>
             "You have a team. Each provider is eligible for the services in the categories they are assigned to — assign the owner and staff to the categories they specialise in."
     };

@@ -183,6 +183,27 @@ public class AppointmentAvailabilityService
         // from the bulk read (owner-based models collapse to the owner).
         var eligible = read.Providers.ToList();
 
+        // Explicit selection is only honoured when it is a product surface. With the Staff
+        // module off (or an owner-only model) the provider is allocated automatically, so a
+        // hand-edited request naming a *member* must not steer the allocation.
+        //
+        // A stranger's id is still a 404: ignoring it would hide a cross-tenant probe, and
+        // the caller deserves the same answer as any other unknown provider.
+        var selectionAllowed = ProviderEligibilityPolicy.AllowsExplicitProviderSelection(read.ProviderModel);
+        if (staffUserId.HasValue && !selectionAllowed)
+        {
+            if (!await IsMemberOfBusinessAsync(staffUserId.Value, businessId))
+                return Fail("STAFF_NOT_FOUND", "Staff member not found in this business.");
+
+            _logger.LogInformation(
+                "Ignoring an explicit staff selection for business {BusinessId}: provider model '{Model}' allocates automatically.",
+                businessId, read.ProviderModel);
+            staffUserId = null;
+        }
+
+        // The echo reflects the allocation actually used, never the ignored request.
+        response.StaffUserId = staffUserId;
+
         if (staffUserId.HasValue)
         {
             var focus = eligible.FirstOrDefault(u => u.Id == staffUserId.Value);
@@ -552,10 +573,11 @@ public class AppointmentAvailabilityService
             m.Status == BusinessMembershipStatus.Active);
 
     /// <summary>
-    /// True when <paramref name="userId"/> is the provider the business collapses
-    /// to: the effective provider model is owner-based (Solo operating mode, or
-    /// the Staff module is not entitled), or the business has no active staff yet
-    /// so the owner stands in.
+    /// True when <paramref name="userId"/> is the owner <b>and</b> the business schedules
+    /// through its owner alone: solo, or the no-team owner fallback.
+    ///
+    /// <para>False for a business with a roster, whatever its Staff-module entitlement — a
+    /// switched-off module does not turn the team into the owner.</para>
     /// </summary>
     public async Task<bool> IsSoloOwnerAsync(Guid businessId, Guid userId)
     {
@@ -568,9 +590,7 @@ public class AppointmentAvailabilityService
         if (!isOwner) return false;
 
         var model = await _eligibility.ResolveModelAsync(businessId);
-        if (model != EffectiveProviderModel.CategoryBased) return true;
-
-        return !await HasActiveStaffAsync(businessId);
+        return ProviderEligibilityPolicy.CollapsesToOwner(model);
     }
 
     /// <summary>

@@ -766,9 +766,7 @@ public class ServiceCatalogService : IServiceCatalogService
 
         // Resolve the candidate providers through the single eligibility
         // mechanism: category-based in a multi-staff business, the owner in a
-        // solo / staff-module-disabled business (or while no team exists).
-        // Members who are not PUBLIC and BOOKABLE are hidden from the storefront
-        // and the booking picker; the owner is shown whenever they are eligible.
+        // solo business (or while no team exists).
         var model = await _eligibility.ResolveModelAsync(businessId);
         var (ownerId, ownerIsProvider) = await _eligibility.ResolveOwnerProviderAsync(businessId);
 
@@ -776,7 +774,10 @@ public class ServiceCatalogService : IServiceCatalogService
         // membership `IsBookable`); an owner who opted out is never offered.
         var ownerAsProvider = ownerId is Guid oid2 && ownerIsProvider ? oid2 : (Guid?)null;
 
-        var bookableStaffIds = (await _unitOfWork.BusinessMemberships.SelectNoTrackingAsync(
+        // The storefront roster lists the TEAM: active, public, bookable staff. The owner is
+        // not a team entry — they appear only in the owner-fallback model below, where they
+        // are the business's sole provider and the customer must be told who will serve them.
+        var publicStaffIds = (await _unitOfWork.BusinessMemberships.SelectNoTrackingAsync(
             m => m.BusinessId == businessId &&
                  m.Role == BusinessMembershipRole.Staff &&
                  m.Status == BusinessMembershipStatus.Active &&
@@ -787,26 +788,22 @@ public class ServiceCatalogService : IServiceCatalogService
         List<Guid> staffIds;
         if (model != EffectiveProviderModel.CategoryBased)
         {
-            // Solo / owner-only: the owner is the sole provider, unless opted out.
+            // Solo / owner-only: the owner is the sole provider, unless opted out. There is
+            // no team to publish, so the roster is the owner (the storefront needs to name
+            // who will serve the appointment).
             staffIds = ownerAsProvider is Guid soloOwner ? new List<Guid> { soloOwner } : new List<Guid>();
         }
         else if (distinct.Length == 0)
         {
-            // No service filter: every public, bookable staff member (plus the
-            // owner, who stands in while the business has no team yet).
-            staffIds = bookableStaffIds.ToList();
-            if (ownerAsProvider is Guid ownerCandidate && !staffIds.Contains(ownerCandidate))
-                staffIds.Add(ownerCandidate);
+            // No service filter: every public, bookable staff member.
+            staffIds = publicStaffIds.ToList();
         }
         else
         {
             var resolution = await _eligibility.ResolveForServicesAsync(businessId, distinct);
             staffIds = resolution.EligibleProviderIds
-                .Where(id => bookableStaffIds.Contains(id) || (ownerAsProvider is Guid oid && id == oid))
+                .Where(id => publicStaffIds.Contains(id))
                 .ToList();
-
-            if (staffIds.Count == 0 && resolution.SoloProviderId is Guid soloProvider)
-                staffIds = new List<Guid> { soloProvider };
         }
 
         if (staffIds.Count == 0)

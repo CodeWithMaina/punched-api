@@ -277,7 +277,7 @@ public partial class ServiceCategoryTests
     }
 
     [Fact]
-    public async Task A_service_can_be_filed_moved_and_uncategorised()
+    public async Task A_service_can_be_filed_moved_and_uncategorised_where_the_rule_allows_it()
     {
         var hair = await CreateAsync("Haircuts");
         var nails = await CreateAsync("Nails");
@@ -297,7 +297,18 @@ public partial class ServiceCategoryTests
         Assert.Equal(nails.Data.Id, moved.Data!.CategoryId);
         Assert.Equal("Nails", moved.Data.CategoryName);
 
-        var cleared = await _catalog.UpdateServiceAsync(_owner.Id, created.Data.Id,
+        // This business is multi-staff WITH the Staff module, where a category is what makes
+        // providers eligible — clearing it is refused rather than silently producing a
+        // service nobody can be allocated to.
+        var refused = await _catalog.UpdateServiceAsync(_owner.Id, created.Data.Id,
+            new UpdateServiceRequest { ClearCategory = true });
+        Assert.Equal("CATEGORY_REQUIRED", refused.Error?.Code);
+
+        // With the Staff module off (the `automatic` provider model) eligibility no longer
+        // reads the category, so the same clear succeeds.
+        var withoutStaff = BookingTestBase.CreateCatalogService(
+            _context, new StubModuleEntitlements("serviceCatalog"));
+        var cleared = await withoutStaff.UpdateServiceAsync(_owner.Id, created.Data.Id,
             new UpdateServiceRequest { ClearCategory = true });
         Assert.Null(cleared.Data!.CategoryId);
         Assert.Null(cleared.Data.CategoryName);

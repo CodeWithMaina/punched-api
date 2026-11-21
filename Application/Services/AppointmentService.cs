@@ -55,6 +55,14 @@ public class AppointmentService : IAppointmentService
     /// </summary>
     private readonly IModuleEntitlementService? _moduleEntitlements;
 
+    /// <summary>
+    /// The single provider-eligibility resolver. Used here only to ask the one question this
+    /// service owns — <i>may a request name a provider?</i> — so the booking write path shares
+    /// the policy with availability instead of re-deriving it. Optional, like the entitlement
+    /// resolver, so existing construction sites keep working.
+    /// </summary>
+    private readonly IProviderEligibilityService? _providerEligibility;
+
     public AppointmentService(
         IUnitOfWork unitOfWork,
         ApplicationDbContext context,
@@ -66,7 +74,8 @@ public class AppointmentService : IAppointmentService
         ITenantContext? tenant = null,
         ICommissionService? commissions = null,
         TimeProvider? timeProvider = null,
-        IModuleEntitlementService? moduleEntitlements = null)
+        IModuleEntitlementService? moduleEntitlements = null,
+        IProviderEligibilityService? providerEligibility = null)
     {
         _unitOfWork = unitOfWork;
         _context = context;
@@ -79,6 +88,31 @@ public class AppointmentService : IAppointmentService
         _commissions = commissions;
         _time = timeProvider ?? TimeProvider.System;
         _moduleEntitlements = moduleEntitlements;
+        _providerEligibility = providerEligibility;
+    }
+
+    /// <summary>
+    /// May a booking request name its provider? Decided by the one provider-eligibility
+    /// policy — never by a local re-interpretation of the module flag.
+    /// </summary>
+    private async Task<bool> AllowsExplicitStaffSelectionAsync(Guid businessId)
+    {
+        if (_providerEligibility != null)
+        {
+            var model = await _providerEligibility.ResolveModelAsync(businessId);
+            return ProviderEligibilityPolicy.AllowsExplicitProviderSelection(model);
+        }
+
+        // No resolver wired (unit tests): the policy still decides, from the entitlement
+        // flag and the operating mode it can see.
+        var operatingMode = await _context.Businesses.AsNoTracking()
+            .Where(b => b.Id == businessId)
+            .Select(b => b.OperatingMode)
+            .FirstOrDefaultAsync();
+
+        var staffEnabled = await IsStaffModuleEnabledAsync(businessId);
+        var fallbackModel = ProviderEligibilityPolicy.ResolveModel(operatingMode, staffEnabled, hasBookableStaff: true);
+        return ProviderEligibilityPolicy.AllowsExplicitProviderSelection(fallbackModel);
     }
 
     /// <summary>Current UTC time, from the injected clock (booking decisions only).</summary>
@@ -2945,13 +2979,13 @@ public class AppointmentService : IAppointmentService
         if (!staffUserId.HasValue)
             return (null, null, null);
 
-        // The Staff module is optional. A client that submits a staff id while the
-        // business has the module switched off must be refused here — the frontend
-        // hiding the control is not an authorization boundary.
-        if (!await IsStaffModuleEnabledAsync(businessId))
+        // Explicit selection exists only where the product offers it. The single policy
+        // decides that from the business's effective provider model, so the storefront,
+        // the internal booking form and the availability grid cannot disagree.
+        if (!await AllowsExplicitStaffSelectionAsync(businessId))
         {
             return (null, "STAFF_MODULE_DISABLED",
-                "The Staff module is not enabled for this business, so a staff member cannot be assigned.");
+                "Staff selection is not available for this business, so a staff member cannot be assigned.");
         }
 
         // The provider must be the owner or ACTIVE staff of THIS business.

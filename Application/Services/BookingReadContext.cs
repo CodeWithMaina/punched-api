@@ -457,14 +457,14 @@ public sealed class BookingReadContextLoader
         var owners = providers.Where(p => p.Role == BusinessMembershipRole.Owner).ToList();
         var staff = providers.Where(p => p.Role == BusinessMembershipRole.Staff).ToList();
 
-        // Solo operating mode, or no Staff module, collapses the provider model to the
-        // owner - the pre-staff behaviour the platform still supports.
-        var solo = string.Equals(business.OperatingMode, BusinessOperatingModes.Solo, StringComparison.OrdinalIgnoreCase)
-            || !staffModuleEnabled;
+        // Entitlement decides whether a *person* picks the provider; the operating mode and
+        // roster decide how much capacity exists. One policy answers both — see
+        // ProviderEligibilityPolicy for why they must not be conflated.
+        var model = ProviderEligibilityPolicy.ResolveModel(
+            business.OperatingMode, staffModuleEnabled, hasBookableStaff: staff.Count > 0);
 
-        if (solo || staff.Count == 0)
+        if (ProviderEligibilityPolicy.CollapsesToOwner(model))
         {
-            var model = solo ? EffectiveProviderModel.Solo : EffectiveProviderModel.OwnerOnly;
             var owner = owners.FirstOrDefault(p => p.IsBookable) ?? owners.FirstOrDefault();
             return (owner == null ? new List<ProviderRow>() : new List<ProviderRow> { owner }, model);
         }
@@ -490,13 +490,15 @@ public sealed class BookingReadContextLoader
 
         bool Covers(ProviderRow provider, Guid serviceId)
         {
-            if (categoryByService[serviceId] is Guid category)
-                return categoriesByProvider.TryGetValue(provider.UserId, out var cats) && cats.Contains(category);
+            var categoryId = categoryByService[serviceId];
+            var hasCategory = categoryId is Guid category &&
+                categoriesByProvider.TryGetValue(provider.UserId, out var cats) && cats.Contains(category);
 
-            // Uncategorised: an explicit assignment wins; with no assignment anywhere the
-            // service stays open to every provider so it never becomes silently unbookable.
-            if (explicitAssignments.Contains((provider.UserId, serviceId))) return true;
-            return !servicesWithExplicitAssignment.Contains(serviceId);
+            return ProviderEligibilityPolicy.ProviderCoversService(
+                categoryId,
+                hasCategory,
+                providerHasExplicitAssignment: explicitAssignments.Contains((provider.UserId, serviceId)),
+                serviceHasAnyExplicitAssignment: servicesWithExplicitAssignment.Contains(serviceId));
         }
 
         var eligible = providers
@@ -504,7 +506,9 @@ public sealed class BookingReadContextLoader
             .Where(p => requested.All(serviceId => Covers(p, serviceId)))
             .ToList();
 
-        return (eligible, EffectiveProviderModel.CategoryBased);
+        // `automatic` and the owner-fallback models hide the provider picker; `category_based`
+        // offers it. Either way the eligible set is the real, filtered roster.
+        return (eligible, model);
     }
 
     // -- business schedule ----------------------------------------------------

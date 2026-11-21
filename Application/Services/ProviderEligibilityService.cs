@@ -22,6 +22,12 @@ public static class EffectiveProviderModel
     /// </summary>
     public const string OwnerOnly = "owner_only";
 
+    /// <summary>
+    /// The Staff module is not entitled, but the business has active, bookable staff.
+    /// The engine chooses the provider from that roster; no provider picker is shown.
+    /// </summary>
+    public const string Automatic = "automatic";
+
     /// <summary>A team of providers; eligibility is resolved from categories.</summary>
     public const string CategoryBased = "category_based";
 }
@@ -125,20 +131,26 @@ public sealed class ProviderEligibilityService : IProviderEligibilityService
     {
         if (businessId == Guid.Empty) return EffectiveProviderModel.OwnerOnly;
 
-        var operatingMode = await _context.Businesses.AsNoTracking()
+        var business = await _context.Businesses.AsNoTracking()
             .Where(b => b.Id == businessId)
-            .Select(b => b.OperatingMode)
+            .Select(b => new { b.OperatingMode })
             .FirstOrDefaultAsync(ct);
 
-        if (BusinessOperatingModes.IsSolo(operatingMode))
+        // Solo never depends on entitlement, so answer without further queries.
+        if (ProviderEligibilityPolicy.IsSolo(business?.OperatingMode))
             return EffectiveProviderModel.Solo;
 
         var staffEntitled = _entitlements == null ||
             await _entitlements.IsModuleEnabledAsync(businessId, StaffModuleKey);
 
-        return staffEntitled
-            ? EffectiveProviderModel.CategoryBased
-            : EffectiveProviderModel.OwnerOnly;
+        // Capacity is a fact about the roster, not about the module flag.
+        var hasBookableStaff = await _context.BusinessMemberships.AsNoTracking()
+            .AnyAsync(m => m.BusinessId == businessId &&
+                           m.Role == BusinessMembershipRole.Staff &&
+                           m.Status == BusinessMembershipStatus.Active &&
+                           m.IsBookable, ct);
+
+        return ProviderEligibilityPolicy.ResolveModel(business?.OperatingMode, staffEntitled, hasBookableStaff);
     }
 
     public async Task<ProviderEligibilityResult> ResolveForServicesAsync(
@@ -149,10 +161,10 @@ public sealed class ProviderEligibilityService : IProviderEligibilityService
         var model = await ResolveModelAsync(businessId, ct);
         var (ownerId, ownerIsProvider) = await ResolveOwnerProviderAsync(businessId, ct);
 
-        // Models that collapse to the owner never look at staff or categories.
-        // The owner is the provider unless they have opted OUT of providing
-        // services (their membership `IsBookable` is false).
-        if (model != EffectiveProviderModel.CategoryBased)
+        // One policy decides whether the roster takes part at all. `CollapsesToOwner` is
+        // true only for solo and the genuine no-team fallback — never merely because the
+        // Staff module is switched off (that model is `automatic`).
+        if (ProviderEligibilityPolicy.CollapsesToOwner(model))
         {
             var ownerOnly = ownerId is Guid o && ownerIsProvider ? new[] { o } : Array.Empty<Guid>();
             return new ProviderEligibilityResult
@@ -162,6 +174,9 @@ public sealed class ProviderEligibilityService : IProviderEligibilityService
                 EligibleProviderIds = ownerOnly
             };
         }
+
+        // Explicit selection is a product surface; without it the engine still needs the
+        // full candidate set to allocate from. The model already tells the UI which it is.
 
         var staffIds = await _context.BusinessMemberships.AsNoTracking()
             .Where(m => m.BusinessId == businessId &&
@@ -298,14 +313,15 @@ public sealed class ProviderEligibilityService : IProviderEligibilityService
         bool ProviderCoversService(Guid providerId, Guid serviceId)
         {
             var categoryId = categoryByService[serviceId];
+            var hasCategory = categoryId is Guid category &&
+                providerCategories.TryGetValue(providerId, out var cats) && cats.Contains(category);
 
-            if (categoryId is Guid category)
-                return providerCategories.TryGetValue(providerId, out var cats) && cats.Contains(category);
-
-            // Uncategorised: an explicit legacy assignment wins; with no explicit
-            // assignment anywhere, the service is open to all providers.
-            if (legacy.Contains((providerId, serviceId))) return true;
-            return !servicesWithExplicitAssignment.Contains(serviceId);
+            // One rule for coverage, shared with the booking read context.
+            return ProviderEligibilityPolicy.ProviderCoversService(
+                categoryId,
+                hasCategory,
+                providerHasExplicitAssignment: legacy.Contains((providerId, serviceId)),
+                serviceHasAnyExplicitAssignment: servicesWithExplicitAssignment.Contains(serviceId));
         }
 
         return providerIdList
