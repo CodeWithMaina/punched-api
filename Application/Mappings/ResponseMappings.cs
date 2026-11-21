@@ -1,4 +1,5 @@
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Services;
 using PunchedApi.Domain.Entities;
 
 namespace PunchedApi.Application.Mappings;
@@ -53,6 +54,7 @@ public static class ResponseMappings
         StaffUserId = appointment.StaffUserId,
         ScheduledAt = appointment.ScheduledAt,
         EndAt = appointment.EndAt,
+        DurationMinutes = AppointmentIntervals.DurationMinutes(appointment.ScheduledAt, appointment.EndAt),
         Status = appointment.Status,
         Services = appointment.Resources
             .OrderBy(resource => resource.SortOrder)

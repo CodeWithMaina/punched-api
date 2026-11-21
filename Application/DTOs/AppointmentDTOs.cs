@@ -435,6 +435,17 @@ public class AppointmentResponse
     [JsonPropertyName("endAt")]
     public DateTime EndAt { get; set; }
 
+    /// <summary>
+    /// The appointment's duration in minutes — always <c>EndAt − ScheduledAt</c>.
+    ///
+    /// <para>Exposed so no consumer has to reconstruct a duration from a service's
+    /// catalogue value. The booking's own interval is the single authority: a
+    /// three-hour multi-service appointment stays three hours everywhere, even if
+    /// the individual services are edited afterwards.</para>
+    /// </summary>
+    [JsonPropertyName("durationMinutes")]
+    public int DurationMinutes { get; set; }
+
     [JsonPropertyName("status")]
     public string Status { get; set; } = string.Empty;
 
@@ -614,6 +625,10 @@ public class AppointmentCalendarItemResponse
 
     [JsonPropertyName("endAt")]
     public DateTime EndAt { get; set; }
+
+    /// <summary>`EndAt − StartAt`, in minutes — the interval the calendar must draw.</summary>
+    [JsonPropertyName("durationMinutes")]
+    public int DurationMinutes { get; set; }
 
     [JsonPropertyName("status")]
     public string Status { get; set; } = string.Empty;

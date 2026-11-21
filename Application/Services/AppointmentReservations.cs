@@ -71,6 +71,26 @@ public static class AppointmentReservations
 }
 
 /// <summary>
+/// Interval arithmetic for an appointment. One authority for "how long is this
+/// appointment", used by every API projection, so a consumer never derives a
+/// duration from a service's catalogue value (which may have changed since the
+/// booking, or describe only one of several booked services).
+/// </summary>
+public static class AppointmentIntervals
+{
+    /// <summary>
+    /// <c>end − start</c> in whole minutes, or 0 when the interval is unusable
+    /// (an end that does not follow its start). Never negative: a corrupt row must
+    /// not produce a negative height on a calendar or a negative duration badge.
+    /// </summary>
+    public static int DurationMinutes(DateTime start, DateTime end)
+    {
+        if (end <= start) return 0;
+        return (int)Math.Round((end - start).TotalMinutes, MidpointRounding.AwayFromZero);
+    }
+}
+
+/// <summary>
 /// Serialises concurrent booking attempts for one staff member.
 ///
 /// <para>Checking availability and then inserting is not enough on its own: two
