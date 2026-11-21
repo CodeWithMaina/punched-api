@@ -13,6 +13,7 @@ internal static class NotificationMetrics
     private static readonly Histogram<double> DeliveryDuration =
         Meter.CreateHistogram<double>("notifications_delivery_duration_ms", "ms");
     private static long _pendingQueueDepth;
+    private static double _oldestPendingAgeSeconds;
 
     static NotificationMetrics()
     {
@@ -20,6 +21,12 @@ internal static class NotificationMetrics
             "notifications_queue_depth",
             () => Interlocked.Read(ref _pendingQueueDepth),
             description: "Number of pending notification outbox rows.");
+
+        Meter.CreateObservableGauge(
+            "notifications_oldest_pending_age_seconds",
+            () => Interlocked.CompareExchange(ref _oldestPendingAgeSeconds, 0, 0),
+            "s",
+            "Age of the oldest pending notification outbox row (0 when the queue is empty).");
     }
 
     public static void RecordSent(string channel) => Sent.Add(1, new KeyValuePair<string, object?>("channel", channel));
@@ -51,4 +58,8 @@ internal static class NotificationMetrics
         DeliveryDuration.Record(milliseconds, new KeyValuePair<string, object?>("channel", channel));
 
     public static void RecordQueueDepth(long pendingRows) => Interlocked.Exchange(ref _pendingQueueDepth, pendingRows);
+
+    /// <summary>Age of the oldest pending row — the backlog signal that matters.</summary>
+    public static void RecordOldestPendingAge(double seconds) =>
+        Interlocked.Exchange(ref _oldestPendingAgeSeconds, Math.Max(0, seconds));
 }

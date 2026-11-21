@@ -2,52 +2,83 @@ using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using PunchedApi.Application.BackgroundProcessing;
 using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Infrastructure.Data;
 
 namespace PunchedApi.Infrastructure.Notifications;
 
-/// <summary>Polls the existing notification ledger and invokes external channels.</summary>
+/// <summary>
+/// Drains the notification ledger into the external channels, with adaptive polling.
+///
+/// <para>The durable state machine is unchanged: rows are still claimed atomically
+/// with <c>FOR UPDATE SKIP LOCKED</c>, leases are still reclaimed, retries still back
+/// off and terminal failures still dead-letter. Only the <i>waiting</i> changed — the
+/// fixed sleep became a bounded, jittered backoff that can reach deep idle so the
+/// database may suspend, and an outbox commit wakes the worker immediately so deep
+/// idle costs no delivery latency.</para>
+/// </summary>
 public sealed class NotificationDeliveryWorker : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<NotificationDeliveryWorker> _logger;
     private readonly NotificationWorkerOptions _options;
+    private readonly PollingProfile? _profile;
+    private readonly BackgroundProcessingMetrics _metrics;
+    private readonly IPollWakeChannel? _wakeChannel;
+    private readonly int _batchSize;
 
     public NotificationDeliveryWorker(
         IServiceScopeFactory scopeFactory,
         ILogger<NotificationDeliveryWorker> logger,
-        IOptions<NotificationWorkerOptions>? options = null)
+        IOptions<NotificationWorkerOptions>? options = null,
+        BackgroundProcessingOptions? backgroundProcessing = null,
+        BackgroundProcessingMetrics? metrics = null,
+        IPollWakeChannel? wakeChannel = null)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
         _options = options?.Value ?? new NotificationWorkerOptions();
+        _profile = backgroundProcessing?.For(BackgroundProcessingOptions.Names.Notifications);
+        _metrics = metrics ?? BackgroundProcessingMetrics.Shared;
+        _wakeChannel = wakeChannel;
+        _batchSize = Math.Max(1, _profile?.BatchSize ?? _options.BatchSize);
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+        AdaptivePollLoop.RunAsync(
+            BackgroundProcessingOptions.Names.Notifications,
+            ResolveProfile(),
+            _logger,
+            _metrics,
+            async ct =>
+            {
+                var processed = await ProcessBatchAsync(ct);
+                return new PollWorkResult(processed, processed, processed >= _batchSize);
+            },
+            _wakeChannel,
+            stoppingToken);
+
+    /// <summary>
+    /// The configured profile, or — when this worker is constructed by hand (tests,
+    /// tooling) without the new configuration — a profile that reproduces the old
+    /// fixed-interval behaviour exactly.
+    /// </summary>
+    private PollingProfile ResolveProfile()
     {
-        var pollInterval = TimeSpan.FromSeconds(Math.Max(1, _options.PollIntervalSeconds));
-        _logger.LogInformation("Notification delivery worker started. Poll interval: {PollInterval}", pollInterval);
-        while (!stoppingToken.IsCancellationRequested)
+        if (_profile is not null) return _profile;
+
+        var seconds = Math.Max(1, _options.PollIntervalSeconds);
+        return new PollingProfile
         {
-            try
-            {
-                await ProcessBatchAsync(stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Notification delivery worker failed to process an outbox batch.");
-            }
-
-            await Task.Delay(pollInterval, stoppingToken);
-        }
-
-        _logger.LogInformation("Notification delivery worker stopped.");
+            ActiveIntervalSeconds = Math.Max(1, Math.Min(2, seconds)),
+            FirstIdleIntervalSeconds = seconds,
+            MaxIdleIntervalSeconds = seconds,
+            BackoffMultiplier = 1,
+            JitterRatio = 0,
+            MaxIdleDurationSeconds = 0
+        };
     }
 
     /// <summary>Runs one independently scoped batch; public for deterministic worker tests.</summary>
@@ -64,7 +95,7 @@ public sealed class NotificationDeliveryWorker : BackgroundService
         // Optional so unit-test service providers without the resolver keep working
         // (they fall back to the platform default in BuildMessageAsync).
         var resolver = provider.GetService<ITemplateOverrideResolver>();
-        var batchSize = Math.Max(1, _options.BatchSize);
+        var batchSize = _batchSize;
 
         await store.ReclaimStaleProcessingAsync(TimeSpan.FromMinutes(Math.Max(1, _options.StaleProcessingMinutes)), ct);
         var claimed = await store.ClaimAsync(batchSize, ct);
@@ -227,8 +258,29 @@ public sealed class NotificationDeliveryWorker : BackgroundService
             }
         }
 
-        var pendingRows = await context.NotificationLogs.CountAsync(row => row.Status == "pending", ct);
+        // One round trip, two numbers: the backlog and how old its oldest row is.
+        // The age is the honest backlog signal — a count of 1 that has waited an hour
+        // is worse than a count of 200 that arrived a second ago — and grouping keeps
+        // it free of an extra query per batch.
+        var pending = await context.NotificationLogs
+            .Where(row => row.Status == "pending")
+            .GroupBy(_ => 1)
+            .Select(group => new
+            {
+                Count = group.Count(),
+                OldestCreatedAt = group.Min(row => row.CreatedAt)
+            })
+            .FirstOrDefaultAsync(ct);
+
+        var pendingRows = pending?.Count ?? 0;
         NotificationMetrics.RecordQueueDepth(pendingRows);
+
+        if (pending is not null && pendingRows > 0)
+        {
+            var oldestAgeSeconds = Math.Max(0, (DateTime.UtcNow - pending.OldestCreatedAt).TotalSeconds);
+            NotificationMetrics.RecordOldestPendingAge(oldestAgeSeconds);
+        }
+
         return claimed.Count;
     }
 

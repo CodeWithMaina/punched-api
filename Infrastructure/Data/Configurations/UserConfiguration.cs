@@ -66,6 +66,15 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.HasIndex(e => e.IsDeleted);
         builder.HasIndex(e => e.AvatarMediaId);
 
+        // Customer lookup by phone. Several hot paths already filter on exact
+        // phone equality (customer directory, manual M-PESA payment lookup, public
+        // booking self-service, stamp enrolment), and without this index each of
+        // them is a sequential scan of the whole users table. Filtered so the many
+        // rows without a phone number cost nothing.
+        builder.HasIndex(e => e.PhoneNumber)
+            .HasDatabaseName("ix_users_phone_number")
+            .HasFilter("phone_number IS NOT NULL");
+
         builder.HasOne<Media>()
             .WithMany()
             .HasForeignKey(e => e.AvatarMediaId)

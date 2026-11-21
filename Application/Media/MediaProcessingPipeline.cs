@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using PunchedApi.Application.BackgroundProcessing;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
@@ -454,48 +455,67 @@ public sealed class MediaProcessor(
 }
 
 
-public sealed class MediaProcessingWorker(IServiceScopeFactory scopeFactory, IOptions<MediaStorageOptions> options) : BackgroundService
+public sealed class MediaProcessingWorker : BackgroundService
 {
-    private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
-    private readonly MediaStorageOptions _options = options.Value;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly MediaStorageOptions _options;
+    private readonly ILogger<MediaProcessingWorker> _logger;
+    private readonly PollingProfile? _profile;
+    private readonly BackgroundProcessingMetrics _metrics;
+    private readonly IPollWakeChannel? _wakeChannel;
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    public MediaProcessingWorker(
+        IServiceScopeFactory scopeFactory,
+        IOptions<MediaStorageOptions> options,
+        ILogger<MediaProcessingWorker> logger,
+        BackgroundProcessingOptions? backgroundProcessing = null,
+        BackgroundProcessingMetrics? metrics = null,
+        IPollWakeChannel? wakeChannel = null)
     {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                var candidates = await LoadCandidatesAsync(stoppingToken);
-
-                if (candidates.Count > 0)
-                {
-                    // Bounded parallelism instead of a strict one-at-a-time drain. The
-                    // batch is claimed atomically per row, so concurrent jobs cannot
-                    // collide; each job takes its OWN DI scope because a DbContext is
-                    // not thread-safe. Before this, one slow encode (or one slow
-                    // database round trip) delayed every other queued upload behind it.
-                    var degree = _options.WorkerParallelism > 0
-                        ? Math.Min(_options.WorkerParallelism, candidates.Count)
-                        : Math.Max(1, Math.Min(candidates.Count, Environment.ProcessorCount));
-
-                    await Parallel.ForEachAsync(
-                        candidates,
-                        new ParallelOptions { MaxDegreeOfParallelism = degree, CancellationToken = stoppingToken },
-                        ProcessCandidateAsync);
-                }
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch
-            {
-                // Worker loops; error handling remains local to the processing service.
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
-        }
+        _scopeFactory = scopeFactory;
+        _options = options.Value;
+        _logger = logger;
+        _profile = backgroundProcessing?.For(BackgroundProcessingOptions.Names.MediaProcessing);
+        _metrics = metrics ?? BackgroundProcessingMetrics.Shared;
+        _wakeChannel = wakeChannel;
     }
+
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+        AdaptivePollLoop.RunAsync(
+            BackgroundProcessingOptions.Names.MediaProcessing,
+            _profile ?? new PollingProfile { ActiveIntervalSeconds = 2, FirstIdleIntervalSeconds = 5, MaxIdleIntervalSeconds = 5, JitterRatio = 0 },
+            _logger,
+            _metrics,
+            async ct =>
+            {
+                var candidates = await LoadCandidatesAsync(ct);
+                if (candidates.Count == 0) return PollWorkResult.Empty;
+
+                // Bounded parallelism instead of a strict one-at-a-time drain. The
+                // batch is claimed atomically per row, so concurrent jobs cannot
+                // collide; each job takes its OWN DI scope because a DbContext is
+                // not thread-safe.
+                var degree = _options.WorkerParallelism > 0
+                    ? Math.Min(_options.WorkerParallelism, candidates.Count)
+                    : Math.Max(1, Math.Min(candidates.Count, Environment.ProcessorCount));
+
+                var processed = 0;
+                await Parallel.ForEachAsync(
+                    candidates,
+                    new ParallelOptions { MaxDegreeOfParallelism = degree, CancellationToken = ct },
+                    async (mediaId, token) =>
+                    {
+                        await ProcessCandidateAsync(mediaId, token);
+                        Interlocked.Increment(ref processed);
+                    });
+
+                return new PollWorkResult(
+                    candidates.Count,
+                    processed,
+                    candidates.Count >= Math.Max(1, _options.WorkerBatchSize));
+            },
+            _wakeChannel,
+            stoppingToken);
 
     /// <summary>Ids eligible for processing right now, oldest first.</summary>
     private async Task<IReadOnlyList<Guid>> LoadCandidatesAsync(CancellationToken stoppingToken)
@@ -619,17 +639,42 @@ public sealed class MediaProcessingWorker(IServiceScopeFactory scopeFactory, IOp
     }
 }
 
-public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptions<MediaStorageOptions> options) : BackgroundService
+public sealed class MediaCleanupWorker : BackgroundService
 {
-    private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
-    private readonly MediaStorageOptions _options = options.Value;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly MediaStorageOptions _options;
+    private readonly ILogger<MediaCleanupWorker> _logger;
+    private readonly PollingProfile? _profile;
+    private readonly BackgroundProcessingMetrics _metrics;
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    public MediaCleanupWorker(
+        IServiceScopeFactory scopeFactory,
+        IOptions<MediaStorageOptions> options,
+        ILogger<MediaCleanupWorker> logger,
+        BackgroundProcessingOptions? backgroundProcessing = null,
+        BackgroundProcessingMetrics? metrics = null)
     {
-        while (!stoppingToken.IsCancellationRequested)
+        _scopeFactory = scopeFactory;
+        _options = options.Value;
+        _logger = logger;
+        _profile = backgroundProcessing?.For(BackgroundProcessingOptions.Names.MediaCleanup);
+        _metrics = metrics ?? BackgroundProcessingMetrics.Shared;
+    }
+
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+        PeriodicWorkerLoop.RunAsync(
+            BackgroundProcessingOptions.Names.MediaCleanup,
+            _profile ?? new PollingProfile { JitterRatio = 0 },
+            TimeSpan.FromSeconds(10),
+            _logger,
+            _metrics,
+            RunCleanupAsync,
+            stoppingToken);
+
+    private async Task<int> RunCleanupAsync(CancellationToken stoppingToken)
+    {
+        var touched = 0;
         {
-            try
-            {
                 using var scope = _scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 var urls = scope.ServiceProvider.GetRequiredService<IMediaUrlFactory>();
@@ -665,6 +710,7 @@ public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptio
                     await db.SaveChangesAsync(stoppingToken);
                     MediaMetrics.RecordAbandonedPendingPurged(media.Purpose);
                     MediaMetrics.RecordCleanupDeleted();
+                    touched++;
                 }
 
                 if (_options.Retention.FailedUploadHours > 0)
@@ -682,6 +728,7 @@ public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptio
                         db.Media.Remove(media);
                         await db.SaveChangesAsync(stoppingToken);
                         MediaMetrics.RecordCleanupDeleted();
+                        touched++;
                     }
                 }
 
@@ -706,6 +753,7 @@ public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptio
                         media.UpdatedAt = DateTime.UtcNow;
                         await db.SaveChangesAsync(stoppingToken);
                         MediaMetrics.RecordCleanupDeleted();
+                        touched++;
                     }
                     catch
                     {
@@ -730,19 +778,11 @@ public sealed class MediaCleanupWorker(IServiceScopeFactory scopeFactory, IOptio
                     db.Media.Remove(media);
                     await db.SaveChangesAsync(stoppingToken);
                     MediaMetrics.RecordCleanupDeleted();
+                    touched++;
                 }
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch
-            {
-                // retries continue through the next loop iteration.
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
         }
+
+        return touched;
     }
 
     private static IReadOnlyList<MediaVariantResponse> DeserializeVariants(string json)

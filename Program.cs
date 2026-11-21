@@ -19,6 +19,7 @@ using PunchedApi.Application.Attendance;
 using PunchedApi.Application.Attendance.Verification;
 using PunchedApi.Application.Assets;
 using PunchedApi.Application.Authorization;
+using PunchedApi.Application.BackgroundProcessing;
 using PunchedApi.Application.DomainEvents;
 using PunchedApi.Application.Handlers;
 using PunchedApi.Application.Loyalty;
@@ -167,12 +168,29 @@ try
     // DbContext pooling: contexts are stateless here and resolved per-scope,
     // so pooled instances are safely reset and reused across requests. This
     // removes per-request context allocation cost without changing semantics.
-    var connectionString = ResolveConnectionString(builder.Configuration);
+    //
+    // Neither interceptor changes behaviour: one measures connection acquisition
+    // and failures, the other raises a best-effort wake-up after outbox work
+    // commits. Both are optional infrastructure, registered separately so tests
+    // that build a bare DbContext keep working.
+    var connectionString = ResolveConnectionString(builder.Configuration, hostRole);
 
-    builder.Services.AddDbContextPool<ApplicationDbContext>(options =>
+    builder.Services.AddSingleton<DatabaseRuntimeMetrics>();
+    builder.Services.AddSingleton<DatabaseConnectionInterceptor>();
+    builder.Services.AddSingleton<OutboxWakeInterceptor>();
+
+    builder.Services.AddDbContextPool<ApplicationDbContext>((serviceProvider, options) =>
         options.UseNpgsql(
-            connectionString,
-            o => o.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery)));
+                connectionString,
+                o => o.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery))
+            .AddInterceptors(
+                serviceProvider.GetRequiredService<DatabaseConnectionInterceptor>(),
+                serviceProvider.GetRequiredService<OutboxWakeInterceptor>()));
+
+    // ── Background processing (adaptive polling + wake-up hints) ──
+    // Polling cadence, idle backoff, batch size and scale-to-zero friendliness are
+    // configuration (BackgroundProcessing:*). PostgreSQL remains the durable queue.
+    builder.Services.AddBackgroundProcessing(builder.Configuration);
 
     // ── Caching / tenant scope resolution ───────────────────
     builder.Services.AddMemoryCache();
@@ -181,7 +199,11 @@ try
     // durable queue is PostgreSQL, not Redis (see Infrastructure/Caching).
     builder.Services.AddPunchedCache(builder.Configuration);
     // Bounded, cached dependency probes used by /health/ready (and the docker
-    // health checks that gate deployment).
+    // health checks that gate deployment). The cache windows and timeouts are
+    // configuration, because every probe that reaches the database is also activity
+    // that keeps a serverless compute awake.
+    builder.Services.Configure<HealthOptions>(
+        builder.Configuration.GetSection(HealthOptions.SectionName));
     builder.Services.AddSingleton<ReadinessProbe>();
     builder.Services.AddSingleton<IBusinessScopeResolver, BusinessScopeResolver>();
 
@@ -1107,6 +1129,30 @@ try
         app.Environment.EnvironmentName,
         app.Configuration.GetValue("WORKERS_ENABLED", true));
 
+    // ── Background processing: validate and publish the effective plan ──────
+    // A bad polling configuration (a floor under Neon's 5-minute window, a zero
+    // interval, an out-of-range multiplier) fails startup with every problem listed,
+    // rather than producing a silent busy loop that burns the compute allowance.
+    app.Services.ValidateBackgroundProcessing();
+
+    if (app.Configuration.GetValue("WORKERS_ENABLED", true))
+    {
+        var backgroundOptions = app.Services.GetRequiredService<BackgroundProcessingOptions>();
+        foreach (var line in backgroundOptions.DescribeLines())
+        {
+            app.Logger.LogInformation("Background processing | {Line}", line);
+        }
+
+        if (backgroundOptions.ScaleToZeroFriendly)
+        {
+            app.Logger.LogInformation(
+                "Scale-to-zero-friendly polling is ON. Idle workers wake the database once per shared tick; " +
+                "outbox writes still wake them immediately through the wake-up channel, so worst-case latency " +
+                "without a wake signal is one tick. Set BackgroundProcessing__ScaleToZeroFriendlyMode=false " +
+                "(paid Neon plan) for latency-first polling.");
+        }
+    }
+
     if (args.Length > 0)
     {
         using var cliScope = app.Services.CreateScope();
@@ -1380,7 +1426,7 @@ finally
     Log.CloseAndFlush();
 }
 
-static string ResolveConnectionString(IConfiguration configuration)
+static string ResolveConnectionString(IConfiguration configuration, string role)
 {
     var databaseUrl = configuration["DATABASE_URL"]
                              ?? Environment.GetEnvironmentVariable("DATABASE_URL");
@@ -1446,41 +1492,78 @@ static string ResolveConnectionString(IConfiguration configuration)
                 builder.SslMode);
         }
 
-        // ── Pool behaviour on a remote database ─────────────────────────────
-        // Measured against the hosted database this deployment uses: opening a
-        // connection (TCP + TLS + auth) costs ~1.6 s, while a query on an already-open
-        // connection costs ~220 ms. The pool is therefore the single most valuable
-        // thing to keep warm — an idle pool turns every request into a fresh handshake.
+        // ── Pool behaviour on a remote, serverless database ──────────────────
+        // Neon suspends a compute after five minutes without activity. A non-zero
+        // Minimum Pool Size holds sockets open permanently, so the compute can never
+        // suspend and the monthly compute allowance is consumed around the clock.
+        // The minimum therefore defaults to 0: an idle deployment keeps no socket
+        // open, and the first request after a quiet period pays one cold start
+        // (~1–3 s on Neon) instead of every request paying for a permanently warm pool.
         //
-        //   Minimum Pool Size  keeps N connections open, so the first request after a
-        //                      quiet period does not pay the handshake.
-        //   Connection Idle    is deliberately longer than the idle window that made
-        //   Lifetime           connections disappear in the first place.
-        //   Keepalive          holds the pooled socket open across NAT/proxy timeouts.
-        //   Timeout            fails fast on a dead link instead of stalling a request.
+        //   Minimum Pool Size   0 — let the pool drain when the deployment is idle.
+        //   Connection Lifetime refresh pooled sockets periodically so a plan change,
+        //                       endpoint move or server restart cannot leave a stale
+        //                       socket in the pool forever.
+        //   Idle Lifetime       longer than Neon's 5-minute window: a connection that
+        //                       is still in the pool must not be mid-suspend.
+        //   Keepalive           holds the pooled socket across NAT/proxy timeouts.
+        //   Timeout             fails fast on a dead link instead of stalling a request.
         //
-        // Every value is overridable from configuration, so a deployment next to its
-        // database can set Minimum Pool Size to 0 and pay nothing.
+        // Every value is overridable, and none of them influences when Neon suspends:
+        // suspension is controlled by the dashboard / Neon API (see infra/NEON.md),
+        // while these settings only decide what this process does between queries.
         var minimumPoolSize = int.TryParse(configuration["Database:MinimumPoolSize"], out var configuredMin)
             ? configuredMin
-            : 2;
+            : 0;
         builder.MinPoolSize = Math.Clamp(minimumPoolSize, 0, 100);
-        builder.ConnectionIdleLifetime = 300;
-        builder.KeepAlive = 30;
-        builder.Timeout = 15;
+
+        builder.ConnectionLifetime = Math.Clamp(
+            int.TryParse(configuration["Database:ConnectionLifetimeSeconds"], out var configuredLifetime)
+                ? configuredLifetime
+                : 0,
+            0,
+            86_400);
+
+        builder.ConnectionIdleLifetime = Math.Clamp(
+            int.TryParse(configuration["Database:ConnectionIdleLifetimeSeconds"], out var configuredIdleLifetime)
+                ? configuredIdleLifetime
+                : 300,
+            5,
+            3_600);
+
+        builder.ConnectionPruningInterval = Math.Clamp(
+            int.TryParse(configuration["Database:ConnectionPruningIntervalSeconds"], out var configuredPruning)
+                ? configuredPruning
+                : 30,
+            1,
+            300);
+
+        builder.KeepAlive = Math.Clamp(
+            int.TryParse(configuration["Database:KeepAliveSeconds"], out var configuredKeepAlive)
+                ? configuredKeepAlive
+                : 30,
+            0,
+            300);
+
+        builder.Timeout = Math.Clamp(
+            int.TryParse(configuration["Database:TimeoutSeconds"], out var configuredTimeout)
+                ? configuredTimeout
+                : 15,
+            3,
+            120);
 
         // Ceiling on simultaneous connections. Neon allocates memory per
         // connection and enforces a hard limit per compute; the API and the worker
         // each run their own pool, so the two maxima must add up to something the
-        // database can actually serve. 20 is the documented default.
+        // database can actually serve.
         var maximumPoolSize = int.TryParse(configuration["Database:MaximumPoolSize"], out var configuredMax)
             ? configuredMax
-            : 20;
+            : 8;
         builder.MaxPoolSize = Math.Clamp(maximumPoolSize, Math.Max(builder.MinPoolSize, 1), 200);
 
-        // A single statement may not outlive its request by much: the EF default is
-        // 30 s, and a runaway query would otherwise keep a pooled socket busy long
-        // after the API already answered 504 to the client.
+        // A single statement may not outlive its request by much: a runaway query
+        // would otherwise keep a pooled socket busy long after the API already
+        // answered the client.
         var commandTimeoutSeconds = int.TryParse(configuration["Database:CommandTimeoutSeconds"], out var configuredCommandTimeout)
             ? configuredCommandTimeout
             : 30;
@@ -1516,6 +1599,23 @@ static string ResolveConnectionString(IConfiguration configuration)
                 "each hold their own pool, so one role must stay well inside that shared limit.");
         }
 
+        // ── Deployment-wide connection plan ─────────────────────────────────
+        // The per-role ceiling above stops one container from claiming the whole
+        // budget; this check proves the SUM still fits the compute it runs against.
+        // Both are configuration, so a paid plan (or a bigger compute) is a values
+        // change, not a code change.
+        var budgetPlan = configuration.GetSection(DatabaseBudget.SectionName).Get<DatabaseBudget>()
+                         ?? new DatabaseBudget();
+
+        var budgetProblems = budgetPlan.Validate(role, builder.MaxPoolSize, connectionBudget);
+        if (budgetProblems.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Invalid database connection budget:" +
+                Environment.NewLine +
+                string.Join(Environment.NewLine, budgetProblems.Select(problem => " - " + problem)));
+        }
+
         var usesPooler = builder.Host.Contains("-pooler", StringComparison.OrdinalIgnoreCase);
         if (!usesPooler && !uri.IsLoopback && !string.Equals(uri.Host, "localhost", StringComparison.Ordinal))
         {
@@ -1531,10 +1631,12 @@ static string ResolveConnectionString(IConfiguration configuration)
         }
 
         // Logged after every value is final: this line is the single place an
-        // operator can see what the deployment is actually using.
+        // operator can see what the deployment is actually using. It names no
+        // credentials and includes no connection string.
         Log.Information(
             "Database connection resolved: host={Host}, database={Database}, ssl={SslMode}, endpoint={Endpoint}, " +
-            "pool={MinPoolSize}-{MaxPoolSize} (budget {Budget}), commandTimeout={CommandTimeout}s",
+            "pool={MinPoolSize}-{MaxPoolSize} (role budget {Budget}), commandTimeout={CommandTimeout}s, " +
+            "conn lifetime={Lifetime}s, idle lifetime={IdleLifetime}s, keepalive={KeepAlive}s, connect timeout={Timeout}s",
             builder.Host,
             builder.Database,
             builder.SslMode,
@@ -1542,7 +1644,13 @@ static string ResolveConnectionString(IConfiguration configuration)
             builder.MinPoolSize,
             builder.MaxPoolSize,
             connectionBudget,
-            builder.CommandTimeout);
+            builder.CommandTimeout,
+            builder.ConnectionLifetime,
+            builder.ConnectionIdleLifetime,
+            builder.KeepAlive,
+            builder.Timeout);
+
+        Log.Information("Database connection plan: {Plan}", budgetPlan.Describe(role, builder.MaxPoolSize));
 
         return builder.ConnectionString;
     }

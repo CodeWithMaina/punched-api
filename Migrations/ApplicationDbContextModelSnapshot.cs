@@ -7422,6 +7422,10 @@ namespace PunchedApi.Migrations
 
                     b.HasIndex("IsDeleted");
 
+                    b.HasIndex("PhoneNumber")
+                        .HasDatabaseName("ix_users_phone_number")
+                        .HasFilter("phone_number IS NOT NULL");
+
                     b.HasIndex("FullName", "Email");
 
                     b.ToTable("users", (string)null);

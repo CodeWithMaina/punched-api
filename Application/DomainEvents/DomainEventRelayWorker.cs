@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using PunchedApi.Application.BackgroundProcessing;
 using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Infrastructure.Data;
@@ -12,14 +13,16 @@ using PunchedApi.Infrastructure.Data;
 namespace PunchedApi.Application.DomainEvents;
 
 /// <summary>
-/// Claims pending domain events (10 s claim cadence, <c>FOR UPDATE SKIP LOCKED</c>,
-/// 1-minute leases with stale reclaim) and dispatches every claimed event to the
-/// in-process handlers that declare interest in the event type. Each handler is
-/// invoked at most once per event (per-handler checkpoints in
-/// <c>handledByJson</c>) so retries can never re-run completed work.
+/// Claims pending domain events (<c>FOR UPDATE SKIP LOCKED</c>, 1-minute leases with
+/// stale reclaim) and dispatches every claimed event to the in-process handlers that
+/// declare interest in the event type. Each handler is invoked at most once per event
+/// (per-handler checkpoints in <c>handledByJson</c>) so retries can never re-run
+/// completed work.
 /// </summary>
 /// <remarks>
 /// The relay is a <c>BackgroundService</c> behind the <c>WORKERS_ENABLED</c> gate.
+/// Its cadence is adaptive (<see cref="AdaptivePollLoop"/>): prompt while events are
+/// flowing, deep and jittered while the queue is empty.
 /// </remarks>
 public sealed class DomainEventRelayWorker : BackgroundService
 {
@@ -29,11 +32,17 @@ public sealed class DomainEventRelayWorker : BackgroundService
     private readonly int _leaseMinutes;
     private readonly int _pollSeconds;
     private readonly int _maxAttempts;
+    private readonly PollingProfile? _profile;
+    private readonly BackgroundProcessingMetrics _metrics;
+    private readonly IPollWakeChannel? _wakeChannel;
 
     public DomainEventRelayWorker(
         IServiceScopeFactory scopeFactory,
         ILogger<DomainEventRelayWorker> logger,
-        IOptions<NotificationWorkerOptions>? options = null)
+        IOptions<NotificationWorkerOptions>? options = null,
+        BackgroundProcessingOptions? backgroundProcessing = null,
+        BackgroundProcessingMetrics? metrics = null,
+        IPollWakeChannel? wakeChannel = null)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
@@ -42,34 +51,44 @@ public sealed class DomainEventRelayWorker : BackgroundService
         _leaseMinutes = Math.Max(1, o.StaleProcessingMinutes);
         _pollSeconds = Math.Max(1, o.PollIntervalSeconds);
         _maxAttempts = Math.Max(1, o.MaxDomainEventAttempts);
+
+        _profile = backgroundProcessing?.For(BackgroundProcessingOptions.Names.DomainEvents);
+        if (_profile?.BatchSize is > 0) _claimSize = _profile.BatchSize.Value;
+        _metrics = metrics ?? BackgroundProcessingMetrics.Shared;
+        _wakeChannel = wakeChannel;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+        AdaptivePollLoop.RunAsync(
+            BackgroundProcessingOptions.Names.DomainEvents,
+            ResolveProfile(),
+            _logger,
+            _metrics,
+            async ct =>
+            {
+                var claimed = await ProcessBatchAsync(ct);
+                return new PollWorkResult(claimed, claimed, claimed >= _claimSize);
+            },
+            _wakeChannel,
+            stoppingToken);
+
+    private PollingProfile ResolveProfile()
     {
-        var pollInterval = TimeSpan.FromSeconds(_pollSeconds);
-        _logger.LogInformation("Domain-event relay started. Claim: {_ClaimSize} every {_PollSeconds}s.", _claimSize, _pollSeconds);
-        while (!stoppingToken.IsCancellationRequested)
+        if (_profile is not null) return _profile;
+
+        return new PollingProfile
         {
-            try
-            {
-                await ProcessBatchAsync(stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Domain-event relay batch failed.");
-            }
-
-            await Task.Delay(pollInterval, stoppingToken);
-        }
-
-        _logger.LogInformation("Domain-event relay stopped.");
+            ActiveIntervalSeconds = Math.Max(1, Math.Min(2, _pollSeconds)),
+            FirstIdleIntervalSeconds = _pollSeconds,
+            MaxIdleIntervalSeconds = _pollSeconds,
+            BackoffMultiplier = 1,
+            JitterRatio = 0,
+            MaxIdleDurationSeconds = 0
+        };
     }
 
-    public async Task ProcessBatchAsync(CancellationToken ct = default)
+    /// <summary>Runs one independently scoped batch; public for deterministic worker tests.</summary>
+    public async Task<int> ProcessBatchAsync(CancellationToken ct = default)
     {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var provider = scope.ServiceProvider;
@@ -81,6 +100,8 @@ public sealed class DomainEventRelayWorker : BackgroundService
             ct.ThrowIfCancellationRequested();
             await new Invocation(row, provider, _logger).RunAsync(ct);
         }
+
+        return claimed.Count;
     }
 
     private static async Task<IReadOnlyList<DomainEvent>> ClaimAsync(

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using PunchedApi.Application.BackgroundProcessing;
 using PunchedApi.Application.DomainEvents;
 using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Entities;
@@ -10,14 +11,17 @@ using PunchedApi.Infrastructure.Data;
 namespace PunchedApi.Application.Scheduling;
 
 /// <summary>
-/// Claims due <c>scheduled_jobs</c> rows (10 s cadence, <c>FOR UPDATE SKIP LOCKED</c>,
-/// 1-minute leases with stale reclaim) and dispatches them into the shared
-/// notification pipeline. Dispatch is authoritative-state rechecked so a job can
-/// never send a reminder for a cancelled or completed appointment, and per-
-/// business reminder policies / opt-out toggles are respected.
+/// Claims due <c>scheduled_jobs</c> rows (<c>FOR UPDATE SKIP LOCKED</c>, 1-minute
+/// leases with stale reclaim) and dispatches them into the shared notification
+/// pipeline. Dispatch is authoritative-state rechecked so a job can never send a
+/// reminder for a cancelled or completed appointment, and per-business reminder
+/// policies / opt-out toggles are respected.
 /// </summary>
 /// <remarks>
-/// Behind the <c>WORKERS_ENABLED</c> gate.
+/// Behind the <c>WORKERS_ENABLED</c> gate. Polling is adaptive: prompt while jobs are
+/// due (the next reminder is only discovered on a poll, so the active interval stays
+/// short), deep and jittered while the queue is empty, and woken immediately when a
+/// booking commits new reminder rows.
 /// </remarks>
 public sealed class ScheduledJobSchedulerWorker : BackgroundService
 {
@@ -30,12 +34,18 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
     private readonly int _lapseInactivityDays;
     private readonly int _winBackCooldownDays;
     private readonly bool _winBackFallbackNudgeEnabled;
+    private readonly PollingProfile? _profile;
+    private readonly BackgroundProcessingMetrics _metrics;
+    private readonly IPollWakeChannel? _wakeChannel;
     private DateTime _lastLapseScan = DateTime.MinValue;
 
     public ScheduledJobSchedulerWorker(
         IServiceScopeFactory scopeFactory,
         ILogger<ScheduledJobSchedulerWorker> logger,
-        IOptions<NotificationWorkerOptions>? options = null)
+        IOptions<NotificationWorkerOptions>? options = null,
+        BackgroundProcessingOptions? backgroundProcessing = null,
+        BackgroundProcessingMetrics? metrics = null,
+        IPollWakeChannel? wakeChannel = null)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
@@ -47,34 +57,44 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
         _lapseInactivityDays = Math.Max(1, o.LapseInactivityDays);
         _winBackCooldownDays = Math.Max(1, o.WinBackCooldownDays);
         _winBackFallbackNudgeEnabled = o.WinBackFallbackNudgeEnabled;
+
+        _profile = backgroundProcessing?.For(BackgroundProcessingOptions.Names.ScheduledJobs);
+        if (_profile?.BatchSize is > 0) _claimSize = _profile.BatchSize.Value;
+        _metrics = metrics ?? BackgroundProcessingMetrics.Shared;
+        _wakeChannel = wakeChannel;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+        AdaptivePollLoop.RunAsync(
+            BackgroundProcessingOptions.Names.ScheduledJobs,
+            ResolveProfile(),
+            _logger,
+            _metrics,
+            async ct =>
+            {
+                var claimed = await ProcessBatchAsync(ct);
+                return new PollWorkResult(claimed, claimed, claimed >= _claimSize);
+            },
+            _wakeChannel,
+            stoppingToken);
+
+    private PollingProfile ResolveProfile()
     {
-        var pollInterval = TimeSpan.FromSeconds(_pollSeconds);
-        _logger.LogInformation("Scheduled-job scheduler started. Claim: {_ClaimSize} every {_PollSeconds}s.", _claimSize, _pollSeconds);
-        while (!stoppingToken.IsCancellationRequested)
+        if (_profile is not null) return _profile;
+
+        return new PollingProfile
         {
-            try
-            {
-                await ProcessBatchAsync(stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Scheduled-job batch failed.");
-            }
-
-            await Task.Delay(pollInterval, stoppingToken);
-        }
-
-        _logger.LogInformation("Scheduled-job scheduler stopped.");
+            ActiveIntervalSeconds = Math.Max(1, Math.Min(2, _pollSeconds)),
+            FirstIdleIntervalSeconds = _pollSeconds,
+            MaxIdleIntervalSeconds = _pollSeconds,
+            BackoffMultiplier = 1,
+            JitterRatio = 0,
+            MaxIdleDurationSeconds = 0
+        };
     }
 
-    public async Task ProcessBatchAsync(CancellationToken ct = default)
+    /// <summary>Runs one independently scoped batch; public for deterministic worker tests.</summary>
+    public async Task<int> ProcessBatchAsync(CancellationToken ct = default)
     {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var provider = scope.ServiceProvider;
@@ -90,6 +110,8 @@ public sealed class ScheduledJobSchedulerWorker : BackgroundService
                 row, provider, _logger, _winBackCooldownDays, _winBackFallbackNudgeEnabled)
                 .RunAsync(ct);
         }
+
+        return claimed.Count;
     }
 
     private async Task ReclaimStaleAsync(ApplicationDbContext context, CancellationToken ct)

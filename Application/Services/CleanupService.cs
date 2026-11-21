@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using PunchedApi.Application.BackgroundProcessing;
 using PunchedApi.Application.Notifications;
 using PunchedApi.Domain.Interfaces;
 using PunchedApi.Infrastructure.Data;
@@ -8,10 +9,13 @@ namespace PunchedApi.Application.Services;
 
 /// <summary>
 /// Background hosted service that periodically cleans up expired and stale records.
-/// Runs every hour and handles:
-///   - Expired / used QrTokens
-///   - Expired / revoked RefreshTokens
-///   - Stale unverified UserAuth verification codes
+/// Runs hourly and handles expired/used QrTokens, expired/revoked RefreshTokens,
+/// stale unverified verification codes, idempotency keys, expired cards and old
+/// notification rows.
+///
+/// <para>The hourly cadence is unchanged; in scale-to-zero-friendly mode the pass is
+/// folded onto the shared tick so the hourly cleanup does not wake the database on its
+/// own schedule.</para>
 /// </summary>
 public sealed class CleanupService : BackgroundService
 {
@@ -24,40 +28,43 @@ public sealed class CleanupService : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<CleanupService> _logger;
     private readonly NotificationWorkerOptions _notificationOptions;
+    private readonly PollingProfile? _profile;
+    private readonly BackgroundProcessingMetrics _metrics;
 
     public CleanupService(
         IServiceScopeFactory scopeFactory,
         ILogger<CleanupService> logger,
-        IOptions<NotificationWorkerOptions>? notificationOptions = null)
+        IOptions<NotificationWorkerOptions>? notificationOptions = null,
+        BackgroundProcessingOptions? backgroundProcessing = null,
+        BackgroundProcessingMetrics? metrics = null)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
         _notificationOptions = notificationOptions?.Value ?? new NotificationWorkerOptions();
+        _profile = backgroundProcessing?.For(BackgroundProcessingOptions.Names.Cleanup);
+        _metrics = metrics ?? BackgroundProcessingMetrics.Shared;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        _logger.LogInformation("CleanupService started. Interval: {Interval}", RunInterval);
-
-        // Run once immediately on startup, then on the regular interval.
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+        PeriodicWorkerLoop.RunAsync(
+            BackgroundProcessingOptions.Names.Cleanup,
+            _profile ?? new PollingProfile(),
+            RunInterval,
+            _logger,
+            _metrics,
+            async ct =>
             {
-                await RunCleanupAsync(stoppingToken);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "CleanupService encountered an error during cleanup.");
-            }
+                var total = await RunCleanupAsync(ct);
+                if (total > 0)
+                {
+                    _logger.LogInformation("CleanupService removed or expired {Count} record(s).", total);
+                }
+                return total;
+            },
+            stoppingToken);
 
-            await Task.Delay(RunInterval, stoppingToken);
-        }
-
-        _logger.LogInformation("CleanupService stopped.");
-    }
-
-    private async Task RunCleanupAsync(CancellationToken ct)
+    /// <summary>Runs one cleanup pass and returns how many rows were touched.</summary>
+    private async Task<int> RunCleanupAsync(CancellationToken ct)
     {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -75,6 +82,8 @@ public sealed class CleanupService : BackgroundService
         _logger.LogInformation(
             "Cleanup complete — QrTokens deleted: {Qr}, RefreshTokens deleted: {Refresh}, VerificationCodes cleared: {Verify}, IdempotencyKeys deleted: {Idem}, Cards expired: {Expired}, Notifications deleted: {Notifications}",
             qrDeleted, refreshDeleted, verifyCleared, idempotencyDeleted, cardsExpired, notificationsDeleted);
+
+        return qrDeleted + refreshDeleted + verifyCleared + idempotencyDeleted + cardsExpired + notificationsDeleted;
     }
 
     public static async Task<int> CleanNotificationsAsync(

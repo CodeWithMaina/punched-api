@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using PunchedApi.Infrastructure.Data;
 
@@ -31,25 +32,28 @@ public sealed record ReadinessResult(bool Ready, IReadOnlyList<DependencyCheck> 
 public sealed class ReadinessProbe
 {
     private const string DatabaseCacheKey = "health:ready:database";
-    private static readonly TimeSpan PositiveCacheWindow = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan DatabaseTimeout = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan RedisTimeout = TimeSpan.FromSeconds(1);
+    private const string DatabaseFailureCacheKey = "health:ready:database:failed";
+    private const string RedisCacheKey = "health:ready:redis";
+    private const string RedisFailureCacheKey = "health:ready:redis:failed";
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IServiceProvider _services;
     private readonly IMemoryCache _cache;
     private readonly ILogger<ReadinessProbe> _logger;
+    private readonly HealthOptions _options;
 
     public ReadinessProbe(
         IServiceScopeFactory scopeFactory,
         IServiceProvider services,
         IMemoryCache cache,
-        ILogger<ReadinessProbe> logger)
+        ILogger<ReadinessProbe> logger,
+        IOptions<HealthOptions>? options = null)
     {
         _scopeFactory = scopeFactory;
         _services = services;
         _cache = cache;
         _logger = logger;
+        _options = options?.Value ?? new HealthOptions();
     }
 
     public async Task<ReadinessResult> CheckAsync(CancellationToken cancellationToken)
@@ -70,10 +74,15 @@ public sealed class ReadinessProbe
             return new DependencyCheck("database", true, "connected");
         }
 
+        if (_cache.TryGetValue(DatabaseFailureCacheKey, out bool failed) && failed)
+        {
+            return new DependencyCheck("database", false, "unreachable");
+        }
+
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(DatabaseTimeout);
+            timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(_options.DatabaseProbeTimeoutSeconds, 1, 60)));
 
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -81,10 +90,13 @@ public sealed class ReadinessProbe
             var connected = await db.Database.CanConnectAsync(timeout.Token);
             if (connected)
             {
-                _cache.Set(DatabaseCacheKey, true, PositiveCacheWindow);
+                _cache.Set(DatabaseCacheKey, true, TimeSpan.FromSeconds(
+                    Math.Clamp(_options.DatabaseProbeCacheSeconds, 1, 300)));
+                _cache.Remove(DatabaseFailureCacheKey);
                 return new DependencyCheck("database", true, "connected");
             }
 
+            CacheDatabaseFailure();
             return new DependencyCheck("database", false, "unreachable");
         }
         catch (Exception ex)
@@ -93,9 +105,19 @@ public sealed class ReadinessProbe
             // anonymous, and provider messages can carry host names and users.
             _logger.LogWarning(ex, "Readiness probe: database check failed.");
             _cache.Remove(DatabaseCacheKey);
+            CacheDatabaseFailure();
             return new DependencyCheck("database", false, "unreachable");
         }
     }
+
+    /// <summary>
+    /// Remembers a failure for a couple of seconds only: recovery (a Neon compute
+    /// resuming) must be visible almost immediately, while a burst of probes during a
+    /// wake-up must not each pay a timeout.
+    /// </summary>
+    private void CacheDatabaseFailure() =>
+        _cache.Set(DatabaseFailureCacheKey, true, TimeSpan.FromSeconds(
+            Math.Clamp(_options.DatabaseProbeNegativeCacheSeconds, 0, 30)));
 
     private async Task<DependencyCheck> CheckRedisAsync(CancellationToken cancellationToken)
     {
@@ -105,20 +127,39 @@ public sealed class ReadinessProbe
             return new DependencyCheck("redis", true, "disabled");
         }
 
+        if (_cache.TryGetValue(RedisCacheKey, out string? cachedDetail) && cachedDetail is not null)
+        {
+            return new DependencyCheck("redis", true, cachedDetail);
+        }
+
+        if (_cache.TryGetValue(RedisFailureCacheKey, out bool failed) && failed)
+        {
+            return new DependencyCheck("redis", false, "unreachable");
+        }
+
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(RedisTimeout);
+            timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(_options.RedisProbeTimeoutSeconds, 1, 10)));
 
             var latency = await multiplexer.GetDatabase()
                 .PingAsync()
                 .WaitAsync(timeout.Token);
 
-            return new DependencyCheck("redis", true, $"connected ({latency.TotalMilliseconds:F0} ms)");
+            var detail = $"connected ({latency.TotalMilliseconds:F0} ms)";
+            _cache.Set(RedisCacheKey, detail, TimeSpan.FromSeconds(
+                Math.Clamp(_options.RedisProbeCacheSeconds, 0, 60)));
+            _cache.Remove(RedisFailureCacheKey);
+            return new DependencyCheck("redis", true, detail);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Readiness probe: Redis check failed.");
+            _cache.Remove(RedisCacheKey);
+            // Redis is a cache: a short failure memory keeps a broken Redis from
+            // adding timeout latency to every probe without hiding a real outage.
+            _cache.Set(RedisFailureCacheKey, true, TimeSpan.FromSeconds(
+                Math.Clamp(_options.RedisProbeCacheSeconds, 0, 60)));
             return new DependencyCheck("redis", false, "unreachable");
         }
     }
@@ -134,7 +175,7 @@ public sealed class ReadinessProbe
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(DatabaseTimeout);
+            timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(_options.DatabaseProbeTimeoutSeconds, 1, 60)));
 
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();

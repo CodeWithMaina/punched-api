@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using PunchedApi.Application.BackgroundProcessing;
 
 namespace PunchedApi.Application.Services;
 
@@ -19,76 +20,91 @@ public sealed record PaymentLedgerBatchOutcome(
 /// obligations that were never written (crash between settlement and obligation insert) and reports
 /// historical inconsistencies without touching them.</para>
 ///
-/// <para>No connection is held while waiting: the poll sleeps between batches and every attempt uses
-/// a short-lived context.</para>
+/// <para>No connection is held while waiting: the poll sleeps between batches (adaptive,
+/// jittered, and woken by new settlements) and every attempt uses a short-lived context.</para>
 /// </summary>
 public sealed class PaymentLedgerWorker : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly PaymentLedgerOptions _options;
     private readonly ILogger<PaymentLedgerWorker> _logger;
+    private readonly PollingProfile? _profile;
+    private readonly BackgroundProcessingMetrics _metrics;
+    private readonly IPollWakeChannel? _wakeChannel;
+    private readonly int _batchSize;
 
     public PaymentLedgerWorker(
         IServiceScopeFactory scopeFactory,
         IOptions<PaymentLedgerOptions> options,
-        ILogger<PaymentLedgerWorker> logger)
+        ILogger<PaymentLedgerWorker> logger,
+        BackgroundProcessingOptions? backgroundProcessing = null,
+        BackgroundProcessingMetrics? metrics = null,
+        IPollWakeChannel? wakeChannel = null)
     {
         _scopeFactory = scopeFactory;
         _options = options.Value;
         _logger = logger;
+        _profile = backgroundProcessing?.For(BackgroundProcessingOptions.Names.PaymentLedger);
+        _metrics = metrics ?? BackgroundProcessingMetrics.Shared;
+        _wakeChannel = wakeChannel;
+        _batchSize = Math.Max(1, _profile?.BatchSize ?? _options.BatchSize);
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!_options.Enabled)
         {
             _logger.LogInformation("PaymentLedgerWorker disabled by configuration.");
-            return;
+            return Task.CompletedTask;
         }
 
-        var poll = TimeSpan.FromSeconds(Math.Max(1, _options.PollIntervalSeconds));
         var reconcileEvery = TimeSpan.FromMinutes(Math.Max(1, _options.ReconciliationIntervalMinutes));
         var nextReconcile = _options.ReconcileOnStartup ? DateTime.UtcNow : DateTime.UtcNow.Add(reconcileEvery);
 
         _logger.LogInformation(
-            "PaymentLedgerWorker started. Claim {BatchSize} every {PollInterval}s; reconcile every {ReconcileMinutes} min.",
-            _options.BatchSize, poll.TotalSeconds, reconcileEvery.TotalMinutes);
+            "PaymentLedgerWorker starting: claim {BatchSize} per poll; reconcile every {ReconcileMinutes} min.",
+            _batchSize, reconcileEvery.TotalMinutes);
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
+        return AdaptivePollLoop.RunAsync(
+            BackgroundProcessingOptions.Names.PaymentLedger,
+            ResolveProfile(),
+            _logger,
+            _metrics,
+            async ct =>
             {
                 if (DateTime.UtcNow >= nextReconcile)
                 {
-                    await RunReconciliationAsync(stoppingToken);
+                    await RunReconciliationAsync(ct);
                     nextReconcile = DateTime.UtcNow.Add(reconcileEvery);
                 }
 
-                await ProcessBatchAsync(stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                // The loop must survive anything the database throws at it: the obligation rows are
-                // durable, so the work is still there when the next poll succeeds.
-                _logger.LogError(ex, "Payment-ledger worker cycle failed; outstanding obligations remain queued.");
-            }
-
-            try
-            {
-                await Task.Delay(poll, stoppingToken);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
-
-        _logger.LogInformation("PaymentLedgerWorker stopped.");
+                var outcome = await ProcessBatchAsync(ct);
+                return new PollWorkResult(
+                    outcome.Claimed,
+                    outcome.Created + outcome.AlreadyRecorded + outcome.FailedPermanently,
+                    outcome.Claimed >= _batchSize);
+            },
+            _wakeChannel,
+            stoppingToken);
     }
+
+    private PollingProfile ResolveProfile()
+    {
+        if (_profile is not null) return _profile;
+
+        var seconds = Math.Max(1, _options.PollIntervalSeconds);
+        return new PollingProfile
+        {
+            ActiveIntervalSeconds = Math.Max(1, Math.Min(2, seconds)),
+            FirstIdleIntervalSeconds = seconds,
+            MaxIdleIntervalSeconds = seconds,
+            BackoffMultiplier = 1,
+            JitterRatio = 0,
+            MaxIdleDurationSeconds = 0
+        };
+    }
+
+    /// <summary>Runs one outbox batch. Public so tests can drive processing deterministically.</summary>
 
     /// <summary>Runs one outbox batch. Public so tests can drive processing deterministically.</summary>
     public async Task<PaymentLedgerBatchOutcome> ProcessBatchAsync(CancellationToken cancellationToken = default)
