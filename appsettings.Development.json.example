@@ -91,5 +91,20 @@
     "attendance-clock": { "PermitLimit": 60 },
     "asset-upload": { "PermitLimit": 30 },
     "template-overrides": { "PermitLimit": 60 }
+  },
+  "//BackgroundProcessing": "Local development is latency-first (a notification should appear within a second or two), so scale-to-zero-friendly mode stays OFF. Production with Neon Free turns it ON and raises the idle cadence past Neon's 5-minute suspend window; see infra/NEON.md.",
+  "BackgroundProcessing": {
+    "ScaleToZeroFriendlyMode": false,
+    "ActiveIntervalSeconds": 1,
+    "FirstIdleIntervalSeconds": 5,
+    "MaxIdleIntervalSeconds": 20,
+    "BackoffMultiplier": 2.0,
+    "JitterRatio": 0.15,
+    "MaxIdleDurationSeconds": 60,
+    "WakeGraceSeconds": 30
+  },
+  "Health": {
+    "DatabaseProbeCacheSeconds": 5,
+    "DatabaseProbeTimeoutSeconds": 5
   }
 }
