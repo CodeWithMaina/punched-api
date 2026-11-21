@@ -19,31 +19,44 @@ public static class ProductionConfiguration
     private const long MinimumBodyBytes = 1024 * 1024;        // 1 MB
     private const long MaximumBodyBytes = 64 * 1024 * 1024;   // 64 MB
 
-    public static void ValidateForDeployment(
+    public static string ValidateForDeployment(
         IConfiguration configuration,
         IHostEnvironment environment,
         ILogger logger)
     {
-        if (environment.IsDevelopment() || environment.IsEnvironment("Testing"))
+        var identity = EnvironmentIdentity.Resolve(configuration);
+
+        // Never let a deployed process run in ASP.NET "Development" mode: it would
+        // load the developer's User Secrets and relax several checks below.
+        EnvironmentIdentity.EnsureDeploymentIsNotRunningAsDevelopment(configuration, environment);
+
+        if (!EnvironmentIdentity.IsDeployed(identity))
         {
-            return;
+            logger.LogInformation(
+                "Environment identity is '{Identity}' (developer workstation): deployment checks are skipped; " +
+                "User Secrets and appsettings.Development.json are the configuration sources.",
+                identity);
+            return identity;
         }
 
         var failures = new List<string>();
 
+        ValidateIdentity(identity, configuration, failures);
         ValidateHttpsUrl(configuration, "PublicApp:BaseUrl", failures);
         ValidateHttpsUrl(configuration, "PublicApp:ApiBaseUrl", failures);
         ValidateCorsOrigins(configuration, failures);
         ValidateRedis(configuration, failures);
         ValidateRequestLimits(configuration, failures);
+        ValidateCrossEnvironment(configuration, identity, failures);
 
         if (failures.Count > 0)
         {
             throw new InvalidOperationException(
-                $"Production configuration is invalid for environment '{environment.EnvironmentName}' " +
-                $"({failures.Count} problem(s)):{Environment.NewLine} • " +
-                string.Join($"{Environment.NewLine} • ", failures));
+                $"Configuration is invalid for environment '{identity}' ({failures.Count} problem(s)):" +
+                $"{Environment.NewLine} • {string.Join($"{Environment.NewLine} • ", failures)}");
         }
+
+        WarnAboutDeliberateNonProductionSettings(configuration, identity, logger);
 
         // Forwarded headers are how the API learns the real client IP and scheme
         // behind Caddy. Without them every request looks like it came from the
@@ -53,15 +66,152 @@ public static class ProductionConfiguration
         if (!configuration.GetValue("ForwardedHeaders:Enabled", false))
         {
             logger.LogWarning(
-                "ForwardedHeaders:Enabled is false in environment {Environment}. If this process runs behind " +
-                "Caddy (the supported topology) the client IP and request scheme will be wrong and per-IP rate " +
-                "limiting will not work. Set ForwardedHeaders__Enabled=true.",
-                environment.EnvironmentName);
+                "ForwardedHeaders:Enabled is false in environment {Identity}. If this process runs behind Caddy " +
+                "(the supported topology) the client IP and request scheme will be wrong and per-IP rate limiting " +
+                "will not work. Set ForwardedHeaders__Enabled=true.",
+                identity);
         }
 
-        logger.LogInformation(
-            "Production configuration validated for environment {Environment}.", environment.EnvironmentName);
+        logger.LogInformation("Configuration validated for environment {Identity}.", identity);
+        return identity;
     }
+    /// <summary>
+    /// Checks that the declared identity is consistent with the resources it was
+    /// given. Only safe metadata is inspected and reported — at most a host name,
+    /// never a full connection string, a password or a key.
+    /// </summary>
+    private static void ValidateIdentity(string identity, IConfiguration configuration, List<string> failures)
+    {
+        var databaseUrl = configuration["DATABASE_URL"];
+        if (string.IsNullOrWhiteSpace(databaseUrl))
+        {
+            failures.Add("DATABASE_URL is not set.");
+            return;
+        }
+
+        if (!Uri.TryCreate(databaseUrl, UriKind.Absolute, out var uri))
+        {
+            failures.Add("DATABASE_URL is not a valid postgresql:// URL.");
+            return;
+        }
+
+        if (!EnvironmentIdentity.IsProduction(identity))
+        {
+            return;
+        }
+
+        // A production process must never point at a workstation-local database.
+        if (IsLocalHost(uri.Host))
+        {
+            failures.Add(
+                $"Environment is 'production' but DATABASE_URL points at the local host '{uri.Host}'. " +
+                "Production must use the managed Neon endpoint.");
+        }
+
+        if (string.Equals(configuration["MediaStorage:Provider"], "local", StringComparison.OrdinalIgnoreCase))
+        {
+            failures.Add(
+                "Environment is 'production' but MediaStorage:Provider is 'local' (filesystem store). Use 'r2'.");
+        }
+    }
+
+    /// <summary>
+    /// Explicit deny-lists that stop one environment from reaching another's
+    /// resources even when a whole environment file is copied between them.
+    /// </summary>
+    private static void ValidateCrossEnvironment(
+        IConfiguration configuration,
+        string identity,
+        List<string> failures)
+    {
+        var databaseUrl = configuration["DATABASE_URL"];
+        var host = Uri.TryCreate(databaseUrl, UriKind.Absolute, out var dbUri) ? dbUri.Host : string.Empty;
+
+        foreach (var forbidden in SplitList(configuration["APP_FORBIDDEN_DB_HOSTS"]))
+        {
+            if (host.Contains(forbidden, StringComparison.OrdinalIgnoreCase))
+            {
+                failures.Add(
+                    $"Environment '{identity}' must not connect to '{host}': it matches APP_FORBIDDEN_DB_HOSTS " +
+                    $"entry '{forbidden}'. Use this environment's own database.");
+            }
+        }
+
+        var buckets = new[]
+        {
+            configuration["MediaStorage:PrivateBucket"],
+            configuration["MediaStorage:PublicBucket"]
+        };
+        foreach (var forbidden in SplitList(configuration["APP_FORBIDDEN_STORAGE_BUCKETS"]))
+        {
+            foreach (var bucket in buckets)
+            {
+                if (!string.IsNullOrWhiteSpace(bucket)
+                    && bucket.Contains(forbidden, StringComparison.OrdinalIgnoreCase))
+                {
+                    failures.Add(
+                        $"Environment '{identity}' must not use bucket '{bucket}': it matches " +
+                        $"APP_FORBIDDEN_STORAGE_BUCKETS entry '{forbidden}'.");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Settings that are legitimate but must never travel to production unnoticed.
+    /// Warnings only — none of them is unsafe on its own.
+    /// </summary>
+    private static void WarnAboutDeliberateNonProductionSettings(
+        IConfiguration configuration,
+        string identity,
+        ILogger logger)
+    {
+        if (configuration.GetValue("Daraja:Sandbox", false)
+            && configuration.GetValue("Daraja:AllowMockClient", false))
+        {
+            logger.LogWarning(
+                "Environment {Identity} uses the Daraja sandbox with the mock client: no real M-PESA request will " +
+                "be made. Expected outside production; confirm before enabling live payments.",
+                identity);
+        }
+
+        var explicitlyAllowedEmail = string.Equals(
+            configuration["APP_ALLOW_EXTERNAL_EMAIL"], "true", StringComparison.OrdinalIgnoreCase);
+
+        if (configuration.GetValue("Email:Enabled", false)
+            && !EnvironmentIdentity.IsProduction(identity)
+            && !explicitlyAllowedEmail)
+        {
+            logger.LogWarning(
+                "Environment {Identity} has Email:Enabled=true: real messages would be sent from a non-production " +
+                "identity. Set APP_ALLOW_EXTERNAL_EMAIL=true to acknowledge, or disable Email:Enabled.",
+                identity);
+        }
+
+        if (!EnvironmentIdentity.IsProduction(identity) && SplitList(configuration["APP_FORBIDDEN_DB_HOSTS"]).Length == 0)
+        {
+            logger.LogWarning(
+                "APP_FORBIDDEN_DB_HOSTS is empty in environment {Identity}. Add the production database host so a " +
+                "copied environment file cannot reach live data.",
+                identity);
+        }
+    }
+
+    private static string[] SplitList(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? []
+            : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static bool IsLocalHost(string host) =>
+        string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(host, "host.docker.internal", StringComparison.OrdinalIgnoreCase)
+        || host.StartsWith("127.", StringComparison.Ordinal)
+        || host.StartsWith("10.", StringComparison.Ordinal)
+        || host.StartsWith("192.168.", StringComparison.Ordinal)
+        || host.EndsWith(".local", StringComparison.OrdinalIgnoreCase)
+        || host.EndsWith(".test", StringComparison.OrdinalIgnoreCase);
+
+
 
     private static void ValidateHttpsUrl(IConfiguration configuration, string key, List<string> failures)
     {

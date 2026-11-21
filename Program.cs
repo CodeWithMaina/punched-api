@@ -66,6 +66,27 @@ try
     var hostRole = HostRole.Resolve(builder.Configuration);
     var isWorkerProcess = hostRole == HostRole.Worker;
 
+    // ── Optional file-based secrets ────────────────────────────────────────
+    // Opt-in (docker-compose.secrets.yml): a directory where the FILE NAME is the
+    // configuration key and the CONTENT is the value. Root-owned, read-only, and
+    // mounted at /secrets. Added AFTER the default providers so it outranks
+    // environment variables, and skipped entirely when unset — the single
+    // environment file stays the default model.
+    var secretsDirectory = builder.Configuration["Secrets:Directory"];
+    if (!string.IsNullOrWhiteSpace(secretsDirectory))
+    {
+        if (Directory.Exists(secretsDirectory))
+        {
+            builder.Configuration.AddKeyPerFile(secretsDirectory, optional: true, reloadOnChange: false);
+        }
+        else
+        {
+            Log.Warning(
+                "Secrets:Directory is set to {Directory} but it does not exist; continuing with the environment file only.",
+                secretsDirectory);
+        }
+    }
+
     // Kestrel is never the public listener (Caddy is), but it still owns the
     // first-line limits. Sizes are configuration-driven so one deployment can be
     // tuned without a rebuild.
@@ -1071,14 +1092,20 @@ try
 
     // ── Fail-fast deployment configuration checks ───────────
     // Runs before any request is served (and before migrations): a deployment
-    // with an http public URL, a localhost CORS origin or a passwordless Redis
-    // connection fails at startup instead of surfacing hours later.
-    ProductionConfiguration.ValidateForDeployment(app.Configuration, app.Environment, app.Logger);
+    // with an http public URL, a localhost CORS origin, a passwordless Redis
+    // connection or a production identity pointed at a developer machine fails at
+    // startup instead of surfacing hours later. Returns the resolved environment
+    // identity (local | development | staging | production).
+    var environmentIdentity = ProductionConfiguration.ValidateForDeployment(
+        app.Configuration, app.Environment, app.Logger);
+
     app.Logger.LogInformation(
-        "Process role: {Role} (PUNCHED_ROLE), workers enabled: {WorkersEnabled}, environment: {Environment}",
+        "Process role: {Role} (PUNCHED_ROLE), environment identity: {Identity} (APP_ENV_NAME), " +
+        "ASPNETCORE_ENVIRONMENT: {AspNetEnvironment}, workers enabled: {WorkersEnabled}",
         hostRole,
-        app.Configuration.GetValue("WORKERS_ENABLED", true),
-        app.Environment.EnvironmentName);
+        environmentIdentity,
+        app.Environment.EnvironmentName,
+        app.Configuration.GetValue("WORKERS_ENABLED", true));
 
     if (args.Length > 0)
     {
