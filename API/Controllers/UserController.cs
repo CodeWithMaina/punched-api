@@ -100,6 +100,57 @@ public class UserController : ControllerBase
     }
 
     /// <summary>
+    /// One filtered, sorted and paged page of the authenticated user's inbox.
+    ///
+    /// <para>This is the endpoint the notification module reads. It returns the rows, the unread
+    /// count for the same scope (so a badge never has to guess), and the filter values that
+    /// actually occur in the caller's own notifications — so the UI offers real choices.
+    /// A supplied <c>businessId</c> is verified against the caller's memberships server-side.</para>
+    /// </summary>
+    [HttpGet("notifications/inbox")]
+    [ProducesResponseType(typeof(ApiResponse<NotificationInboxPageDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> GetNotificationInbox(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 25,
+        [FromQuery] string? status = null,
+        [FromQuery] string? type = null,
+        [FromQuery] string? category = null,
+        [FromQuery] DateTime? fromUtc = null,
+        [FromQuery] DateTime? toUtc = null,
+        [FromQuery] string? sort = null,
+        [FromQuery] string? direction = null,
+        [FromQuery] Guid? businessId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        NoStore();
+        var result = await _notificationsService.GetInboxAsync(
+            userId.Value,
+            new NotificationInboxQuery
+            {
+                Page = page,
+                PageSize = pageSize,
+                Status = status,
+                Type = type,
+                Category = category,
+                FromUtc = fromUtc,
+                ToUtc = toUtc,
+                Sort = sort,
+                Direction = direction,
+                BusinessId = businessId,
+            },
+            cancellationToken);
+
+        if (!result.Success)
+            return StatusCode(StatusCodes.Status403Forbidden, result);
+
+        return Ok(result);
+    }
+
+    /// <summary>
     /// Mark one notification (or all) as read for the authenticated user.
     /// </summary>
     [HttpPost("notifications/read")]

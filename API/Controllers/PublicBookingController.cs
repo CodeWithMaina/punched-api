@@ -34,12 +34,76 @@ namespace PunchedApi.API.Controllers;
 public class PublicBookingController : ControllerBase
 {
     private readonly IPublicBookingService _publicBooking;
+    private readonly BookingHoldService _holds;
     private readonly ITenantContext? _tenant;
+    private readonly IConfiguration _configuration;
 
-    public PublicBookingController(IPublicBookingService publicBooking, ITenantContext? tenant = null)
+    public PublicBookingController(
+        IPublicBookingService publicBooking,
+        BookingHoldService holds,
+        IConfiguration configuration,
+        ITenantContext? tenant = null)
     {
         _publicBooking = publicBooking;
+        _holds = holds;
+        _configuration = configuration;
         _tenant = tenant;
+    }
+
+    /// <summary>
+    /// Holds the chosen slot while the customer pays the booking fee.
+    ///
+    /// <para>This is the step that stops two customers paying for the same time: the interval is
+    /// claimed for a bounded window and released by itself if the payment never arrives. The
+    /// response carries the deadline and the seconds remaining, so the page's countdown is the
+    /// backend's own clock rather than a guess.</para>
+    /// </summary>
+    [HttpPost("{businessId:guid}/public-bookings/holds")]
+    [AllowAnonymous]
+    [EnableRateLimiting("public-booking")]
+    [ProducesResponseType(typeof(ApiResponse<BookingHoldResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<BookingHoldResponse>), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(ApiResponse<BookingHoldResponse>), StatusCodes.Status422UnprocessableEntity)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    public async Task<IActionResult> Hold(
+        Guid businessId, [FromBody] CreateBookingHoldRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _holds.CreateAsync(
+            businessId,
+            request,
+            _tenant?.BusinessId,
+            _configuration.GetValue<int?>("Booking:SlotHoldMinutes"),
+            cancellationToken);
+
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// The hold's live state — what the page reads to resynchronise its countdown with the server.
+    /// </summary>
+    [HttpGet("{businessId:guid}/public-bookings/holds/{holdId:guid}")]
+    [AllowAnonymous]
+    [EnableRateLimiting("public-booking")]
+    [ProducesResponseType(typeof(ApiResponse<BookingHoldResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetHold(
+        Guid businessId, Guid holdId, CancellationToken cancellationToken)
+    {
+        var result = await _holds.GetAsync(businessId, holdId, cancellationToken);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>Gives a hold up, so the slot is free the moment the customer leaves the flow.</summary>
+    [HttpDelete("{businessId:guid}/public-bookings/holds/{holdId:guid}")]
+    [AllowAnonymous]
+    [EnableRateLimiting("public-booking")]
+    [ProducesResponseType(typeof(ApiResponse<BookingHoldResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> ReleaseHold(
+        Guid businessId, Guid holdId, CancellationToken cancellationToken)
+    {
+        var result = await _holds.ReleaseAsync(businessId, holdId, cancellationToken);
+        return result.Success ? Ok(result) : MapFailure(result);
     }
 
     /// <summary>
@@ -104,9 +168,10 @@ public class PublicBookingController : ControllerBase
             // A slot taken while the customer was choosing is a conflict; the customer has to pick
             // another time. Anything else they can fix (details, payment option) is a 422.
             "STAFF_TIME_UNAVAILABLE" or "OVERBOOKING" or "SLOT_UNAVAILABLE"
-                or "CONCURRENT_MODIFICATION" => Conflict(result),
+                or "CONCURRENT_MODIFICATION" or "RESERVATION_EXPIRED" => Conflict(result),
             "PAYMENT_OPTION_DISABLED" or "PAYMENT_OPTION_REQUIRED" or "BOOKING_UNAVAILABLE"
-                or "VALIDATION_ERROR" => StatusCode(StatusCodes.Status422UnprocessableEntity, result),
+                or "VALIDATION_ERROR" or "RESERVATION_REQUIRED" or "RESERVATION_MISMATCH"
+                or "PAYMENT_PROOF_REQUIRED" => StatusCode(StatusCodes.Status422UnprocessableEntity, result),
             _ => BadRequest(result),
         };
 }

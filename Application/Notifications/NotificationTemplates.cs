@@ -20,6 +20,7 @@ public static class NotificationTemplates
         Add(templates, "appointment.reschedule_withdrawn", "Reschedule withdrawn", "Reschedule withdrawn", "A reschedule request for {{businessName}} at {{scheduledAt}} was withdrawn.");
         Add(templates, "appointment.reschedule_expired", "Reschedule request expired", "Reschedule request expired", "The reschedule request for your appointment with {{businessName}} at {{scheduledAt}} expired without a decision.");
         Add(templates, "appointment.staff_assigned", "Appointment assigned", "Appointment assigned", "You have been assigned an appointment at {{businessName}} for {{scheduledAt}}.");
+        Add(templates, "appointment.booking_requested", "New booking to confirm", "A booking is waiting for you", "{{businessName}} has a new booking for {{scheduledAt}} whose booking fee the customer has submitted. Open the appointment to check the payment and confirm it.");
         Add(templates, "commission.approved", "Commission approved", "Commission approved", "{{amount}} of commission at {{businessName}} has been approved and is ready to be paid.");
         Add(templates, "commission.adjusted", "Commission adjusted", "Commission adjusted", "Your commission at {{businessName}} was adjusted by {{amount}}. Reason: {{reason}}.");
         Add(templates, "commission.payout_recorded", "Commission paid", "Commission paid", "{{businessName}} recorded a commission payout of {{amount}} to you (reference {{reference}}).");

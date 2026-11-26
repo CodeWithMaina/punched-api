@@ -166,6 +166,141 @@ public sealed class BusinessNotificationSettingsService
         };
     }
 
+    /// <summary>
+    /// One page of this business's delivery records, with server-side filtering, sorting and
+    /// paging.
+    ///
+    /// <para><b>Why server-side.</b> The overview answers "how healthy is delivery?" over a
+    /// window; this answers "what exactly was sent?" and the answer grows without bound. Filtering
+    /// and sorting in memory would mean shipping every row to the browser to show twenty-five of
+    /// them, so the predicate and the window are both applied in the query and only the requested
+    /// page is materialised.</para>
+    ///
+    /// <para>Test sends are excluded here exactly as they are in the overview: they are the
+    /// business's own probes, not notifications their customers received.</para>
+    /// </summary>
+    public async Task<BusinessNotificationActivityPageDto> GetActivityAsync(
+        Guid businessId,
+        BusinessNotificationActivityQuery query,
+        CancellationToken ct = default)
+    {
+        var page = Math.Max(1, query.Page);
+        var pageSize = Math.Clamp(query.PageSize, 1, 100);
+
+        // Everything in this business, minus test sends: the base set that the facet lists describe.
+        var scope = _context.NotificationLogs
+            .AsNoTracking()
+            .Where(row => row.BusinessId == businessId
+                && (row.TemplateKey == null || !row.TemplateKey.StartsWith(TestTemplateKeyPrefix)));
+
+        // Facets come from the scoped set, so a filter control can only ever offer a value that
+        // exists here. Three small projections rather than loading the rows.
+        var availableTypes = await scope
+            .Select(row => row.TemplateType).Distinct().OrderBy(value => value).ToListAsync(ct);
+        var availableChannels = await scope
+            .Select(row => row.Channel).Distinct().OrderBy(value => value).ToListAsync(ct);
+        var availableStatuses = await scope
+            .Select(row => row.Status).Distinct().OrderBy(value => value).ToListAsync(ct);
+
+        var filtered = scope;
+
+        if (!string.IsNullOrWhiteSpace(query.Type))
+        {
+            var type = query.Type.Trim();
+            filtered = filtered.Where(row => row.TemplateType == type);
+        }
+
+        if (!string.IsNullOrWhiteSpace(query.Channel))
+        {
+            var channel = query.Channel.Trim();
+            filtered = filtered.Where(row => row.Channel == channel);
+        }
+
+        if (!string.IsNullOrWhiteSpace(query.Status))
+        {
+            var status = query.Status.Trim();
+            filtered = filtered.Where(row => row.Status == status);
+        }
+
+        if (query.FromUtc is DateTime from)
+        {
+            var fromUtc = from.ToUniversalTime();
+            filtered = filtered.Where(row => row.CreatedAt >= fromUtc);
+        }
+
+        if (query.ToUtc is DateTime to)
+        {
+            var toUtc = to.ToUniversalTime();
+            filtered = filtered.Where(row => row.CreatedAt <= toUtc);
+        }
+
+        // Free text is matched against the type only. The recipient lives behind a masking
+        // projection, so matching on it would require loading every row to mask it first.
+        if (!string.IsNullOrWhiteSpace(query.Search))
+        {
+            var term = query.Search.Trim();
+            filtered = filtered.Where(row => row.TemplateType.Contains(term));
+        }
+
+        var totalCount = await filtered.CountAsync(ct);
+
+        var descending = !string.Equals(query.Direction, "asc", StringComparison.OrdinalIgnoreCase);
+        var rows = (query.Sort?.Trim().ToLowerInvariant()) switch
+        {
+            "type" => descending
+                ? filtered.OrderByDescending(row => row.TemplateType).ThenByDescending(row => row.CreatedAt)
+                : filtered.OrderBy(row => row.TemplateType).ThenBy(row => row.CreatedAt),
+            "status" => descending
+                ? filtered.OrderByDescending(row => row.Status).ThenByDescending(row => row.CreatedAt)
+                : filtered.OrderBy(row => row.Status).ThenBy(row => row.CreatedAt),
+            "channel" => descending
+                ? filtered.OrderByDescending(row => row.Channel).ThenByDescending(row => row.CreatedAt)
+                : filtered.OrderBy(row => row.Channel).ThenBy(row => row.CreatedAt),
+            _ => descending
+                ? filtered.OrderByDescending(row => row.CreatedAt)
+                : filtered.OrderBy(row => row.CreatedAt),
+        };
+
+        var pageRows = await rows
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(row => new OverviewRow(
+                row.Id, row.UserId, row.Channel, row.TemplateType, row.Status,
+                row.CreatedAt, row.DeliveredAt))
+            .ToListAsync(ct);
+
+        var contacts = await LoadContactsAsync(pageRows.Select(row => row.UserId).Distinct().ToList(), ct);
+
+        var items = pageRows.Select(row =>
+        {
+            contacts.TryGetValue(row.UserId, out var contact);
+            return new BusinessNotificationActivityDto
+            {
+                Id = row.Id,
+                Channel = row.Channel,
+                NotificationType = row.TemplateType,
+                Status = row.Status,
+                RecipientMasked = NotificationManagementShared.MaskRecipient(
+                    contact.Email, contact.PhoneNumber, row.UserId),
+                IsTest = false,
+                CreatedAtUtc = row.CreatedAt,
+                DeliveredAtUtc = row.DeliveredAt,
+            };
+        }).ToList();
+
+        return new BusinessNotificationActivityPageDto
+        {
+            Items = items,
+            TotalCount = totalCount,
+            Page = page,
+            PageSize = pageSize,
+            TotalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize),
+            AvailableTypes = availableTypes,
+            AvailableChannels = availableChannels,
+            AvailableStatuses = availableStatuses,
+        };
+    }
+
     private static (string Status, string Detail) DescribeSystemStatus(
         int total,
         int sent,

@@ -62,7 +62,13 @@ public class PaymentExpiryWorker : BackgroundService
                 if (lapsed > 0)
                     _logger.LogInformation("PaymentExpiryWorker lapsed {Count} unverified payment submission(s).", lapsed);
 
-                return expired + lapsed;
+                // Lapsed slot holds are already ignored by every availability read (the deadline is
+                // part of the predicate), so this only tidies their status for reporting. It is
+                // housekeeping, never the thing that frees the slot.
+                var holds = scope.ServiceProvider.GetRequiredService<BookingHoldService>();
+                var releasedHolds = await holds.ExpireLapsedAsync(ct: ct);
+
+                return expired + lapsed + releasedHolds;
             },
             stoppingToken);
 }

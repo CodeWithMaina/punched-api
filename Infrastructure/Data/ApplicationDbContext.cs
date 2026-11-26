@@ -75,6 +75,9 @@ public class ApplicationDbContext : DbContext
     public DbSet<Appointment> Appointments => Set<Appointment>();
     public DbSet<AppointmentStatusHistory> AppointmentStatusHistory => Set<AppointmentStatusHistory>();
     public DbSet<AppointmentResource> AppointmentResources => Set<AppointmentResource>();
+
+    /// <summary>Temporary claims on a staff member's time while a booking fee is paid.</summary>
+    public DbSet<AppointmentSlotHold> AppointmentSlotHolds => Set<AppointmentSlotHold>();
     public DbSet<ServiceCatalogItem> ServiceCatalogItems => Set<ServiceCatalogItem>();
     public DbSet<StaffServiceAssignment> StaffServiceAssignments => Set<StaffServiceAssignment>();
     public DbSet<StaffServiceCategory> StaffServiceCategories => Set<StaffServiceCategory>();
@@ -85,6 +88,9 @@ public class ApplicationDbContext : DbContext
 
     public DbSet<RescheduleRequest> RescheduleRequests => Set<RescheduleRequest>();
     public DbSet<StaffInvitation> StaffInvitations => Set<StaffInvitation>();
+
+    /// <summary>Append-only staff lifecycle audit trail (read via a single owner endpoint).</summary>
+    public DbSet<StaffAuditEvent> StaffAuditEvents => Set<StaffAuditEvent>();
     public DbSet<Module> Modules => Set<Module>();
     public DbSet<SubscriptionPlan> SubscriptionPlans => Set<SubscriptionPlan>();
     public DbSet<PlanModule> PlanModules => Set<PlanModule>();

@@ -56,7 +56,13 @@ public interface IAppointmentService
         bool payAfterService,
         string? bookingRequestKey,
         Func<Guid, Payment?>? bookingFeeFactory = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        // The status the booking starts in: `pending_payment` when a booking fee has been
+        // submitted and is awaiting verification, otherwise `booked`.
+        string? initialStatus = null,
+        // The temporary hold this booking converts. Consumed in the same transaction, so the claim
+        // on the interval hands over from the reservation to the appointment.
+        Guid? convertHoldId = null);
 
     /// <summary>Reschedules an existing appointment inside a transactional overlap guard. Customer calls create a pending request instead.</summary>
     Task<ApiResponse<AppointmentResponse>> RescheduleAsync(Guid callerUserId, string role, Guid appointmentId, RescheduleAppointmentRequest request);

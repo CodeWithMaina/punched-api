@@ -73,6 +73,52 @@ public sealed class BusinessNotificationsController : ControllerBase
         return Ok(ApiResponse<BusinessNotificationOverviewDto>.Ok(result));
     }
 
+    // ── Delivery records ─────────────────────────────────────
+
+    /// <summary>
+    /// One page of this business's notification records, filtered, sorted and paged server-side.
+    /// </summary>
+    [HttpGet("activity")]
+    [ProducesResponseType(typeof(ApiResponse<BusinessNotificationActivityPageDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> GetActivity(
+        Guid businessId,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 25,
+        [FromQuery] string? type = null,
+        [FromQuery] string? channel = null,
+        [FromQuery] string? status = null,
+        [FromQuery] string? search = null,
+        [FromQuery] DateTime? fromUtc = null,
+        [FromQuery] DateTime? toUtc = null,
+        [FromQuery] string? sort = null,
+        [FromQuery] string? direction = null,
+        CancellationToken cancellationToken = default)
+    {
+        NoStore();
+        await EnsureTenantAccessAsync(businessId, cancellationToken);
+
+        var result = await _service.GetActivityAsync(
+            businessId,
+            new BusinessNotificationActivityQuery
+            {
+                Page = page,
+                PageSize = pageSize,
+                Type = type,
+                Channel = channel,
+                Status = status,
+                Search = search,
+                FromUtc = fromUtc,
+                ToUtc = toUtc,
+                Sort = sort,
+                Direction = direction,
+            },
+            cancellationToken);
+
+        return Ok(ApiResponse<BusinessNotificationActivityPageDto>.Ok(result));
+    }
+
     // ── Channels ────────────────────────────────────────────
 
     /// <summary>Per-channel configuration, with platform restrictions made explicit.</summary>

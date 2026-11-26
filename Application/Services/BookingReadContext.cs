@@ -72,8 +72,14 @@ public sealed class BookingReadFanout : IDisposable
 }
 
 /// <summary>One reserved interval of a staff member's diary.</summary>
+/// <param name="StaffUserId">Whose diary is claimed.</param>
+/// <param name="StartUtc">Start of the claimed interval.</param>
+/// <param name="EndUtc">End of the claimed interval.</param>
+/// <param name="AppointmentId">The appointment claiming it, or <see cref="Guid.Empty"/> for a hold.</param>
+/// <param name="HoldId">The temporary hold claiming it, when the claim is not (yet) a booking.</param>
 public sealed record StaffBusyInterval(
-    Guid StaffUserId, DateTime StartUtc, DateTime EndUtc, Guid AppointmentId);
+    Guid StaffUserId, DateTime StartUtc, DateTime EndUtc, Guid AppointmentId, Guid? HoldId = null);
+
 /// <summary>
 /// The customer record a storefront booking belongs to, matched inside the same read wave
 /// as the rest of the booking context.
@@ -237,6 +243,10 @@ public sealed class BookingReadContextLoader
         var rangeEndUtc = endDate.AddDays(2).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
         var reservingStatuses = AppointmentReservations.ReservingStatuses.ToArray();
 
+        // One clock reading for the whole snapshot: a hold's deadline is compared against it, so
+        // every read in this wave agrees about what "now" is.
+        var nowUtc = DateTime.UtcNow;
+
         var reads = new List<Func<ApplicationDbContext, Task<object>>>
         {
             // 0 - the business itself.
@@ -300,7 +310,7 @@ public sealed class BookingReadContextLoader
                     && a.StaffUserId != null
                     && reservingStatuses.Contains(a.Status)
                     && a.ScheduledAt < rangeEndUtc && a.EndAt > rangeStartUtc)
-                .Select(a => new StaffBusyInterval(a.StaffUserId!.Value, a.ScheduledAt, a.EndAt, a.Id))
+                .Select(a => new StaffBusyInterval(a.StaffUserId!.Value, a.ScheduledAt, a.EndAt, a.Id, null))
                 .ToListAsync(ct),
 
             // 10 - payment configuration (booking writes only).
@@ -331,7 +341,19 @@ public sealed class BookingReadContextLoader
                 : (await db.Appointments.AsNoTracking()
                     .Include(a => a.Resources)
                     .FirstOrDefaultAsync(a => a.BusinessId == businessId
-                        && a.BookingRequestKey == bookingRequestKey, ct))!
+                        && a.BookingRequestKey == bookingRequestKey, ct))!,
+
+            // 14 - live temporary holds. A hold blocks its interval exactly like a booking while
+            //      it is active AND unexpired; the deadline is compared here, in the query, so a
+            //      lapsed hold stops blocking the moment it lapses without waiting for a sweep.
+            async db => await db.AppointmentSlotHolds.AsNoTracking()
+                .Where(h => h.BusinessId == businessId
+                    && h.Status == AppointmentSlotHoldStatuses.Active
+                    && h.ExpiresAtUtc > nowUtc
+                    && h.StartsAtUtc < rangeEndUtc && h.EndsAtUtc > rangeStartUtc)
+                .Select(h => new StaffBusyInterval(
+                    h.StaffUserId, h.StartsAtUtc, h.EndsAtUtc, Guid.Empty, h.Id))
+                .ToListAsync(ct)
         };
 
         var results = _fanout != null
@@ -352,6 +374,14 @@ public sealed class BookingReadContextLoader
         var reminderJson = results[11] as string;
         var customerMatch = results[12] as BookingCustomerMatch;
         var existingBooking = results[13] as Appointment;
+        var holds = (List<StaffBusyInterval>)results[14];
+
+        // Bookings and live holds claim time in exactly the same way, so the grid and the booking
+        // write see one merged diary per member. A hold that has lapsed never reaches here.
+        if (holds.Count > 0)
+        {
+            busy = busy.Concat(holds).ToList();
+        }
 
         // The Staff module decides whether a multi-staff roster exists at all. Resolved
         // through the platform entitlement service (memory-cached), never a local flag.

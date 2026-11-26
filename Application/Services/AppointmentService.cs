@@ -217,20 +217,50 @@ public class AppointmentService : IAppointmentService
     }
 
     /// <summary>
-    /// Fine-grained permission gate (G6): staff members do NOT hold
-    /// <c>appointments.manage</c> (PermissionMatrix), so staff creating business
-    /// appointments on behalf of customers is forbidden. Distinct from
-    /// MODULE_DISABLED — this is a permission failure, not an entitlement one.
-    /// Confirm/complete/no-show transitions, plus reschedule/cancel of a staff
-    /// member's OWN appointments, remain allowed (staff workflow, not
-    /// business-appointment management).
+    /// Fine-grained permission gate for staff-initiated bookings.
+    ///
+    /// <para>The permission lives in the business's RBAC (<c>appointments.create</c>):
+    /// an owner grants it to a role, and the member holds it through their role
+    /// assignment. Reading the business permission rather than a hard-coded persona
+    /// check is what lets a business decide whether its service professionals may
+    /// book customers in, instead of the platform deciding for them.</para>
+    ///
+    /// <para>Distinct from MODULE_DISABLED — this is a permission failure, not an
+    /// entitlement one.</para>
     /// </summary>
-    private ApiResponse<AppointmentResponse>? StaffCreatePermissionGuard(string role) =>
-        IsRole(role, "Staff") && !_permissionService.HasPermission("Staff", "appointments.create")
-            ? ApiResponse<AppointmentResponse>.Fail(
+    private async Task<ApiResponse<AppointmentResponse>?> StaffCreatePermissionGuardAsync(
+        Guid callerUserId, Guid businessId)
+        => await _permissionService.HasBusinessPermissionAsync(callerUserId, businessId, "appointments.create")
+            ? null
+            : ApiResponse<AppointmentResponse>.Fail(
                 "FORBIDDEN",
-                "Staff members do not have permission to create business appointments (appointments.create required).")
-            : null;
+                "You do not have permission to create appointments (appointments.create required).");
+
+    /// <summary>
+    /// Which member a staff-initiated booking may occupy.
+    ///
+    /// <para>By default a member books <b>themselves</b>. Assigning somebody else is a
+    /// management action and needs <c>appointments.manage</c>, so one service
+    /// professional cannot quietly fill a colleague's diary. The business owner and
+    /// the front desk hold that permission.</para>
+    /// </summary>
+    private async Task<(Guid? StaffUserId, ApiResponse<AppointmentResponse>? Error)>
+        ResolveStaffCreateAssignmentAsync(Guid callerUserId, Guid businessId, Guid? requestedStaffUserId)
+    {
+        var target = requestedStaffUserId ?? callerUserId;
+
+        if (target != callerUserId)
+        {
+            var mayAssignOthers = await _permissionService.HasBusinessPermissionAsync(
+                callerUserId, businessId, "appointments.manage");
+
+            if (!mayAssignOthers)
+                return (null, ApiResponse<AppointmentResponse>.Fail(
+                    "FORBIDDEN", "You can only create appointments for yourself."));
+        }
+
+        return (target, null);
+    }
 
     // ═══════════════════════════════════════════════════════════
     //  AVAILABILITY
@@ -281,7 +311,9 @@ public class AppointmentService : IAppointmentService
         bool payAfterService,
         string? bookingRequestKey,
         Func<Guid, Payment?>? bookingFeeFactory = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? initialStatus = null,
+        Guid? convertHoldId = null)
     {
         var distinctRequested = serviceIds.Distinct().ToArray();
 
@@ -359,6 +391,11 @@ public class AppointmentService : IAppointmentService
             }
 
             var busy = read.BusyFor(staff.Id);
+            // The hold this booking converts is not a competing claim: it IS this booking's claim,
+            // already handed over, so it must not read as somebody else's reservation.
+            if (convertHoldId is Guid convertingHold)
+                busy = busy.Where(b => b.HoldId != convertingHold).ToList();
+
             if (busy.Any(b => AppointmentReservations.Overlaps(b.StartUtc, b.EndUtc, startUtc, endUtc)))
             {
                 sawBooked = true;
@@ -392,7 +429,9 @@ public class AppointmentService : IAppointmentService
             reminderOffsetMinutesJson: read.ReminderOffsetMinutesJson,
             bookingFeeFactory: bookingFeeFactory,
             bookingRequestKey: bookingRequestKey,
-            skipWinBackCancel: read.CustomerMatch == null);
+            skipWinBackCancel: read.CustomerMatch == null,
+            initialStatus: initialStatus,
+            convertHoldId: convertHoldId);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -408,6 +447,9 @@ public class AppointmentService : IAppointmentService
 
         // Resolve the caller's tenant business id.
         Guid businessId;
+        // Which member the booking will occupy. A staff caller is pinned to themselves
+        // unless they hold appointments.manage; a customer's explicit choice is honoured.
+        var staffForBooking = request.StaffUserId;
         if (IsRole(role, "Business"))
         {
             var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.OwnerId == callerUserId);
@@ -419,12 +461,17 @@ public class AppointmentService : IAppointmentService
         }
         else if (IsRole(role, "Staff"))
         {
-            var createGuard = StaffCreatePermissionGuard(role);
+            var createGuard = await StaffCreatePermissionGuardAsync(callerUserId, request.BusinessId);
             if (createGuard != null) return createGuard;
 
             if (!await IsStaffOfBusinessAsync(callerUserId, request.BusinessId))
                 return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "You are not authorized for this business.");
             businessId = request.BusinessId;
+
+            var assignment = await ResolveStaffCreateAssignmentAsync(
+                callerUserId, businessId, request.StaffUserId);
+            if (assignment.Error != null) return assignment.Error;
+            staffForBooking = assignment.StaffUserId;
         }
         else
         {
@@ -480,7 +527,7 @@ public class AppointmentService : IAppointmentService
 
         var totalMinutes = services.Sum(s => s.DurationMinutes);
 
-        var (staff, staffError, staffMsg) = await ResolveStaffAsync(businessId, request.StaffUserId, request.ServiceIds);
+        var (staff, staffError, staffMsg) = await ResolveStaffAsync(businessId, staffForBooking, request.ServiceIds);
         if (staffError != null)
             return ApiResponse<AppointmentResponse>.Fail(staffError, staffMsg!);
 
@@ -516,6 +563,8 @@ public class AppointmentService : IAppointmentService
 
         Guid businessId;
         Business? business = null;
+        // Which member the booking will occupy (see CreateAppointmentAsync).
+        var staffForBooking = request.StaffUserId;
         if (IsRole(role, "Business"))
         {
             // Loaded once and carried the rest of the way: the availability resolver,
@@ -531,12 +580,17 @@ public class AppointmentService : IAppointmentService
         }
         else if (IsRole(role, "Staff"))
         {
-            var createGuard = StaffCreatePermissionGuard(role);
+            var createGuard = await StaffCreatePermissionGuardAsync(callerUserId, request.BusinessId);
             if (createGuard != null) return createGuard;
 
             if (!await IsStaffOfBusinessAsync(callerUserId, request.BusinessId))
                 return ApiResponse<AppointmentResponse>.Fail("FORBIDDEN", "You are not authorized for this business.");
             businessId = request.BusinessId;
+
+            var assignment = await ResolveStaffCreateAssignmentAsync(
+                callerUserId, businessId, request.StaffUserId);
+            if (assignment.Error != null) return assignment.Error;
+            staffForBooking = assignment.StaffUserId;
         }
         else
         {
@@ -584,7 +638,7 @@ public class AppointmentService : IAppointmentService
             customerRow.AvatarUrl,
             customerRow.Enrollment.Type == CustomerType.Guest ? "guest" : "registered");
 
-        var (staff, staffError, staffMsg) = await ResolveStaffAsync(businessId, request.StaffUserId, request.ServiceIds);
+        var (staff, staffError, staffMsg) = await ResolveStaffAsync(businessId, staffForBooking, request.ServiceIds);
         if (staffError != null)
             return ApiResponse<AppointmentResponse>.Fail(staffError, staffMsg!);
 
@@ -2101,19 +2155,23 @@ public class AppointmentService : IAppointmentService
     // ═══════════════════════════════════════════════════════════
 
     /// <summary>
-    /// The status a new booking starts in: <b>booked</b>.
+    /// The status a new booking starts in.
     ///
-    /// <para><b>Why this is no longer conditional.</b> It used to come back
-    /// <see cref="AppointmentStatuses.PendingPayment"/> for a business that collects a booking fee,
-    /// which made the appointment's existence depend on the payment being verified: a booking could
-    /// sit unconfirmed — and eventually be cancelled — because a receipt had not been checked yet.
-    /// That is the wrong way round. A booking is confirmed by the business's own rules about time
-    /// and availability; whether money has been verified is a separate fact about money, reported
-    /// on the payment and shown next to the appointment. So every booking starts Booked, and the
-    /// status machine still carries <see cref="AppointmentStatuses.PendingPayment"/> for a business
-    /// that chooses to hold a slot that way explicitly.</para>
+    /// <para><c>booked</c> is the ordinary case: a booking is confirmed by the business's own rules
+    /// about time and availability, and whether money has been verified is a separate fact about
+    /// money, reported on the payment and shown next to the appointment.</para>
+    ///
+    /// <para>It becomes <c>pending_payment</c> only when the customer's booking fee has been
+    /// <i>submitted</i> and is awaiting the business's verification. That is a different fact from
+    /// "booked": the slot is held by a paying customer whose money nobody has checked yet, and the
+    /// lifecycle must show it as such rather than as a confirmed appointment. Verification then
+    /// moves it to <c>confirmed</c> (see <c>PaymentService.AdvanceAppointmentAfterVerificationAsync</c>);
+    /// a rejection or a lapsed reservation releases it.</para>
     /// </summary>
-    private static string InitialStatusFor() => AppointmentStatuses.Booked;
+    private static string InitialStatusFor(string? requested) =>
+        string.Equals(requested, AppointmentStatuses.PendingPayment, StringComparison.Ordinal)
+            ? AppointmentStatuses.PendingPayment
+            : AppointmentStatuses.Booked;
 
     private async Task<ApiResponse<AppointmentResponse>> InsertAppointmentTransactionallyAsync(
         Guid businessId, Guid customerId, Guid? staffUserId, DateTime scheduledAt, DateTime endAt,
@@ -2130,7 +2188,12 @@ public class AppointmentService : IAppointmentService
         string? bookingRequestKey = null,
         // A customer with no prior relationship cannot have pending win-back jobs, so the
         // reactivation sweep is skipped for them (one round trip saved on a first booking).
-        bool skipWinBackCancel = false)
+        bool skipWinBackCancel = false,
+        // The status the booking should start in (see InitialStatusFor).
+        string? initialStatus = null,
+        // The hold this booking converts. Consumed in the SAME transaction, so a booking can never
+        // exist while its hold still claims the interval, and a replayed hold can never book twice.
+        Guid? convertHoldId = null)
     {
         var reservingStatuses = AppointmentReservations.ReservingStatuses.ToArray();
         Guid appointmentId;
@@ -2147,6 +2210,37 @@ public class AppointmentService : IAppointmentService
                 // here for the winner's commit and then sees the new row below.
                 await StaffTimeLock.AcquireAsync(_context, businessId, staffUserId);
                 lockMs = writeWatch.ElapsedMilliseconds;
+
+                // The hold being converted is re-read under the lock and must still be live. The
+                // frontend's countdown is a courtesy; this is the authority: an expired or already
+                // consumed hold cannot become a booking, however the request was formed.
+                AppointmentSlotHold? hold = null;
+                if (convertHoldId is Guid holdId)
+                {
+                    hold = await _context.AppointmentSlotHolds
+                        .FirstOrDefaultAsync(h => h.Id == holdId && h.BusinessId == businessId);
+
+                    if (hold == null
+                        || !string.Equals(hold.Status, AppointmentSlotHoldStatuses.Active, StringComparison.Ordinal)
+                        || hold.ExpiresAtUtc <= DateTime.UtcNow)
+                    {
+                        await RollbackQuietlyAsync(transaction);
+                        return ApiResponse<AppointmentResponse>.Fail(
+                            "RESERVATION_EXPIRED",
+                            "Your held slot has expired. Please choose a time again.");
+                    }
+
+                    // The hold is the appointment's own interval: the request cannot move it.
+                    if (hold.StaffUserId != staffUserId
+                        || hold.StartsAtUtc != scheduledAt
+                        || hold.EndsAtUtc != endAt)
+                    {
+                        await RollbackQuietlyAsync(transaction);
+                        return ApiResponse<AppointmentResponse>.Fail(
+                            "RESERVATION_MISMATCH",
+                            "That booking does not match the slot that was held. Please start again.");
+                    }
+                }
 
                 // Idempotency is answered by the snapshot the booking was validated
                 // against (the existing booking for this intent key) and, if two identical
@@ -2185,10 +2279,20 @@ public class AppointmentService : IAppointmentService
                     StaffUserId = staffUserId,
                     ScheduledAt = scheduledAt,
                     EndAt = endAt,
-                    Status = InitialStatusFor(),
+                    Status = InitialStatusFor(initialStatus),
                     CreatedAt = DateTime.UtcNow,
                     BookingRequestKey = string.IsNullOrWhiteSpace(bookingRequestKey) ? null : bookingRequestKey
                 };
+
+                // The hold becomes this booking in the same transaction: the claim on the interval
+                // hands over from the reservation to the appointment, so neither a gap nor a
+                // double-claim can exist between them.
+                if (hold != null)
+                {
+                    hold.Status = AppointmentSlotHoldStatuses.Converted;
+                    hold.ConvertedAppointmentId = appointment.Id;
+                    hold.UpdatedAt = DateTime.UtcNow;
+                }
 
                 var sortOrder = 0;
                 foreach (var svc in services)
@@ -2279,6 +2383,28 @@ public class AppointmentService : IAppointmentService
                             ["appointmentId"] = appointment.Id
                         },
                         $"appt:{appointment.Id}:staff-assigned:{assignedStaffId}"));
+                }
+
+                // A booking whose fee is awaiting verification needs the business to act, so the
+                // owner is told in the same transaction that creates the row. Only for that status:
+                // an ordinary booking needs no decision, and telling the owner about their own
+                // walk-in would be noise.
+                if (string.Equals(appointment.Status, AppointmentStatuses.PendingPayment, StringComparison.Ordinal)
+                    && business?.OwnerId is Guid ownerId
+                    && ownerId != Guid.Empty
+                    && ownerId != appointment.CustomerId)
+                {
+                    bookingIntents.Add(new NotificationRequest(
+                        "appointment.booking_requested",
+                        ownerId,
+                        appointment.BusinessId,
+                        new Dictionary<string, object?>
+                        {
+                            ["businessName"] = businessName,
+                            ["scheduledAt"] = appointment.ScheduledAt.ToString("O"),
+                            ["appointmentId"] = appointment.Id
+                        },
+                        $"appt:{appointment.Id}:booking-requested:{ownerId}"));
                 }
 
                 await QueueNotificationsSafelyAsync(bookingIntents);

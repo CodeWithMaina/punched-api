@@ -92,6 +92,13 @@ public static class NotificationTypes
         {
             PayloadSchema = Schema(Required("businessName", "scheduledAt"), "appointmentId")
         },
+        // A storefront booking whose fee the customer has submitted: the business now has to
+        // verify the money and confirm the appointment. Operator-facing, because the customer
+        // already knows — the recipient who must act is the business.
+        new("appointment.booking_requested", NotificationCategory.Appointment, OperatorAlertChannels)
+        {
+            PayloadSchema = Schema(Required("businessName", "scheduledAt"), "appointmentId")
+        },
 
         // ── Commissions ─────────────────────────────────────────────────────
         // The staff member is the recipient of every commission notification;

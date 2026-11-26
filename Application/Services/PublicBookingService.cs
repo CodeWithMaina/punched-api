@@ -48,6 +48,20 @@ public sealed class PublicBookingService : IPublicBookingService
     private readonly ILogger<PublicBookingService> _logger;
 
     /// <summary>
+    /// Temporary slot claims. Optional in the constructor so a unit test keeps compiling; when
+    /// absent, one is built over the same context (the service is stateless).
+    /// </summary>
+    private BookingHoldService? _holds;
+
+    /// <summary>The hold service, resolved once.</summary>
+    private BookingHoldService Holds => _holds ??= new BookingHoldService(
+        _db,
+        new AppointmentAvailabilityService(
+            _db, NullLogger<AppointmentAvailabilityService>.Instance, readContexts: _readContexts),
+        _readContexts,
+        NullLogger<BookingHoldService>.Instance);
+
+    /// <summary>
     /// The canonical customer↔business writer. Optional so a unit test can construct the service
     /// without one; it is then built over the same DbContext (the service is stateless).
     /// </summary>
@@ -66,6 +80,7 @@ public sealed class PublicBookingService : IPublicBookingService
         IPaymentService payments,
         IModuleEntitlementService modules,
         ILogger<PublicBookingService> logger,
+        BookingHoldService? holds = null,
         ITenantContext? tenant = null,
         ICustomerEnrollmentService? enrollments = null,
         BookingReadContextLoader? readContexts = null)
@@ -75,6 +90,7 @@ public sealed class PublicBookingService : IPublicBookingService
         _payments = payments;
         _modules = modules;
         _logger = logger;
+        _holds = holds;
         _tenant = tenant;
         _enrollments = enrollments;
         _readContexts = readContexts ?? new BookingReadContextLoader(db);
@@ -219,6 +235,64 @@ public sealed class PublicBookingService : IPublicBookingService
         Payment? bookingFee = null;
         var paysUpfront = policy.Option == StorefrontPaymentOptions.PayUpfront;
 
+        // ── A retry is a replay, not a new booking ───────────────
+        // Answered BEFORE the payment rules below: the customer's own booking already holds the
+        // interval, so re-validating the reservation would call their completed booking an expired
+        // hold. Returning the row they already created is the only honest answer to a double tap.
+        if (read.ExistingBooking is Appointment replayOfIntent)
+        {
+            if (replayOfIntent.CustomerId != customer.User.Id)
+                return Fail("DUPLICATE_BOOKING_KEY", "That booking key has already been used. Start a new booking.");
+        }
+
+        var serviceTotalForFee = read.Services.Sum(s => s.Price ?? 0m);
+        var feeDue = paysUpfront && config is { HasManualMpesaDetails: true }
+            ? config.BookingFeeFor(serviceTotalForFee)
+            : 0m;
+
+        // ── The payment-first rule ───────────────────────────────
+        // When the business charges a mandatory booking fee, the slot is held and the fee's
+        // confirmation must be in hand BEFORE the appointment exists. Both halves are enforced
+        // here, on the server: the frontend's disabled button is a courtesy, not the rule, and
+        // there is no second endpoint that books without them.
+        var requiresHeldSlotAndProof = feeDue > 0m && read.ExistingBooking == null;
+        AppointmentSlotHold? hold = null;
+
+        if (requiresHeldSlotAndProof)
+        {
+            if (request.HoldId is not Guid holdId)
+                return Fail(
+                    "RESERVATION_REQUIRED",
+                    "This business asks for a booking fee. Hold your time first, pay, then paste the M-PESA confirmation to finish.");
+
+            hold = await Holds.FindLiveAsync(business.Id, holdId, cancellationToken);
+            if (hold == null)
+                return Fail(
+                    "RESERVATION_EXPIRED",
+                    "The time you were holding is no longer reserved. Please choose a time again.");
+
+            if (!hold.ServiceIds.OrderBy(id => id)
+                    .SequenceEqual(request.ServiceIds.Distinct().OrderBy(id => id)))
+                return Fail(
+                    "RESERVATION_MISMATCH",
+                    "That booking does not match the services that were held. Please start again.");
+
+            if (string.IsNullOrWhiteSpace(request.MpesaMessage))
+                return Fail(
+                    "PAYMENT_PROOF_REQUIRED",
+                    "Paste the M-PESA confirmation message for your booking fee to finish the booking.");
+        }
+        else if (request.HoldId is Guid optionalHoldId)
+        {
+            // No fee is due, so a hold is not required — but one that was taken must still be
+            // consumed rather than left claiming the interval the booking now owns.
+            hold = await Holds.FindLiveAsync(business.Id, optionalHoldId, cancellationToken);
+        }
+
+        // The hold, when there is one, owns the interval: the request cannot move it.
+        var staffUserId = hold?.StaffUserId ?? request.StaffUserId;
+        var scheduledAt = hold?.StartsAtUtc ?? request.ScheduledAt;
+
         if (paysUpfront && config is { HasManualMpesaDetails: true })
         {
             var serviceTotal = read.Services.Sum(s => s.Price ?? 0m);
@@ -257,8 +331,8 @@ public sealed class PublicBookingService : IPublicBookingService
             customer.User.Id,
             bookingCustomer,
             request.ServiceIds,
-            request.StaffUserId,
-            request.ScheduledAt,
+            staffUserId,
+            scheduledAt,
             request.Note,
             payAfterService: policy.Option == StorefrontPaymentOptions.PayAfterService,
             bookingRequestKey: request.IdempotencyKey,
@@ -268,7 +342,14 @@ public sealed class PublicBookingService : IPublicBookingService
                 bookingFee.AppointmentId = appointmentId;
                 return bookingFee;
             },
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken,
+            // A submitted booking fee means nobody has verified the money yet, so the appointment
+            // waits in pending_payment until the business confirms it. Every other booking is
+            // simply booked.
+            initialStatus: requiresHeldSlotAndProof
+                ? AppointmentStatuses.PendingPayment
+                : AppointmentStatuses.Booked,
+            convertHoldId: hold?.Id);
 
         if (!created.Success)
             return Fail(created.Error!.Code, created.Error.Message);

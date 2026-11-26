@@ -46,6 +46,11 @@ public class AppointmentConfiguration : IEntityTypeConfiguration<Appointment>
 
         builder.HasIndex(x => new { x.BusinessId, x.ScheduledAt });
         builder.HasIndex(x => new { x.StaffUserId, x.ScheduledAt });
+        // Staff reporting: one member's work inside a window, tenant-scoped. The
+        // financial and performance reports group by staff for a business date range,
+        // which this composite covers end-to-end instead of filtering after a scan.
+        builder.HasIndex(x => new { x.BusinessId, x.StaffUserId, x.ScheduledAt })
+            .HasDatabaseName("ix_appointments_business_staff_scheduled");
         // Customer-details Appointments tab: paginated per-customer history
         // within one business, newest first.
         builder.HasIndex(x => new { x.BusinessId, x.CustomerId, x.ScheduledAt });

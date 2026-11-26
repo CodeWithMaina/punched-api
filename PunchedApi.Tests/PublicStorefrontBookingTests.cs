@@ -45,6 +45,7 @@ public class PublicStorefrontBookingTests
         public SqliteConnection? Connection = null!;
         public ApplicationDbContext Context = null!;
         public PublicBookingService Public = null!;
+        public BookingHoldService Holds = null!;
         public AppointmentService Appointments = null!;
         public PaymentService Payments = null!;
         public Business Business = null!;
@@ -78,8 +79,8 @@ public class PublicStorefrontBookingTests
             NullLogger<PaymentService>.Instance);
 
     /// <summary>
-    /// One business that asks for 50% up front through manual M-PESA — the configuration that used
-    /// to hold a booking hostage — with a staffed, bookable slot.
+    /// One business that asks for 50% up front through manual M-PESA — the configuration that makes
+    /// the slot hold and the M-PESA confirmation mandatory — with a staffed, bookable slot.
     /// </summary>
     private static async Task<Env> CreateEnvAsync(bool manualMpesa = true)
     {
@@ -117,15 +118,22 @@ public class PublicStorefrontBookingTests
         var appointments = BookingTestBase.CreateAppointmentService(context);
         var payments = PaymentServiceFor(context);
 
+        var availability = BookingTestBase.CreateAvailabilityService(context);
+        var readContexts = new BookingReadContextLoader(context);
+        var holds = new BookingHoldService(
+            context, availability, readContexts, TestHelpers.CreateLogger<BookingHoldService>());
+
         return new Env
         {
             Connection = connection,
             Context = context,
             Appointments = appointments,
             Payments = payments,
+            Holds = holds,
             Public = new PublicBookingService(
                 context, appointments, payments, modules.Object,
                 TestHelpers.CreateLogger<PublicBookingService>(),
+                holds: holds,
                 tenant: null,
                 enrollments: new CustomerEnrollmentService(
                     new UnitOfWork(context), context, NullLogger<CustomerEnrollmentService>.Instance)),
@@ -159,6 +167,63 @@ public class PublicStorefrontBookingTests
         Guid? tenant = null)
         => env.Public.BookAsync(callerUserId, callerRole, tenant, request);
 
+    /// <summary>
+    /// A booking request that has done what a real customer must: held the slot and pasted the
+    /// M-PESA confirmation.
+    ///
+    /// <para>The business charges a 50% fee, so both are mandatory — the server refuses a booking
+    /// without a live hold or without a message. Every scenario below therefore starts from a hold,
+    /// which is also what proves the hold is convertible.</para>
+    /// </summary>
+    private static async Task<PublicBookingRequest> RequestWithHoldAsync(
+        Env env,
+        string phone,
+        string email,
+        string name = "Wanjiru Kariuki",
+        string? mpesaMessage = ValidMessage,
+        string? idempotencyKey = null,
+        DateTime? scheduledAt = null,
+        string? paymentOption = null)
+    {
+        var request = Request(env, phone, email, name, mpesaMessage, idempotencyKey, scheduledAt);
+        if (paymentOption != null) request.PaymentOption = paymentOption;
+
+        var hold = await env.Holds.CreateAsync(
+            env.Business.Id,
+            new CreateBookingHoldRequest
+            {
+                ServiceIds = request.ServiceIds,
+                StaffUserId = request.StaffUserId,
+                ScheduledAt = request.ScheduledAt,
+                IdempotencyKey = idempotencyKey,
+                PaymentOption = request.PaymentOption,
+                FullName = name,
+                PhoneNumber = phone,
+                Email = email,
+            },
+            tenantBusinessId: null,
+            configuredHoldMinutes: null);
+
+        // A retried intent reuses the hold it already created: the first booking consumed it, but
+        // the customer's retry is the same attempt, so the same claim travels with it.
+        if (!hold.Success)
+        {
+            env.Context.ChangeTracker.Clear();
+            var existing = await env.Context.AppointmentSlotHolds.AsNoTracking()
+                .Where(h => h.BusinessId == env.Business.Id
+                    && (idempotencyKey == null || h.IdempotencyKey == idempotencyKey))
+                .OrderByDescending(h => h.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            Assert.True(existing != null, hold.Error?.Message);
+            request.HoldId = existing!.Id;
+            return request;
+        }
+
+        request.HoldId = hold.Data!.HoldId;
+        return request;
+    }
+
     /// <summary>The owner's appointment list, as the dashboard shows it.</summary>
     private static Task<ApiResponse<AppointmentDashboardResponse>> DashboardAsync(Env env) =>
         env.Appointments.GetAppointmentDashboardAsync(
@@ -174,14 +239,14 @@ public class PublicStorefrontBookingTests
         using var env = await CreateEnvAsync();
 
         var booked = await BookAsync(
-            env, Request(env, "0712345678", "wanjiru@example.test", mpesaMessage: ValidMessage));
+            env, await RequestWithHoldAsync(env, "0712345678", "wanjiru@example.test", mpesaMessage: ValidMessage));
 
         Assert.True(booked.Success, booked.Error?.Message);
         var appointment = booked.Data!.Appointment;
 
-        // The appointment exists and is BOOKED. Not "pending payment": the booking is not waiting on
-        // money nobody has reviewed.
-        Assert.Equal(AppointmentStatuses.Booked, appointment.Status);
+        // The appointment exists and is PENDING PAYMENT: the fee has been submitted but nobody has
+        // verified it, so the booking is not confirmed yet. Verification is what confirms it.
+        Assert.Equal(AppointmentStatuses.PendingPayment, appointment.Status);
         Assert.Equal(env.Business.Id, appointment.BusinessId);
 
         // The customer record belongs to THIS business and is tagged Guest.
@@ -224,7 +289,7 @@ public class PublicStorefrontBookingTests
         using var env = await CreateEnvAsync();
 
         var booked = await BookAsync(
-            env, Request(env, "0712345678", "wanjiru@example.test", mpesaMessage: ValidMessage));
+            env, await RequestWithHoldAsync(env, "0712345678", "wanjiru@example.test", mpesaMessage: ValidMessage));
         Assert.True(booked.Success, booked.Error?.Message);
 
         // The money the dashboard counts as received is exactly the SETTLED payments — the rule the
@@ -293,7 +358,7 @@ public class PublicStorefrontBookingTests
         using var env = await CreateEnvAsync();
 
         var booked = await BookAsync(
-            env, Request(env, "0712345678", "wanjiru@example.test", mpesaMessage: ValidMessage));
+            env, await RequestWithHoldAsync(env, "0712345678", "wanjiru@example.test", mpesaMessage: ValidMessage));
         Assert.True(booked.Success, booked.Error?.Message);
 
         var rejected = await env.Payments.RejectPaymentAsync(
@@ -306,7 +371,7 @@ public class PublicStorefrontBookingTests
         // Rejecting the money does not cancel the visit: only an explicit business rule may do that.
         env.Context.ChangeTracker.Clear();
         var appointment = await env.Context.Appointments.FindAsync(booked.Data.Appointment.Id);
-        Assert.Equal(AppointmentStatuses.Booked, appointment!.Status);
+        Assert.Equal(AppointmentStatuses.PendingPayment, appointment!.Status);
 
         // The customer may try again with a real payment: a rejected payment stays submittable.
         var payment = await env.Context.Payments.AsNoTracking().SingleAsync(p => p.Id == rejected.Data.Id);
@@ -315,19 +380,42 @@ public class PublicStorefrontBookingTests
     }
 
     [Fact]
-    public async Task NoAccount_WithoutAPastedMessage_StillBooksWithTheFeeOutstanding()
+    public async Task NoAccount_WithoutAPastedMessage_IsRefusedAndTheHoldIsTheOnlyClaim()
     {
         using var env = await CreateEnvAsync();
 
-        var booked = await BookAsync(env, Request(env, "0712345678", "wanjiru@example.test"));
+        // The slot is held; the fee is not yet proven. The server must refuse to turn that into a
+        // booking: money the studio has not been shown is not a paid-for slot.
+        var request = await RequestWithHoldAsync(env, "0712345678", "wanjiru@example.test");
+        request.MpesaMessage = null;
 
-        Assert.True(booked.Success, booked.Error?.Message);
-        Assert.Equal(AppointmentStatuses.Booked, booked.Data!.Appointment.Status);
-        // The fee payment exists so the business can collect it, and nothing was submitted.
-        Assert.NotNull(booked.Data.Payment);
-        Assert.Equal("created", booked.Data.Payment!.Status);
-        Assert.Equal(PublicPaymentStates.Unpaid, booked.Data.PaymentState);
-        Assert.Equal(450m, booked.Data.Summary.BookingFee);
+        var refused = await BookAsync(env, request);
+
+        Assert.False(refused.Success);
+        Assert.Equal("PAYMENT_PROOF_REQUIRED", refused.Error?.Code);
+        Assert.Empty(await env.Context.Appointments.ToListAsync());
+
+        // The claim survives, still blocking the interval: the customer can still finish by pasting.
+        env.Context.ChangeTracker.Clear();
+        var hold = await env.Context.AppointmentSlotHolds.AsNoTracking()
+            .SingleAsync(h => h.Id == request.HoldId);
+        Assert.Equal(AppointmentSlotHoldStatuses.Active, hold.Status);
+    }
+
+    [Fact]
+    public async Task NoAccount_WithoutAHold_IsRefused()
+    {
+        using var env = await CreateEnvAsync();
+
+        // Even with the confirmation in hand, a booking that never claimed the slot is refused: the
+        // hold is what stops two customers paying for the same time.
+        var request = Request(env, "0712345678", "wanjiru@example.test", mpesaMessage: ValidMessage);
+
+        var refused = await BookAsync(env, request);
+
+        Assert.False(refused.Success);
+        Assert.Equal("RESERVATION_REQUIRED", refused.Error?.Code);
+        Assert.Empty(await env.Context.Appointments.ToListAsync());
     }
 
     [Fact]
@@ -335,12 +423,14 @@ public class PublicStorefrontBookingTests
     {
         using var env = await CreateEnvAsync();
 
-        var booked = await BookAsync(env, Request(
+        var booked = await BookAsync(env, await RequestWithHoldAsync(
             env, "0712345678", "wanjiru@example.test", mpesaMessage: "i sent the money already"));
 
         Assert.True(booked.Success, booked.Error?.Message);
-        // The booking stands, the customer is told what to do, and nothing was silently dropped.
-        Assert.Equal(AppointmentStatuses.Booked, booked.Data!.Appointment.Status);
+        // The booking stands, the customer is told what to do, and nothing was silently dropped: a
+        // paste that cannot be parsed is a warning, not a refusal, because the customer did submit
+        // something and the studio can still check their statement.
+        Assert.Equal(AppointmentStatuses.PendingPayment, booked.Data!.Appointment.Status);
         Assert.NotEmpty(booked.Data.Warnings);
         Assert.Equal(PublicPaymentStates.Unpaid, booked.Data.PaymentState);
         Assert.Equal("created", booked.Data.Payment!.Status);
@@ -376,7 +466,7 @@ public class PublicStorefrontBookingTests
         // They book at the FIRST business, signed in.
         var booked = await BookAsync(
             env,
-            Request(env, "0722000111", otherCustomer.Email, name: "Shared Customer",
+            await RequestWithHoldAsync(env, "0722000111", otherCustomer.Email, name: "Shared Customer",
                 mpesaMessage: ValidMessage),
             callerUserId: otherCustomer.Id, callerRole: "Customer");
 
@@ -386,7 +476,7 @@ public class PublicStorefrontBookingTests
         // for the customer they are.
         Assert.Equal(otherCustomer.Id, booked.Data!.Appointment.CustomerId);
         Assert.Equal(env.Business.Id, booked.Data.Appointment.BusinessId);
-        Assert.Equal(AppointmentStatuses.Booked, booked.Data.Appointment.Status);
+        Assert.Equal(AppointmentStatuses.PendingPayment, booked.Data.Appointment.Status);
 
         // The relationship with this business now exists; the other business's record is untouched.
         env.Context.ChangeTracker.Clear();
@@ -416,7 +506,7 @@ public class PublicStorefrontBookingTests
         // The exact case that used to produce "Your account can't book as a customer here": the
         // owner is signed in with a Business token while booking at their own storefront.
         var booked = await BookAsync(
-            env, Request(env, "0733000222", "walk-in@example.test", name: "Walk In",
+            env, await RequestWithHoldAsync(env, "0733000222", "walk-in@example.test", name: "Walk In",
                 mpesaMessage: ValidMessage),
             callerUserId: env.Owner.Id, callerRole: "Business");
 
@@ -424,7 +514,10 @@ public class PublicStorefrontBookingTests
 
         // The booking was made for a CUSTOMER: the owner's admin account is not the customer.
         Assert.NotEqual(env.Owner.Id, booked.Data!.Appointment.CustomerId);
-        Assert.Equal(AppointmentStatuses.Booked, booked.Data.Appointment.Status);
+        Assert.Equal(AppointmentStatuses.PendingPayment, booked.Data.Appointment.Status);
+
+        // The booked-through booking awaited the fee's verification, so the lifecycle has an owner
+        // action to take — which is the whole point of the payment-first flow.
 
         env.Context.ChangeTracker.Clear();
         var customer = await env.Context.Users.FindAsync(booked.Data.Appointment.CustomerId);
@@ -445,13 +538,13 @@ public class PublicStorefrontBookingTests
     {
         using var env = await CreateEnvAsync();
 
-        var first = await BookAsync(env, Request(
+        var first = await BookAsync(env, await RequestWithHoldAsync(
             env, "0744000333", "returning@example.test", name: "Returning Customer"));
         Assert.True(first.Success, first.Error?.Message);
 
         // The same person books again — the same number typed differently, the same address — for a
         // different time so the slot guard does not apply.
-        var second = await BookAsync(env, Request(
+        var second = await BookAsync(env, await RequestWithHoldAsync(
             env, "+254744000333", "returning@example.test", name: "Returning Customer",
             scheduledAt: Slot.AddHours(1)));
         Assert.True(second.Success, second.Error?.Message);
@@ -470,7 +563,7 @@ public class PublicStorefrontBookingTests
     {
         using var env = await CreateEnvAsync();
 
-        var first = await BookAsync(env, Request(
+        var first = await BookAsync(env, await RequestWithHoldAsync(
             env, "0755000444", "two-businesses@example.test", name: "Two Businesses"));
         Assert.True(first.Success, first.Error?.Message);
 
@@ -520,7 +613,7 @@ public class PublicStorefrontBookingTests
         var firstAppointment = await env.Context.Appointments.AsNoTracking()
             .SingleAsync(a => a.Id == first.Data.Appointment.Id);
         Assert.Equal(env.Business.Id, firstAppointment.BusinessId);
-        Assert.Equal(AppointmentStatuses.Booked, firstAppointment.Status);
+        Assert.Equal(AppointmentStatuses.PendingPayment, firstAppointment.Status);
 
         // Pay-after-service here: the appointment is booked and the whole value is outstanding.
         Assert.Equal(AppointmentStatuses.Booked, second.Data.Appointment.Status);
@@ -551,7 +644,7 @@ public class PublicStorefrontBookingTests
             });
 
         // They book from the storefront without signing in.
-        var booked = await BookAsync(env, Request(
+        var booked = await BookAsync(env, await RequestWithHoldAsync(
             env, "0766000555", existing.Email, name: "Already Registered"));
 
         Assert.True(booked.Success, booked.Error?.Message);
@@ -574,7 +667,7 @@ public class PublicStorefrontBookingTests
     {
         using var env = await CreateEnvAsync();
 
-        var first = await BookAsync(env, Request(env, "0777000666", "retry@example.test",
+        var first = await BookAsync(env, await RequestWithHoldAsync(env, "0777000666", "retry@example.test",
             mpesaMessage: ValidMessage, idempotencyKey: "storefront-retry-1"));
         Assert.True(first.Success, first.Error?.Message);
 
@@ -583,7 +676,7 @@ public class PublicStorefrontBookingTests
         // intent, so the server returns the booking it already made instead of creating a
         // second one or opening a second payment. That replay is the idempotency promise;
         // refusing the retry would leave the customer unsure whether their first tap worked.
-        var again = await BookAsync(env, Request(env, "0777000666", "retry@example.test",
+        var again = await BookAsync(env, await RequestWithHoldAsync(env, "0777000666", "retry@example.test",
             mpesaMessage: ValidMessage, idempotencyKey: "storefront-retry-1"));
 
         Assert.True(again.Success, again.Error?.Message);
@@ -606,7 +699,7 @@ public class PublicStorefrontBookingTests
         var otherOwner = BookingTestBase.CreateOwner($"tenant-owner-{Guid.NewGuid():N}@test.com");
         var otherBusiness = BookingTestBase.CreateBusiness(otherOwner.Id, "Tenant Other");
 
-        var refused = await BookAsync(env, Request(env, "0788000777", "tenant@example.test"),
+        var refused = await BookAsync(env, await RequestWithHoldAsync(env, "0788000777", "tenant@example.test"),
             tenant: otherBusiness.Id);
 
         Assert.False(refused.Success);
@@ -619,27 +712,32 @@ public class PublicStorefrontBookingTests
     {
         using var env = await CreateEnvAsync();
 
-        // Booked first, unpasted.
-        var booked = await BookAsync(env, Request(env, "0799000888", "late@example.test"));
+        // Booked with the confirmation the customer pasted at checkout.
+        var booked = await BookAsync(env, await RequestWithHoldAsync(env, "0799000888", "late@example.test"));
         Assert.True(booked.Success, booked.Error?.Message);
-        Assert.Equal(PublicPaymentStates.Unpaid, booked.Data!.PaymentState);
+        Assert.Equal(PublicPaymentStates.PendingVerification, booked.Data!.PaymentState);
 
-        var proof = await env.Public.SubmitPaymentProofAsync(
+        // A second paste on the same booking is not a second claim: the payment is already waiting
+        // for the business, so the message is reported back as a warning and the booking is rebuilt
+        // from the row that exists.
+        var again = await env.Public.SubmitPaymentProofAsync(
             env.Business.Id, booked.Data.Appointment.Id,
             new SubmitPublicPaymentProofRequest { Message = ValidMessage });
 
-        Assert.True(proof.Success, proof.Error?.Message);
-        Assert.Equal(PublicPaymentStates.PendingVerification, proof.Data!.PaymentState);
-        Assert.Equal("submitted", proof.Data.Payment!.Status);
+        Assert.True(again.Success, again.Error?.Message);
+        Assert.NotEmpty(again.Data!.Warnings);
+        Assert.Equal(booked.Data.Appointment.Id, again.Data.Appointment.Id);
+        Assert.Equal(PublicPaymentStates.PendingVerification, again.Data.PaymentState);
 
-        // A submitted confirmation is not a second booking: same appointment, same customer, same
-        // status, and still exactly one row.
+        // Attaching a confirmation never rebuilds the booking: same appointment, same customer,
+        // same status, and still exactly one row with exactly one payment.
         env.Context.ChangeTracker.Clear();
         var after = await env.Context.Appointments.AsNoTracking()
             .SingleAsync(a => a.Id == booked.Data.Appointment.Id);
-        Assert.Equal(AppointmentStatuses.Booked, after.Status);
+        Assert.Equal(AppointmentStatuses.PendingPayment, after.Status);
         Assert.Equal(booked.Data.Appointment.CustomerId, after.CustomerId);
         Assert.Single(await env.Context.Appointments.ToListAsync());
+        Assert.Single(await env.Context.Payments.ToListAsync());
     }
 
     [Fact]
@@ -647,7 +745,7 @@ public class PublicStorefrontBookingTests
     {
         using var env = await CreateEnvAsync();
 
-        var booked = await BookAsync(env, Request(env, "0711111222", "cross@example.test"));
+        var booked = await BookAsync(env, await RequestWithHoldAsync(env, "0711111222", "cross@example.test"));
         Assert.True(booked.Success, booked.Error?.Message);
 
         var otherOwner = BookingTestBase.CreateOwner($"cross-owner-{Guid.NewGuid():N}@test.com");

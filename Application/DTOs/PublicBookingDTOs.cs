@@ -72,6 +72,16 @@ public class PublicBookingRequest
     /// </summary>
     [JsonPropertyName("idempotencyKey")]
     public string? IdempotencyKey { get; set; }
+
+    /// <summary>
+    /// The temporary hold this booking converts, when the business requires a booking fee.
+    ///
+    /// <para>Required in that case and validated server-side: the hold must be live, unexpired and
+    /// for exactly this interval. Its presence is what proves the customer claimed the slot before
+    /// paying rather than booking a time somebody else was holding.</para>
+    /// </summary>
+    [JsonPropertyName("holdId")]
+    public Guid? HoldId { get; set; }
 }
 
 

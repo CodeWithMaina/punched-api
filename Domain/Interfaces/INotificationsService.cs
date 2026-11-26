@@ -12,6 +12,15 @@ public interface INotificationsService
     Task<bool> MarkReadByIdAsync(Guid userId, Guid notificationId);
     Task<int> MarkAllReadAsync(Guid userId);
 
+    /// <summary>
+    /// One filtered, sorted, paged page of the caller's own inbox.
+    ///
+    /// <para>Returns <c>FORBIDDEN</c> when the query names a business the caller is not an active
+    /// member of, so a client-supplied business id narrows the inbox and never widens it.</para>
+    /// </summary>
+    Task<ApiResponse<NotificationInboxPageDto>> GetInboxAsync(
+        Guid userId, NotificationInboxQuery query, CancellationToken ct = default);
+
     /// <summary>Paged archived rows for the authenticated user (Phase 1.8).</summary>
     Task<PaginatedResponse<NotificationDto>> GetArchivedAsync(
         Guid userId, int page, int pageSize, CancellationToken ct = default);

@@ -279,7 +279,8 @@ public class AppointmentAvailabilityService
         int totalMinutes,
         Guid? excludeAppointmentId,
         bool enforceLeadTime,
-        Business? business = null)
+        Business? business = null,
+        Guid? excludeHoldId = null)
     {
         if (totalMinutes <= 0)
             return SlotResolution.Deny("VALIDATION_ERROR", "The selected services have no duration configured.");
@@ -334,6 +335,8 @@ public class AppointmentAvailabilityService
 
             var busy = read.BusyFor(staff.Id)
                 .Where(b => excludeAppointmentId == null || b.AppointmentId != excludeAppointmentId)
+                // A hold being converted must not block the booking it is becoming.
+                .Where(b => excludeHoldId == null || b.HoldId != excludeHoldId)
                 .ToList();
 
             if (busy.Any(b => AppointmentReservations.Overlaps(b.StartUtc, b.EndUtc, startUtc, endUtc)))
@@ -558,13 +561,6 @@ public class AppointmentAvailabilityService
     //  HELPERS
     // ===========================================================
 
-    /// <summary>True when the business has at least one ACTIVE staff membership.</summary>
-    private Task<bool> HasActiveStaffAsync(Guid businessId) =>
-        _context.BusinessMemberships.AsNoTracking().AnyAsync(m =>
-            m.BusinessId == businessId &&
-            m.Role == BusinessMembershipRole.Staff &&
-            m.Status == BusinessMembershipStatus.Active);
-
     /// <summary>True when the identity holds any ACTIVE membership of the business.</summary>
     private Task<bool> IsMemberOfBusinessAsync(Guid userId, Guid businessId) =>
         _context.BusinessMemberships.AsNoTracking().AnyAsync(m =>
@@ -572,26 +568,6 @@ public class AppointmentAvailabilityService
             m.BusinessId == businessId &&
             m.Status == BusinessMembershipStatus.Active);
 
-    /// <summary>
-    /// True when <paramref name="userId"/> is the owner <b>and</b> the business schedules
-    /// through its owner alone: solo, or the no-team owner fallback.
-    ///
-    /// <para>False for a business with a roster, whatever its Staff-module entitlement — a
-    /// switched-off module does not turn the team into the owner.</para>
-    /// </summary>
-    public async Task<bool> IsSoloOwnerAsync(Guid businessId, Guid userId)
-    {
-        var isOwner = await _context.BusinessMemberships.AsNoTracking().AnyAsync(m =>
-            m.BusinessId == businessId &&
-            m.UserId == userId &&
-            m.Role == BusinessMembershipRole.Owner &&
-            m.Status == BusinessMembershipStatus.Active);
-
-        if (!isOwner) return false;
-
-        var model = await _eligibility.ResolveModelAsync(businessId);
-        return ProviderEligibilityPolicy.CollapsesToOwner(model);
-    }
 
     /// <summary>
     /// Whether <paramref name="providerUserId"/> is eligible to take all of the
@@ -601,126 +577,6 @@ public class AppointmentAvailabilityService
     /// </summary>
     public Task<bool> IsProviderEligibleAsync(Guid businessId, Guid providerUserId, Guid[] serviceIds) =>
         _eligibility.IsEligibleAsync(businessId, providerUserId, serviceIds);
-
-    /// <summary>
-    /// Providers eligible to take every requested service, resolved through the
-    /// single <see cref="IProviderEligibilityService"/> so availability, booking
-    /// and appointment validation can never disagree.
-    ///
-    /// <para>Sole / owner-based models return just the owner; category-based
-    /// models return the owner and staff assigned to the services' categories
-    /// (a business with no staff yet falls back to its owner).</para>
-    /// </summary>
-    private async Task<List<User>> GetEligibleStaffAsync(Guid businessId, Guid[] serviceIds)
-    {
-        var resolution = await _eligibility.ResolveForServicesAsync(businessId, serviceIds);
-        var providerIds = resolution.EligibleProviderIds;
-        if (providerIds.Count == 0) return new List<User>();
-
-        // Preserve the ordering the booking UI relied on (alphabetical).
-        return await _context.Users.AsNoTracking()
-            .Where(u => providerIds.Contains(u.Id))
-            .OrderBy(u => u.FullName)
-            .ToListAsync();
-    }
-
-    /// <summary>
-    /// A staff member's working windows for one date, in minutes from local
-    /// midnight.
-    ///
-    /// <para>Resolution order is deliberate and must stay in this order:</para>
-    /// <list type="number">
-    /// <item>any DATED shift rows for the date — an override or a day off wins;</item>
-    /// <item>otherwise the RECURRING weekday pattern;</item>
-    /// <item>otherwise the business's own booking window, which is how the system
-    /// behaved before staff availability existed.</item>
-    /// </list>
-    ///
-    /// <para>A configured break splits the window in two, so a booking can never
-    /// be placed across it.</para>
-    /// </summary>
-    private static List<(int Start, int End)> ResolveWindows(
-        DateOnly date,
-        List<StaffShift>? rostered,
-        Dictionary<int, StaffAvailability>? weekly,
-        (int Start, int End) defaultWindow,
-        IReadOnlyList<(int Start, int End)>? businessWindows = null)
-    {
-        var hasRostered = rostered is { Count: > 0 };
-        StaffAvailability? pattern = null;
-        if (weekly != null && weekly.TryGetValue((int)date.DayOfWeek, out var found))
-            pattern = found;
-
-        if (!hasRostered && pattern == null)
-        {
-            // No staff-level window: the business schedule (when configured) is the
-            // window; otherwise the legacy booking window applies unchanged.
-            if (businessWindows != null)
-                return businessWindows.OrderBy(w => w.Start).ToList();
-            return new List<(int Start, int End)> { defaultWindow };
-        }
-
-        List<(bool Working, int Start, int End, int? BreakStart, int? BreakEnd)> source;
-
-        if (hasRostered)
-        {
-            source = rostered!
-                .Select(s => (
-                    s.IsWorking,
-                    s.StartMinute ?? s.StartHour * 60,
-                    s.EndMinute ?? s.EndHour * 60,
-                    s.BreakStartMinute,
-                    s.BreakEndMinute))
-                .ToList();
-        }
-        else
-        {
-            source = new List<(bool, int, int, int?, int?)>
-            {
-                (pattern!.IsWorking, pattern.StartMinute, pattern.EndMinute,
-                    pattern.BreakStartMinute, pattern.BreakEndMinute)
-            };
-        }
-
-        var windows = new List<(int Start, int End)>();
-
-        foreach (var (working, start, end, breakStart, breakEnd) in source)
-        {
-            if (!working || end <= start) continue;
-
-            var hasBreak = breakStart.HasValue && breakEnd.HasValue
-                && breakStart.Value >= start && breakEnd.Value <= end
-                && breakEnd.Value > breakStart.Value;
-
-            if (!hasBreak)
-            {
-                windows.Add((start, end));
-                continue;
-            }
-
-            if (breakStart!.Value > start) windows.Add((start, breakStart.Value));
-            if (breakEnd!.Value < end) windows.Add((breakEnd.Value, end));
-        }
-
-        if (businessWindows == null)
-            return windows.OrderBy(w => w.Start).ToList();
-
-        // A configured schedule constrains the staff window: closed (empty list)
-        // leaves nothing, otherwise each staff window is intersected with each
-        // open business period.
-        var constrained = new List<(int Start, int End)>();
-        foreach (var s in windows)
-        {
-            foreach (var b in businessWindows)
-            {
-                var start = Math.Max(s.Start, b.Start);
-                var end = Math.Min(s.End, b.End);
-                if (end > start) constrained.Add((start, end));
-            }
-        }
-
-        return constrained.OrderBy(w => w.Start).ToList();
-    }
 
     private static string DayPartOf(int hour) =>
         hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";

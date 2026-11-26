@@ -1367,7 +1367,14 @@ public class StampDto
 }
 
 /// <summary>
-/// In-app notification for staff.
+/// One in-app notification for the authenticated user.
+///
+/// <para>The row carries everything a client needs to render it and to navigate to the thing it is
+/// about: a readable title and body (rendered from the same template the email channel uses, so
+/// the inbox and the email cannot describe one event two different ways), the preference category
+/// so the settings screen can be reached from the right place, and an explicit
+/// <see cref="ResourceType"/>/<see cref="ResourceId"/> pair rather than asking the client to guess a
+/// route from the payload.</para>
 /// </summary>
 public class NotificationDto
 {
@@ -1377,6 +1384,18 @@ public class NotificationDto
     [JsonPropertyName("type")]
     public string Type { get; set; } = string.Empty;
 
+    /// <summary>Preference category — one of the <c>NotificationCategory</c> values.</summary>
+    [JsonPropertyName("category")]
+    public string Category { get; set; } = string.Empty;
+
+    /// <summary>Readable headline, e.g. "Appointment booked".</summary>
+    [JsonPropertyName("title")]
+    public string Title { get; set; } = string.Empty;
+
+    /// <summary>Readable summary, with the payload's own values substituted in.</summary>
+    [JsonPropertyName("body")]
+    public string Body { get; set; } = string.Empty;
+
     [JsonPropertyName("businessId")]
     public Guid? BusinessId { get; set; }
 
@@ -1385,6 +1404,17 @@ public class NotificationDto
 
     [JsonPropertyName("appointmentId")]
     public Guid? AppointmentId { get; set; }
+
+    /// <summary>
+    /// What this notification is about — <c>appointment</c>, <c>payment</c>, <c>enquiry</c> or
+    /// null when there is nothing to open. Decided by the server so every client links the same way.
+    /// </summary>
+    [JsonPropertyName("resourceType")]
+    public string? ResourceType { get; set; }
+
+    /// <summary>The id of the resource named by <see cref="ResourceType"/>.</summary>
+    [JsonPropertyName("resourceId")]
+    public Guid? ResourceId { get; set; }
 
     [JsonPropertyName("isRead")]
     public bool IsRead { get; set; }
@@ -1551,11 +1581,21 @@ public class StaffOverviewResponse
     [JsonPropertyName("totalStaff")]
     public int TotalStaff { get; set; }
 
-    /// <summary>Staff with at least one stamp in the trailing 7 days.</summary>
+    /// <summary>
+    /// Staff whose membership is <c>Active</c> — the operational head count. This is
+    /// the module's own activation state, not a measure of recent activity.
+    /// </summary>
+    [JsonPropertyName("activeStaff")]
+    public int ActiveStaff { get; set; }
+
+    /// <summary>Staff with at least one stamp in the trailing 7 days (activity lens).</summary>
     [JsonPropertyName("activeStaff7d")]
     public int ActiveStaff7d { get; set; }
 
-    /// <summary>Linked staff with no stamp activity in the trailing 7 days.</summary>
+    /// <summary>
+    /// Staff whose membership is suspended: they are kept for history and can be
+    /// reactivated, but they are not offered for new bookings.
+    /// </summary>
     [JsonPropertyName("inactiveStaff")]
     public int InactiveStaff { get; set; }
 

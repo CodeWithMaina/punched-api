@@ -70,6 +70,84 @@ public sealed class BusinessNotificationOverviewDto
 }
 
 /// <summary>One entry of the business's recent notification activity feed.</summary>
+/// <summary>
+/// The filters, sort and page window for a business's delivery records.
+///
+/// <para>Every field is optional: an unfiltered request is the newest-first first page. Values are
+/// validated (and unknown sort keys ignored) by the service, so a hand-edited query string can
+/// narrow the list but never widen it past the business it was scoped to.</para>
+/// </summary>
+public sealed class BusinessNotificationActivityQuery
+{
+    [JsonPropertyName("page")]
+    public int Page { get; set; } = 1;
+
+    [JsonPropertyName("pageSize")]
+    public int PageSize { get; set; } = 25;
+
+    /// <summary>Exact notification type, e.g. <c>appointment.booked</c>.</summary>
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+
+    /// <summary>Delivery channel: <c>email</c>, <c>sms</c>, <c>push</c>, <c>in_app</c>.</summary>
+    [JsonPropertyName("channel")]
+    public string? Channel { get; set; }
+
+    /// <summary>Delivery status: <c>sent</c>, <c>failed</c>, <c>pending</c>, <c>processing</c>.</summary>
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    /// <summary>Free text over the notification type and the masked recipient.</summary>
+    [JsonPropertyName("search")]
+    public string? Search { get; set; }
+
+    [JsonPropertyName("fromUtc")]
+    public DateTime? FromUtc { get; set; }
+
+    [JsonPropertyName("toUtc")]
+    public DateTime? ToUtc { get; set; }
+
+    /// <summary><c>createdAt</c> (default), <c>type</c>, <c>status</c> or <c>channel</c>.</summary>
+    [JsonPropertyName("sort")]
+    public string? Sort { get; set; }
+
+    /// <summary><c>asc</c> or <c>desc</c> (default).</summary>
+    [JsonPropertyName("direction")]
+    public string? Direction { get; set; }
+}
+
+/// <summary>One page of the business's delivery records.</summary>
+public sealed class BusinessNotificationActivityPageDto
+{
+    [JsonPropertyName("items")]
+    public List<BusinessNotificationActivityDto> Items { get; set; } = new();
+
+    [JsonPropertyName("totalCount")]
+    public int TotalCount { get; set; }
+
+    [JsonPropertyName("page")]
+    public int Page { get; set; } = 1;
+
+    [JsonPropertyName("pageSize")]
+    public int PageSize { get; set; } = 25;
+
+    [JsonPropertyName("totalPages")]
+    public int TotalPages { get; set; }
+
+    /// <summary>
+    /// Which values actually occur in this business's records, so the filter controls offer
+    /// real choices instead of a hardcoded guess.
+    /// </summary>
+    [JsonPropertyName("availableTypes")]
+    public List<string> AvailableTypes { get; set; } = new();
+
+    [JsonPropertyName("availableChannels")]
+    public List<string> AvailableChannels { get; set; } = new();
+
+    [JsonPropertyName("availableStatuses")]
+    public List<string> AvailableStatuses { get; set; } = new();
+}
+
 public sealed class BusinessNotificationActivityDto
 {
     [JsonPropertyName("id")]

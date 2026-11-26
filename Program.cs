@@ -560,6 +560,10 @@ try
         sp.GetRequiredService<BookingReadFanout>(),
         sp.GetService<IModuleEntitlementService>()));
     builder.Services.AddScoped<AppointmentAvailabilityService>();
+    // Temporary slot claims taken while a booking fee is paid. They block availability exactly
+    // like a booking and expire on their own, so an abandoned payment never leaves a phantom slot.
+    builder.Services.AddScoped<BookingHoldService>();
+
     builder.Services.AddScoped<IServiceCatalogService, ServiceCatalogService>();
     // Owner-side customer creation for the booking flow (wizard Step 1).
     builder.Services.AddScoped<ICustomerDirectoryService, CustomerDirectoryService>();
@@ -666,6 +670,9 @@ try
     // Separate from BusinessService so the staff console's per-member surface has a
     // single owner and cannot drift from the staff list it sits beside.
     builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
+    builder.Services.AddScoped<IStaffReportingService, StaffReportingService>();
+    builder.Services.AddScoped<IStaffAuditService, StaffAuditService>();
+    builder.Services.AddScoped<IStaffPermissionOnboardingService, StaffPermissionOnboardingService>();
     builder.Services.AddScoped<IBusinessRoleService, BusinessRoleService>();
     // Commission configuration resolution (specificity-ranked: staff+service >
     // service > staff > business default) and the ledger service itself.
@@ -841,6 +848,25 @@ try
                     Window = TimeSpan.FromMinutes(5),
                     QueueLimit = 0
                 }));
+
+        // Staff invitations: every invitation sends an email and mints a token, so it is a
+        // mail-relay and token-minting surface, not an ordinary write. 20 per hour per
+        // (IP + user) is far above a real invite round (a team of ten) and far below what
+        // makes the endpoint useful as a spam relay or a token-guessing oracle.
+        //
+        // The same budget covers the public validate/accept routes, partitioned by IP,
+        // because those are anonymous and take a token in the path.
+        options.AddPolicy("staff-invitation", httpContext =>
+        {
+            var userId = httpContext.User?.FindFirst("userId")?.Value ?? "anon";
+            var key = $"{httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown"}:{userId}";
+            return RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = RateLimit("staff-invitation", 20),
+                Window = TimeSpan.FromHours(1),
+                QueueLimit = 0
+            });
+        });
 
         // General API: 1000 per hour per IP
         options.AddPolicy("general", httpContext =>

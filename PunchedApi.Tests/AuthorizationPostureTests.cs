@@ -95,6 +95,14 @@ public class AuthorizationPostureTests
         // behind owner/staff policies.
         "PublicBooking|POST|{businessId:guid}/public-bookings",
         "PublicBooking|POST|{businessId:guid}/public-bookings/{appointmentId:guid}/payment-proof",
+        // Temporary slot holds. The same public door as booking, rate-limited per IP on the same
+        // policy, and bounded on every side: a hold claims one interval for a few minutes, expires
+        // on its own, is scoped to the business in the route, and can never name a customer. The
+        // read and the release are keyed by a hold id that only the caller who created it holds,
+        // so they can neither enumerate nor release anybody else's claim.
+        "PublicBooking|POST|{businessId:guid}/public-bookings/holds",
+        "PublicBooking|GET|{businessId:guid}/public-bookings/holds/{holdId:guid}",
+        "PublicBooking|DELETE|{businessId:guid}/public-bookings/holds/{holdId:guid}",
         // Public storefront catalogue grouped by ACTIVE category. Same
         // visibility rules as the flat public list above (active + showcased
         // services only) plus the serviceCatalog entitlement check performed
