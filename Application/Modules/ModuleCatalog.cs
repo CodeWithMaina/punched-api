@@ -204,6 +204,11 @@ public static class ModuleCatalog
                 new PermissionDefinition("payments.view",        new[] { "Business", "Staff", "Customer" }),
                 new PermissionDefinition("payments.create",      new[] { "Business", "Staff", "Customer" }),
                 new PermissionDefinition("payments.confirm_cash", new[] { "Business", "Staff" }),
+                // Independent decision on a submitted (manual M-PESA) claim. Separate
+                // from taking cash because it is a different decision — reviewing
+                // evidence — and because a business may trust staff with the drawer
+                // without trusting them to approve a receipt.
+                new PermissionDefinition("payments.verify",      new[] { "Business", "Staff" }),
                 new PermissionDefinition("payments.configure",   new[] { "Business" }),
                 new PermissionDefinition("payments.reverse",     new[] { "Business" }),
             }),

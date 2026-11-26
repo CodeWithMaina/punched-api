@@ -30,6 +30,15 @@ public class StaffInvitationConfiguration : IEntityTypeConfiguration<StaffInvita
         builder.Property(x => x.ResendCount).HasColumnName("resend_count").HasDefaultValue(0);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
 
+        // Prefilled onboarding (nullable so invitations created before the migration
+        // remain valid; acceptance falls back to the invitee's submitted details).
+        builder.Property(x => x.InvitedFullName).HasColumnName("invited_full_name").HasMaxLength(150);
+        builder.Property(x => x.InvitedPhoneNumber).HasColumnName("invited_phone_number").HasMaxLength(30);
+        builder.Property(x => x.PositionId).HasColumnName("position_id");
+        builder.Property(x => x.ServiceCategoryIdsJson)
+            .HasColumnName("service_category_ids_json")
+            .HasMaxLength(2000);
+
         builder.HasOne(x => x.Business)
             .WithMany()
             .HasForeignKey(x => x.BusinessId)

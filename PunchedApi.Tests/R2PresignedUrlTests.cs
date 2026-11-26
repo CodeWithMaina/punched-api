@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.Extensions.Options;
 using PunchedApi.Application.Media;
 using PunchedApi.Domain.Interfaces;
@@ -35,6 +36,46 @@ public sealed class R2PresignedUrlTests
     };
 
     private static R2ObjectStore CreateStore() => new(Options.Create(StorageOptions()));
+
+    /// <summary>
+    /// Pins the AWS SDK's signing clock for the lifetime of the returned handle.
+    ///
+    /// <para>The presigner derives <c>X-Amz-Expires</c> from the difference between
+    /// the requested deadline and its own "now". Without a pinned clock, two calls a
+    /// few milliseconds apart can legitimately produce 299 and 300 seconds, which
+    /// makes a same-input determinism assertion depend on execution timing rather
+    /// than on the signing code. Pinning the clock keeps the assertion exact and
+    /// actually stronger: the expiry window itself becomes assertable.</para>
+    ///
+    /// <para>Scoped to this test class, which xUnit runs sequentially; no other
+    /// suite presigns. Restored by <see cref="IDisposable"/> even on failure.</para>
+    /// </summary>
+    private static IDisposable PinAwsSigningClock(DateTime utcNow)
+    {
+        var field = typeof(Amazon.AWSConfigs).GetField(
+            "utcNowSource", BindingFlags.Static | BindingFlags.NonPublic);
+
+        Assert.NotNull(field);
+
+        var original = (Func<DateTime>?)field!.GetValue(null);
+        field.SetValue(null, (Func<DateTime>)(() => utcNow));
+
+        return new ClockScope(field, original);
+    }
+
+    private sealed class ClockScope : IDisposable
+    {
+        private readonly FieldInfo _field;
+        private readonly Func<DateTime>? _original;
+
+        public ClockScope(FieldInfo field, Func<DateTime>? original)
+        {
+            _field = field;
+            _original = original;
+        }
+
+        public void Dispose() => _field.SetValue(null, _original);
+    }
 
     /// <summary>Dependency-free query parser so the test asserts on the real signed URL.</summary>
     private static Dictionary<string, string> Query(Uri url)
@@ -105,10 +146,15 @@ public sealed class R2PresignedUrlTests
     }
 
     [Fact]
-    public async Task Grant_SignatureIsDeterministicForTheSameKeyAndVariesPerKey()
+    public async Task Grant_SignatureIsDeterministicForTheSameKeyAndExpiry_AndVariesPerKey()
     {
         using var store = CreateStore();
-        var expires = DateTimeOffset.UtcNow.AddMinutes(5);
+
+        // Pinned clock + fixed deadline: the presigner's window is exactly 300 seconds,
+        // so the two same-input grants are byte-identical rather than merely
+        // second-adjacent.
+        using var clock = PinAwsSigningClock(new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc));
+        var expires = new DateTimeOffset(2026, 1, 1, 12, 5, 0, TimeSpan.Zero);
 
         var first = await store.PresignPutAsync(
             ObjectStoreBucket.PrivateSource, "pending/a.bin", "image/jpeg", expires, CancellationToken.None);
@@ -117,6 +163,7 @@ public sealed class R2PresignedUrlTests
         var other = await store.PresignPutAsync(
             ObjectStoreBucket.PrivateSource, "pending/b.bin", "image/jpeg", expires, CancellationToken.None);
 
+        Assert.Equal("300", Query(first.Url)["X-Amz-Expires"]);
         Assert.Equal(first.Url.Query, repeat.Url.Query);
         Assert.NotEqual(first.Url.Query, other.Url.Query);
     }

@@ -53,10 +53,24 @@ public class ConsoleEmailService : IEmailService
         return Task.FromResult(true);
     }
 
-    public Task<bool> SendStaffInvitationAsync(string email, string businessName, string invitationUrl, DateTime expiresAt)
+    public Task<bool> SendStaffInvitationAsync(
+        string email,
+        string businessName,
+        string invitationUrl,
+        DateTime expiresAt,
+        string? invitedName = null,
+        string? positionName = null,
+        IReadOnlyList<string>? categoryNames = null)
     {
-        _logger.LogInformation("📩 STAFF INVITATION for {Email} to join {Business} (expires {ExpiresAt}): {Url}",
-            email, businessName, expiresAt, invitationUrl);
+        _logger.LogInformation(
+            "📩 STAFF INVITATION for {Email} to join {Business} as {Name} ({Role}, categories: {Categories}) (expires {ExpiresAt}): {Url}",
+            email,
+            businessName,
+            invitedName ?? "(name not supplied)",
+            positionName ?? "(role not supplied)",
+            categoryNames is { Count: > 0 } ? string.Join(", ", categoryNames) : "(none)",
+            expiresAt,
+            invitationUrl);
         _ = PersistAsync(email, businessName, "email", "staff_invitation", "sent", null);
         return Task.FromResult(true);
     }

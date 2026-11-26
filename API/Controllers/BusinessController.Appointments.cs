@@ -359,6 +359,31 @@ public partial class BusinessController
         return result.Success ? Ok(result) : MapFailure(result);
     }
 
+    /// <summary>
+    /// Staff: book a customer into an appointment.
+    ///
+    /// <para>The service enforces <c>appointments.create</c> from the business's RBAC,
+    /// forces the caller's business, and pins the booking to the caller unless they
+    /// hold <c>appointments.manage</c> (so a member cannot fill a colleague's diary).
+    /// Prices, totals, eligibility and conflicts are resolved server-side exactly as
+    /// for an owner booking.</para>
+    /// </summary>
+    [RequireModule("appointments")]
+    [HttpPost("staff/appointments")]
+    [Authorize(Policy = MembershipPolicies.Staff)]
+    [ProducesResponseType(typeof(ApiResponse<AppointmentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> CreateStaffAppointmentOnBehalf(
+        [FromBody] CreateAppointmentOnBehalfRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _appointmentService.CreateAppointmentOnBehalfAsync(userId.Value, "Staff", request);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
     /// <summary>Staff: get a single appointment assigned to the authenticated staff member.</summary>
     [RequireModule("appointments")]
     [HttpGet("staff/appointments/{id:guid}")]

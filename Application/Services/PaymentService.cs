@@ -788,8 +788,22 @@ public partial class PaymentService : IPaymentService
         if (businessId == null || payment.BusinessId != businessId)
             return ApiResponse<PaymentResponse>.Fail("NOT_FOUND", "Payment not found.");
 
-        if (role == "Staff" && !_permissions.HasPermission(role, "payments.confirm_cash"))
-            return ApiResponse<PaymentResponse>.Fail("FORBIDDEN", "You are not allowed to confirm cash payments.");
+        if (role == "Staff")
+        {
+            // The authoritative check is the business's own RBAC, not a persona map:
+            // an owner can grant a receptionist the drawer without granting roles or
+            // pricing. Anonymous staging of cash is not a permission on its own.
+            if (!await _permissions.HasBusinessPermissionAsync(
+                    userId, payment.BusinessId, "payments.confirm_cash"))
+                return ApiResponse<PaymentResponse>.Fail("FORBIDDEN", "You are not allowed to confirm cash payments.");
+
+            // Segregation of duties: the person who recorded the payment cannot be the
+            // person who confirms the money arrived.
+            if (payment.CreatedByUserId == userId)
+                return ApiResponse<PaymentResponse>.Fail(
+                    "SELF_VERIFICATION_FORBIDDEN",
+                    "You recorded this payment; another authorised person must confirm it.");
+        }
 
         // A row that has not named its channel yet is an outstanding amount ("pay after
         // service"), and cash is a valid way to settle it — the act of taking the money is

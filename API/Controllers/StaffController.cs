@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using PunchedApi.API.Filters;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
+using PunchedApi.Application.Services;
 using PunchedApi.Domain.Interfaces;
 
 namespace PunchedApi.API.Controllers;
@@ -30,10 +31,231 @@ namespace PunchedApi.API.Controllers;
 public partial class StaffController : ControllerBase
 {
     private readonly IStaffManagementService _staff;
+    private readonly IStaffReportingService _reports;
+    private readonly IStaffAuditService _audit;
+    private readonly IStaffPermissionOnboardingService _onboarding;
 
-    public StaffController(IStaffManagementService staff)
+    public StaffController(
+        IStaffManagementService staff,
+        IStaffReportingService reports,
+        IStaffAuditService audit,
+        IStaffPermissionOnboardingService onboarding)
     {
         _staff = staff;
+        _reports = reports;
+        _audit = audit;
+        _onboarding = onboarding;
+    }
+
+    /// <summary>
+    /// What staff in this business still cannot do after the new capabilities shipped,
+    /// with the least-privilege recommendation per platform role. Read-only.
+    /// </summary>
+    [HttpGet("permissions/onboarding")]
+    [RequirePermission("roles.view")]
+    [ProducesResponseType(typeof(ApiResponse<StaffPermissionOnboardingResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetPermissionOnboarding()
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _onboarding.GetAsync(userId.Value, HttpContext.RequestAborted);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// Applies only the grants the owner explicitly confirmed. An existing business is
+    /// never given new staff authority without this call; the closed list of grantable
+    /// codes prevents this shortcut from becoming a general permission editor.
+    /// </summary>
+    [HttpPost("permissions/onboarding")]
+    [RequirePermission("roles.manage")]
+    [ProducesResponseType(typeof(ApiResponse<StaffPermissionOnboardingResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ApplyPermissionOnboarding(
+        [FromBody] ApplyStaffPermissionOnboardingRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _onboarding.ApplyAsync(userId.Value, request, HttpContext.RequestAborted);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// The staff lifecycle trail: invitations, activation, profile, assignments and
+    /// permission changes, newest first. Read-only — the trail has no write endpoint.
+    /// </summary>
+    [HttpGet("activity-log")]
+    [RequirePermission("staff.view")]
+    [ProducesResponseType(typeof(ApiResponse<List<StaffAuditEventResponse>>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetActivityLog(
+        [FromQuery] Guid? staffId = null,
+        [FromQuery] int take = 100)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _audit.ListAsync(userId.Value, staffId, take, HttpContext.RequestAborted);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// The Financials tab: attributed revenue, collected money, outstanding balance
+    /// and the average rate card for every staff member over the selected period.
+    /// </summary>
+    /// <remarks>
+    /// Every figure is derived from persisted appointments, the booked service-line
+    /// price snapshot and settled payments — never from the current catalogue price.
+    /// The business is resolved from the caller, so a report can only describe the
+    /// caller's own tenant.
+    /// </remarks>
+    [HttpGet("financials")]
+    [RequirePermission("staff.view")]
+    [RequirePermission("finances.view")]
+    [ProducesResponseType(typeof(ApiResponse<StaffFinancialReportResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetFinancials(
+        [FromQuery] DateOnly? from = null,
+        [FromQuery] DateOnly? to = null,
+        [FromQuery] string? range = null,
+        [FromQuery] Guid? staffId = null,
+        [FromQuery] string? status = null,
+        [FromQuery] string? search = null,
+        [FromQuery] string? sortBy = null,
+        [FromQuery] string? sortDirection = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 25)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _reports.GetFinancialsAsync(userId.Value, new StaffReportQuery
+        {
+            From = from,
+            To = to,
+            Range = range,
+            StaffId = staffId,
+            Status = status,
+            Search = search,
+            SortBy = sortBy,
+            SortDirection = sortDirection,
+            Page = page,
+            PageSize = pageSize
+        }, HttpContext.RequestAborted);
+
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// The Performance tab: completion, cancellation and no-show rates, repeat
+    /// custom, ratings and the change against the preceding period of equal length.
+    /// </summary>
+    [HttpGet("performance")]
+    [RequirePermission("staff.view")]
+    [ProducesResponseType(typeof(ApiResponse<StaffPerformanceReportResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetPerformance(
+        [FromQuery] DateOnly? from = null,
+        [FromQuery] DateOnly? to = null,
+        [FromQuery] string? range = null,
+        [FromQuery] Guid? staffId = null,
+        [FromQuery] string? status = null,
+        [FromQuery] string? search = null,
+        [FromQuery] string? sortBy = null,
+        [FromQuery] string? sortDirection = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 25)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _reports.GetPerformanceAsync(userId.Value, new StaffReportQuery
+        {
+            From = from,
+            To = to,
+            Range = range,
+            StaffId = staffId,
+            Status = status,
+            Search = search,
+            SortBy = sortBy,
+            SortDirection = sortDirection,
+            Page = page,
+            PageSize = pageSize
+        }, HttpContext.RequestAborted);
+
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// The lifecycle consequences of deactivating this member, resolved before the
+    /// transition: future bookings, undecided payment claims, outstanding balance, an
+    /// open attendance session and the colleagues qualified to take the work.
+    /// </summary>
+    [HttpGet("{staffId:guid}/deactivation-impact")]
+    [RequirePermission("staff.view")]
+    [ProducesResponseType(typeof(ApiResponse<StaffDeactivationImpactResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetDeactivationImpact(Guid staffId)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _staff.GetDeactivationImpactAsync(
+            userId.Value, GetTenantRole(), staffId, HttpContext.RequestAborted);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// Hands this member's future appointments to an eligible colleague, one batch at a
+    /// time. Used before deactivating somebody and whenever a diary needs relieving;
+    /// completed work is never re-attributed.
+    /// </summary>
+    [HttpPost("{staffId:guid}/reassign-appointments")]
+    [RequirePermission("staff.manage")]
+    [ProducesResponseType(typeof(ApiResponse<StaffReassignmentResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> ReassignAppointments(
+        Guid staffId, [FromBody] ReassignStaffAppointmentsRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _staff.ReassignAppointmentsAsync(
+            userId.Value, GetTenantRole(), staffId, request, HttpContext.RequestAborted);
+        return result.Success ? Ok(result) : MapFailure(result);
+    }
+
+    /// <summary>
+    /// The workforce summary behind the Staff overview: head count, appointments
+    /// handled, revenue attributed and collected, outstanding balance, undecided
+    /// payment claims and the quality rates — over the selected period, computed from
+    /// the same definitions as the Financials and Performance tabs.
+    /// </summary>
+    [HttpGet("overview/summary")]
+    [RequirePermission("staff.view")]
+    [ProducesResponseType(typeof(ApiResponse<StaffOverviewSummaryResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> GetOverviewSummary(
+        [FromQuery] DateOnly? from = null,
+        [FromQuery] DateOnly? to = null,
+        [FromQuery] string? range = null)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _reports.GetOverviewSummaryAsync(userId.Value, new StaffReportQuery
+        {
+            From = from,
+            To = to,
+            Range = range
+        }, HttpContext.RequestAborted);
+
+        return result.Success ? Ok(result) : MapFailure(result);
     }
 
     /// <summary>One staff member's full management profile.</summary>

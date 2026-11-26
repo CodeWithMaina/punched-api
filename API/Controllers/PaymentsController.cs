@@ -93,6 +93,7 @@ public class PaymentsController : ControllerBase
     /// <summary>Business finance dashboard aggregates.</summary>
     [HttpGet("dashboard")]
     [Authorize(Policy = MembershipPolicies.OwnerOrStaffOrAdmin)]
+    [RequirePermission("payments.view")]
     [ProducesResponseType(typeof(ApiResponse<PaymentDashboardResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> Dashboard()
     {
@@ -105,6 +106,7 @@ public class PaymentsController : ControllerBase
     /// <summary>Authorised staff/business confirms physical cash was received (audited, idempotent).</summary>
     [HttpPost("{id:guid}/confirm-cash")]
     [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
+    [RequirePermission("payments.confirm_cash")]
     [ProducesResponseType(typeof(ApiResponse<PaymentResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> ConfirmCash(Guid id, [FromBody] ConfirmCashRequest request)
     {
@@ -179,6 +181,7 @@ public class PaymentsController : ControllerBase
     /// </summary>
     [HttpGet("verification")]
     [Authorize(Policy = MembershipPolicies.OwnerOrStaffOrAdmin)]
+    [RequirePermission("payments.view")]
     [ProducesResponseType(typeof(ApiResponse<PaymentVerificationQueueResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> VerificationQueue(
         [FromQuery] string? status, [FromQuery] string? search,
@@ -202,6 +205,7 @@ public class PaymentsController : ControllerBase
     /// <summary>Mark a submitted payment as being reviewed (non-terminal, idempotent).</summary>
     [HttpPost("{id:guid}/verification/under-review")]
     [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
+    [RequirePermission("payments.verify")]
     [ProducesResponseType(typeof(ApiResponse<PaymentResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> MarkUnderReview(Guid id)
     {
@@ -214,6 +218,7 @@ public class PaymentsController : ControllerBase
     /// <summary>Confirm a submitted payment. The only path from a pasted SMS to a settled payment.</summary>
     [HttpPost("{id:guid}/verification/approve")]
     [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
+    [RequirePermission("payments.verify")]
     [ProducesResponseType(typeof(ApiResponse<PaymentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Approve(Guid id, [FromBody] VerifyPaymentRequest request)
@@ -227,6 +232,7 @@ public class PaymentsController : ControllerBase
     /// <summary>Reject a submitted payment. The reason is mandatory and is shown to the customer.</summary>
     [HttpPost("{id:guid}/verification/reject")]
     [Authorize(Policy = MembershipPolicies.OwnerOrStaff)]
+    [RequirePermission("payments.verify")]
     [ProducesResponseType(typeof(ApiResponse<PaymentResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Reject(Guid id, [FromBody] RejectPaymentRequest request)

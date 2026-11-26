@@ -21,7 +21,7 @@ namespace PunchedApi.API.Controllers;
 [Produces("application/json")]
 [Authorize(Policy = MembershipPolicies.Owner)]
 [RequireModule("staff")]
-[EnableRateLimiting("general")]
+[EnableRateLimiting("staff-invitation")]
 public class StaffInvitationsController : ControllerBase
 {
     private readonly IInvitationService _invitationService;
@@ -121,6 +121,7 @@ public class StaffInvitationsController : ControllerBase
 [Route("v1/invitations")]
 [Produces("application/json")]
 [AllowAnonymous]
+[EnableRateLimiting("staff-invitation")]
 public class InvitationsController : ControllerBase
 {
     private readonly IInvitationService _invitationService;
@@ -191,6 +192,7 @@ public class InvitationsController : ControllerBase
 [Route("v1/invitations")]
 [Produces("application/json")]
 [Authorize]
+[EnableRateLimiting("staff-invitation")]
 public class InvitationAcceptanceController : ControllerBase
 {
     private readonly IInvitationService _invitationService;

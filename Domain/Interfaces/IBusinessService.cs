@@ -84,16 +84,16 @@ public interface IBusinessService
     string? status = null,
     string? activity = null,
     string? goalStatus = null,
-    string sortBy = "name",
-    string sortDirection = "asc",
+    string sortBy = "added",
+    string sortDirection = "desc",
     int page = 1,
-    int pageSize = 20);
+    int pageSize = 20,
+    Guid? serviceCategoryId = null);
     Task<ApiResponse<StaffOverviewResponse>> GetStaffOverviewAsync(Guid ownerId);
     Task<ApiResponse<StaffMemberAnalyticsResponse>> GetStaffMemberAnalyticsAsync(Guid ownerId, Guid staffUserId, string period);
     Task<ApiResponse<StaffActivityFeedResponse>> GetStaffActivityForOwnerAsync(Guid ownerId, Guid staffUserId, StaffActivityFilterRequest request);
     Task<ApiResponse<StaffActivityFeedResponse>> GetMyStaffActivityAsync(Guid staffUserId, StaffActivityFilterRequest request);
     Task<ApiResponse<CustomerPeriodStatsResponse>> GetCustomerPeriodStatsAsync(Guid ownerId, Guid customerId, string period);
-    Task<ApiResponse<MessageResponse>> LinkStaffToBusinessAsync(Guid ownerId, Guid staffUserId);
     Task<ApiResponse<BusinessResponse>> SetBusinessDailyGoalAsync(Guid ownerId, int? dailyGoal, string? dailyGoalType = null, int? appointmentDailyGoal = null);
     Task<ApiResponse<StaffMemberResponse>> SetStaffDailyGoalAsync(Guid ownerId, Guid staffUserId, int? dailyGoal, int? appointmentDailyGoal = null);
     Task<ApiResponse<BusinessAnalyticsResponse>> GetBusinessAnalyticsAsync(Guid ownerId, string period);

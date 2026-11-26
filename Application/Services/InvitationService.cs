@@ -1,12 +1,15 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Settings;
 using PunchedApi.Domain.Entities;
 using PunchedApi.Domain.Interfaces;
+using PunchedApi.Infrastructure.Data;
 
 namespace PunchedApi.Application.Services;
 
@@ -31,13 +34,29 @@ public class InvitationService : IInvitationService
     /// <summary>Canonical membership writer — invitation acceptance is a membership grant.</summary>
     private readonly IBusinessMembershipService _memberships;
 
+    /// <summary>Append-only lifecycle trail; staged on the same context, saved by the caller.</summary>
+    private readonly IStaffAuditService? _audit;
+
+    /// <summary>
+    /// Direct context for the prefilled onboarding lookups/writes (positions,
+    /// categories, `staff_service_categories`). Optional so existing test
+    /// construction keeps working; production DI supplies it.
+    /// </summary>
+    private readonly ApplicationDbContext? _context;
+
+    /// <summary>Drops the business permission cache after a membership is granted.</summary>
+    private readonly IBusinessPermissionService? _businessPermissions;
+
     public InvitationService(
         IUnitOfWork unitOfWork,
         JwtTokenService jwtService,
         IEmailService emailService,
         IOptions<PublicAppSettings> publicApp,
         ILogger<InvitationService> logger,
-        IBusinessMembershipService? memberships = null)
+        IBusinessMembershipService? memberships = null,
+        IStaffAuditService? audit = null,
+        ApplicationDbContext? context = null,
+        IBusinessPermissionService? businessPermissions = null)
     {
         _unitOfWork = unitOfWork;
         _jwtService = jwtService;
@@ -45,6 +64,9 @@ public class InvitationService : IInvitationService
         _publicApp = publicApp.Value;
         _logger = logger;
         _memberships = memberships ?? new BusinessMembershipService(unitOfWork);
+        _audit = audit;
+        _context = context;
+        _businessPermissions = businessPermissions;
     }
 
     /// <inheritdoc />
@@ -57,7 +79,73 @@ public class InvitationService : IInvitationService
             if (business == null)
                 return ApiResponse<StaffInvitationResponse>.Fail("NOT_FOUND", "No business found for this account.");
 
-            var email = request.Email.Trim().ToLowerInvariant();
+            var email = request.Email?.Trim().ToLowerInvariant() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(email) || email.Length > 255 || !email.Contains('@'))
+                return ApiResponse<StaffInvitationResponse>.Fail(
+                    "VALIDATION_ERROR", "A valid email address is required.");
+
+            var fullName = NormalizeName(request.FullName);
+            if (fullName is { Length: < 2 } or { Length: > 150 })
+                return ApiResponse<StaffInvitationResponse>.Fail(
+                    "VALIDATION_ERROR", "The staff name must be between 2 and 150 characters.");
+
+            string? phone = null;
+            if (!string.IsNullOrWhiteSpace(request.PhoneNumber))
+            {
+                phone = NormalizePhone(request.PhoneNumber);
+                if (phone == null)
+                    return ApiResponse<StaffInvitationResponse>.Fail(
+                        "VALIDATION_ERROR",
+                        "Enter a valid phone number (7–20 digits, optionally starting with +).");
+            }
+
+            var categoryIds = (request.ServiceCategoryIds ?? [])
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+            var positionId = request.PositionId;
+
+            // Prefill is validated against THIS business before anything is stored, so an
+            // invitation can never carry another tenant's position or category.
+            if (_context != null)
+            {
+                if (positionId is Guid pid)
+                {
+                    var positionValid = await _context.StaffPositions.AsNoTracking()
+                        .AnyAsync(p => p.Id == pid && p.BusinessId == business.Id && p.IsActive);
+                    if (!positionValid)
+                        return ApiResponse<StaffInvitationResponse>.Fail(
+                            "INVALID_POSITION", "That position does not belong to your business.");
+                }
+
+                if (categoryIds.Count > 0)
+                {
+                    var validCategories = await _context.ServiceCategories.AsNoTracking()
+                        .CountAsync(c => c.BusinessId == business.Id && categoryIds.Contains(c.Id));
+                    if (validCategories != categoryIds.Count)
+                        return ApiResponse<StaffInvitationResponse>.Fail(
+                            "INVALID_CATEGORY",
+                            "One or more service categories do not belong to your business.");
+                }
+
+                // Inviting somebody who is already on the team is a mistake, not a second
+                // membership: the unique (user, business) key would reject it anyway.
+                var existingUserId = await _context.Users.AsNoTracking()
+                    .Where(u => u.Email == email)
+                    .Select(u => (Guid?)u.Id)
+                    .FirstOrDefaultAsync();
+
+                if (existingUserId is Guid existingId)
+                {
+                    var alreadyMember = await _context.BusinessMemberships.AsNoTracking()
+                        .AnyAsync(m => m.UserId == existingId && m.BusinessId == business.Id
+                            && m.Status != BusinessMembershipStatus.Left);
+                    if (alreadyMember)
+                        return ApiResponse<StaffInvitationResponse>.Fail(
+                            "ALREADY_MEMBER",
+                            "That person is already a member of your business.");
+                }
+            }
 
             // Prevent duplicate pending invitations for the same business+email.
             var existingPending = await _unitOfWork.StaffInvitations.FirstOrDefaultAsync(i =>
@@ -77,6 +165,12 @@ public class InvitationService : IInvitationService
                 Id = Guid.NewGuid(),
                 BusinessId = business.Id,
                 InvitedEmail = email,
+                InvitedFullName = fullName,
+                InvitedPhoneNumber = phone,
+                PositionId = positionId,
+                ServiceCategoryIdsJson = categoryIds.Count == 0
+                    ? null
+                    : JsonSerializer.Serialize(categoryIds),
                 InvitingUserId = businessOwnerId,
                 TokenHash = HashToken(token),
                 Status = InvitationStatus.Pending,
@@ -100,10 +194,30 @@ public class InvitationService : IInvitationService
 
             await SendInvitationEmailAsync(invitation, token);
 
+            _audit?.Record(
+                business.Id,
+                staffUserId: null,
+                actorUserId: businessOwnerId,
+                StaffAuditEventTypes.InvitationCreated,
+                $"Invitation sent to {email}.",
+                new
+                {
+                    invitationId = invitation.Id,
+                    email,
+                    fullName,
+                    phoneNumber = phone,
+                    positionId,
+                    serviceCategoryIds = categoryIds,
+                    expiresAt = invitation.ExpiresAt
+                });
+            // Staged by the audit writer on the same context; this save commits only
+            // the trail row (the invitation itself was saved above).
+            await _unitOfWork.SaveChangesAsync();
+
             _logger.LogInformation("Staff invitation created by owner {Owner} for {Email} at business {Business}",
                 businessOwnerId, email, business.Id);
 
-            return ApiResponse<StaffInvitationResponse>.Ok(MapToResponse(invitation));
+            return ApiResponse<StaffInvitationResponse>.Ok(await BuildInvitationResponseAsync(invitation));
         }
         catch (Exception ex)
         {
@@ -120,10 +234,12 @@ public class InvitationService : IInvitationService
 
         var invitations = (await _unitOfWork.StaffInvitations.FindAsync(i => i.BusinessId == business.Id))
             .OrderByDescending(i => i.CreatedAt)
-            .Select(MapToResponse)
             .ToList();
 
-        return ApiResponse<List<StaffInvitationResponse>>.Ok(invitations);
+        var responses = invitations.Select(MapToResponse).ToList();
+        await EnrichInvitationResponsesAsync(business.Id, invitations, responses);
+
+        return ApiResponse<List<StaffInvitationResponse>>.Ok(responses);
     }
 
     /// <inheritdoc />
@@ -150,10 +266,19 @@ public class InvitationService : IInvitationService
         _unitOfWork.StaffInvitations.Update(invitation);
         await _unitOfWork.SaveChangesAsync();
 
+        _audit?.Record(
+            business.Id,
+            staffUserId: null,
+            actorUserId: businessOwnerId,
+            StaffAuditEventTypes.InvitationResent,
+            $"Invitation re-sent to {invitation.InvitedEmail}.",
+            new { invitationId = invitation.Id, resendCount = invitation.ResendCount, expiresAt = invitation.ExpiresAt });
+        await _unitOfWork.SaveChangesAsync();
+
         await SendInvitationEmailAsync(invitation, token);
 
         _logger.LogInformation("Re-sent staff invitation {InvitationId} for {Email}", invitation.Id, invitation.InvitedEmail);
-        return ApiResponse<StaffInvitationResponse>.Ok(MapToResponse(invitation));
+        return ApiResponse<StaffInvitationResponse>.Ok(await BuildInvitationResponseAsync(invitation));
     }
 
     /// <inheritdoc />
@@ -177,6 +302,15 @@ public class InvitationService : IInvitationService
             invitation.Status = InvitationStatus.Revoked;
             invitation.RevokedAt = DateTime.UtcNow;
             _unitOfWork.StaffInvitations.Update(invitation);
+
+            _audit?.Record(
+                business.Id,
+                staffUserId: null,
+                actorUserId: businessOwnerId,
+                StaffAuditEventTypes.InvitationRevoked,
+                $"Invitation to {invitation.InvitedEmail} revoked.",
+                new { invitationId = invitation.Id, email = invitation.InvitedEmail });
+
             await _unitOfWork.SaveChangesAsync();
         }
 
@@ -203,7 +337,7 @@ public class InvitationService : IInvitationService
         if (LifecycleError(invitation) is { } lifecycle)
             return Invalid(lifecycle.Code, lifecycle.Message);
 
-        return ApiResponse<StaffInvitationValidationResponse>.Ok(new StaffInvitationValidationResponse
+        var response = new StaffInvitationValidationResponse
         {
             Valid = true,
             BusinessId = invitation.BusinessId,
@@ -211,7 +345,10 @@ public class InvitationService : IInvitationService
             BusinessLogoUrl = business.LogoUrl,
             Email = invitation.InvitedEmail,
             ExpiresAt = invitation.ExpiresAt
-        });
+        };
+
+        await EnrichValidationAsync(response, invitation);
+        return ApiResponse<StaffInvitationValidationResponse>.Ok(response);
     }
     /// <inheritdoc />
     public async Task<ApiResponse<AuthResponse>> AcceptStaffInvitationAsync(string token, AcceptStaffInvitationRequest request)
@@ -256,6 +393,14 @@ public class InvitationService : IInvitationService
                     "An account with this email already exists. Sign in and open the invitation link again to join as staff.");
             }
 
+            var effectiveName = NormalizeName(invitation.InvitedFullName) ?? NormalizeName(request.FullName);
+            if (effectiveName is null || effectiveName.Length < 2 || effectiveName.Length > 150)
+                return ApiResponse<AuthResponse>.Fail("VALIDATION_ERROR", "Enter your full name (2–150 characters).");
+
+            var effectivePhone = invitation.InvitedPhoneNumber ?? NormalizePhone(request.PhoneNumber);
+            if (!string.IsNullOrWhiteSpace(request.PhoneNumber) && NormalizePhone(request.PhoneNumber) == null)
+                return ApiResponse<AuthResponse>.Fail("VALIDATION_ERROR", "Enter a valid phone number.");
+
             var passwordHash = BCrypt.Net.BCrypt.HashPassword(request.Password, 12);
 
             var userAuth = new UserAuth
@@ -277,7 +422,8 @@ public class InvitationService : IInvitationService
             {
                 Id = Guid.NewGuid(),
                 Email = invitedEmail,
-                FullName = request.FullName.Trim(),
+                FullName = effectiveName,
+                PhoneNumber = effectivePhone,
                 // Persona hint for UI routing; the grant below is the membership.
                 Role = UserRole.Staff,
                 CreatedAt = DateTime.UtcNow
@@ -287,15 +433,34 @@ public class InvitationService : IInvitationService
             // The invitation IS the membership grant. Same unit of work as the
             // identity and the invitation status change: a committed staff
             // account always has its membership and a consumed token.
-            await _memberships.EnsureAsync(
+            var membership = await _memberships.EnsureAsync(
                 user.Id,
                 invitation.BusinessId,
                 BusinessMembershipRole.Staff,
                 invitation.InvitingUserId);
 
+            // Prefilled assignments are applied only after the business has been
+            // re-validated (a position/category may have been deleted while the
+            // invitation was pending), and in the same unit of work.
+            await ApplyInvitationPrefillAsync(membership, invitation);
+
             invitation.Status = InvitationStatus.Accepted;
             invitation.AcceptedAt = DateTime.UtcNow;
             _unitOfWork.StaffInvitations.Update(invitation);
+
+            _audit?.Record(
+                invitation.BusinessId,
+                staffUserId: user.Id,
+                actorUserId: user.Id,
+                StaffAuditEventTypes.InvitationAccepted,
+                $"{user.FullName} accepted the invitation and joined the team.",
+                new
+                {
+                    invitationId = invitation.Id,
+                    email = invitedEmail,
+                    positionId = membership.PositionId,
+                    serviceCategoryIds = ParseCategoryIds(invitation.ServiceCategoryIdsJson)
+                });
 
             // Issue tenant-aware tokens so the staff member is authenticated
             // immediately AND carries the tenant context (biz + bizRole=Staff),
@@ -317,6 +482,7 @@ public class InvitationService : IInvitationService
             try
             {
                 await _unitOfWork.SaveChangesAsync();
+                _businessPermissions?.Invalidate(invitation.BusinessId);
             }
             catch (DbUpdateConcurrencyException)
             {
@@ -418,11 +584,22 @@ public class InvitationService : IInvitationService
 
             // The membership grant rides the same commit as the invitation status
             // change and the token row, so acceptance is atomic and single-use.
-            await _memberships.EnsureAsync(
+            var membership = await _memberships.EnsureAsync(
                 user.Id,
                 invitation.BusinessId,
                 BusinessMembershipRole.Staff,
                 invitation.InvitingUserId);
+
+            await ApplyInvitationPrefillAsync(membership, invitation);
+
+            // An existing account keeps its own identity, but a missing phone (or, only
+            // when the account has no name at all, a missing name) is filled from the
+            // invitation. Nothing the person already stated is overwritten.
+            if (string.IsNullOrWhiteSpace(user.PhoneNumber) && invitation.InvitedPhoneNumber != null)
+                user.PhoneNumber = invitation.InvitedPhoneNumber;
+            if (string.IsNullOrWhiteSpace(user.FullName) && invitation.InvitedFullName != null)
+                user.FullName = invitation.InvitedFullName;
+            _unitOfWork.Users.Update(user);
 
             // Persona stays a routing hint derived from membership.
             if (user.Role != UserRole.Business)
@@ -434,6 +611,20 @@ public class InvitationService : IInvitationService
             invitation.Status = InvitationStatus.Accepted;
             invitation.AcceptedAt = DateTime.UtcNow;
             _unitOfWork.StaffInvitations.Update(invitation);
+
+            _audit?.Record(
+                invitation.BusinessId,
+                staffUserId: user.Id,
+                actorUserId: user.Id,
+                StaffAuditEventTypes.InvitationAccepted,
+                $"{user.FullName} accepted the invitation and joined the team.",
+                new
+                {
+                    invitationId = invitation.Id,
+                    email = invitation.InvitedEmail,
+                    positionId = membership.PositionId,
+                    serviceCategoryIds = ParseCategoryIds(invitation.ServiceCategoryIdsJson)
+                });
 
             var accessToken = _jwtService.GenerateAccessToken(
                 auth, user, invitation.BusinessId, TenantClaimNames.RoleStaff);
@@ -450,6 +641,7 @@ public class InvitationService : IInvitationService
             try
             {
                 await _unitOfWork.SaveChangesAsync();
+                _businessPermissions?.Invalidate(invitation.BusinessId);
             }
             catch (DbUpdateConcurrencyException)
             {
@@ -533,15 +725,152 @@ public class InvitationService : IInvitationService
         return null;
     }
 
+    /// <summary>Trims a name and collapses internal whitespace; null when empty.</summary>
+    private static string? NormalizeName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var collapsed = string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return collapsed.Length == 0 ? null : collapsed;
+    }
+
+    /// <summary>
+    /// Normalises a phone number to an optional leading '+' followed by 7–20 digits.
+    /// Returns null when the value cannot be a phone number, so validation and storage
+    /// cannot disagree.
+    /// </summary>
+    private static string? NormalizePhone(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+
+        var trimmed = value.Trim();
+        var plus = trimmed.StartsWith('+');
+        var digits = new string(trimmed.Where(char.IsDigit).ToArray());
+
+        if (digits.Length is < 7 or > 20) return null;
+
+        return plus ? "+" + digits : digits;
+    }
+
+    private static List<Guid> ParseCategoryIds(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+
+        try
+        {
+            return (JsonSerializer.Deserialize<List<Guid>>(json) ?? [])
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+        }
+        catch (JsonException)
+        {
+            // A corrupt intent payload must not break acceptance: the member joins with
+            // no categories, and the owner can assign them from the staff profile.
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Applies the invitation's position and service categories to the new membership.
+    ///
+    /// <para>Everything is re-validated against the business at acceptance time: a
+    /// position or category deleted while the invitation was pending is silently
+    /// dropped rather than resurrected. Category rows are added to the same unit of
+    /// work, so membership + assignments + invitation status commit together.</para>
+    /// </summary>
+    private async Task ApplyInvitationPrefillAsync(BusinessMembership membership, StaffInvitation invitation)
+    {
+        if (_context == null) return;
+
+        var businessId = invitation.BusinessId;
+        var now = DateTime.UtcNow;
+
+        if (invitation.PositionId is Guid positionId)
+        {
+            var positionValid = await _context.StaffPositions.AsNoTracking()
+                .AnyAsync(p => p.Id == positionId && p.BusinessId == businessId && p.IsActive);
+
+            if (positionValid)
+            {
+                membership.PositionId = positionId;
+                membership.UpdatedAt = now;
+            }
+        }
+
+        var categoryIds = ParseCategoryIds(invitation.ServiceCategoryIdsJson);
+        if (categoryIds.Count == 0) return;
+
+        var validCategoryIds = await _context.ServiceCategories.AsNoTracking()
+            .Where(c => c.BusinessId == businessId && categoryIds.Contains(c.Id))
+            .Select(c => c.Id)
+            .ToListAsync();
+
+        if (validCategoryIds.Count == 0) return;
+
+        var existing = await _context.StaffServiceCategories.AsNoTracking()
+            .Where(a => a.BusinessId == businessId && a.StaffUserId == membership.UserId
+                && validCategoryIds.Contains(a.ServiceCategoryId))
+            .Select(a => a.ServiceCategoryId)
+            .ToListAsync();
+
+        foreach (var categoryId in validCategoryIds.Except(existing))
+        {
+            _context.StaffServiceCategories.Add(new StaffServiceCategory
+            {
+                Id = Guid.NewGuid(),
+                BusinessId = businessId,
+                StaffUserId = membership.UserId,
+                ServiceCategoryId = categoryId,
+                CreatedAt = now
+            });
+        }
+    }
+
+    /// <summary>Position and category display names for the email, in one query each.</summary>
+    private async Task<(string? PositionName, List<string> CategoryNames)> ResolvePrefillDisplayAsync(
+        StaffInvitation invitation)
+    {
+        if (_context == null) return (null, []);
+
+        string? positionName = null;
+        if (invitation.PositionId is Guid positionId)
+        {
+            positionName = await _context.StaffPositions.AsNoTracking()
+                .Where(p => p.Id == positionId && p.BusinessId == invitation.BusinessId)
+                .Select(p => p.Name)
+                .FirstOrDefaultAsync();
+        }
+
+        var categoryIds = ParseCategoryIds(invitation.ServiceCategoryIdsJson);
+        if (categoryIds.Count == 0) return (positionName, []);
+
+        var names = await _context.ServiceCategories.AsNoTracking()
+            .Where(c => c.BusinessId == invitation.BusinessId && categoryIds.Contains(c.Id))
+            .OrderBy(c => c.SortOrder)
+            .ThenBy(c => c.Name)
+            .Select(c => c.Name)
+            .ToListAsync();
+
+        return (positionName, names);
+    }
+
     private async Task SendInvitationEmailAsync(StaffInvitation invitation, string token)
     {
         var url = $"{_publicApp.BaseUrl.TrimEnd('/')}/invitations/accept?token={token}";
         var business = await _unitOfWork.Businesses.GetByIdAsync(invitation.BusinessId);
         var businessName = business?.Name ?? "the business";
+        var (positionName, categoryNames) = await ResolvePrefillDisplayAsync(invitation);
 
         try
         {
-            var ok = await _emailService.SendStaffInvitationAsync(invitation.InvitedEmail, businessName, url, invitation.ExpiresAt);
+            var ok = await _emailService.SendStaffInvitationAsync(
+                invitation.InvitedEmail,
+                businessName,
+                url,
+                invitation.ExpiresAt,
+                invitation.InvitedFullName,
+                positionName,
+                categoryNames);
             if (!ok) _logger.LogWarning("Email provider reported a failure sending invitation to {Email}", invitation.InvitedEmail);
         }
         catch (Exception ex)
@@ -557,11 +886,109 @@ public class InvitationService : IInvitationService
     private static string HashToken(string token)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
 
+    /// <summary>
+    /// Resolves the display names for a page of invitations in two batched queries
+    /// (positions, categories) — never one query per row.
+    /// </summary>
+    private async Task EnrichInvitationResponsesAsync(
+        Guid businessId, List<StaffInvitation> invitations, List<StaffInvitationResponse> responses)
+    {
+        if (_context == null || invitations.Count == 0) return;
+
+        var positionIds = invitations
+            .Where(i => i.PositionId.HasValue)
+            .Select(i => i.PositionId!.Value)
+            .Distinct()
+            .ToList();
+
+        var positionNames = positionIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _context.StaffPositions.AsNoTracking()
+                .Where(p => p.BusinessId == businessId && positionIds.Contains(p.Id))
+                .ToDictionaryAsync(p => p.Id, p => p.Name);
+
+        var categoryIds = invitations
+            .SelectMany(i => ParseCategoryIds(i.ServiceCategoryIdsJson))
+            .Distinct()
+            .ToList();
+
+        var categories = categoryIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _context.ServiceCategories.AsNoTracking()
+                .Where(c => c.BusinessId == businessId && categoryIds.Contains(c.Id))
+                .OrderBy(c => c.SortOrder)
+                .ThenBy(c => c.Name)
+                .ToDictionaryAsync(c => c.Id, c => c.Name);
+
+        for (var index = 0; index < invitations.Count; index++)
+        {
+            var invitation = invitations[index];
+            var response = responses[index];
+
+            response.FullName = invitation.InvitedFullName;
+            response.PhoneNumber = invitation.InvitedPhoneNumber;
+            response.PositionId = invitation.PositionId;
+            response.PositionName = invitation.PositionId.HasValue
+                && positionNames.TryGetValue(invitation.PositionId.Value, out var positionName)
+                    ? positionName
+                    : null;
+
+            response.Categories = ParseCategoryIds(invitation.ServiceCategoryIdsJson)
+                .Where(categories.ContainsKey)
+                .Select(id => new ProviderCategoryResponse { Id = id, Name = categories[id] })
+                .ToList();
+        }
+    }
+
+    /// <summary>Fills the public acceptance page's prefill and account-exists hint.</summary>
+    private async Task EnrichValidationAsync(
+        StaffInvitationValidationResponse response, StaffInvitation invitation)
+    {
+        response.FullName = invitation.InvitedFullName;
+        response.PhoneNumber = invitation.InvitedPhoneNumber;
+
+        if (_context == null) return;
+
+        var (positionName, _) = await ResolvePrefillDisplayAsync(invitation);
+        response.PositionName = positionName;
+
+        var categoryIds = ParseCategoryIds(invitation.ServiceCategoryIdsJson);
+        if (categoryIds.Count > 0)
+        {
+            var rows = await _context.ServiceCategories.AsNoTracking()
+                .Where(c => c.BusinessId == invitation.BusinessId && categoryIds.Contains(c.Id))
+                .OrderBy(c => c.SortOrder)
+                .ThenBy(c => c.Name)
+                .Select(c => new { c.Id, c.Name })
+                .ToListAsync();
+
+            response.Categories = rows
+                .Select(c => new ProviderCategoryResponse { Id = c.Id, Name = c.Name })
+                .ToList();
+        }
+
+        // The page offers "sign in and accept" instead of account creation. The
+        // account is never attached by the public token endpoint itself.
+        response.AlreadyRegistered = await _context.UserAuths.AsNoTracking()
+            .AnyAsync(a => a.Email == invitation.InvitedEmail);
+
+    }
+
+    private async Task<StaffInvitationResponse> BuildInvitationResponseAsync(StaffInvitation invitation)
+    {
+        var response = MapToResponse(invitation);
+        await EnrichInvitationResponsesAsync(invitation.BusinessId, [invitation], [response]);
+        return response;
+    }
+
     private static StaffInvitationResponse MapToResponse(StaffInvitation i) => new()
     {
         Id = i.Id,
         BusinessId = i.BusinessId,
         Email = i.InvitedEmail,
+        FullName = i.InvitedFullName,
+        PhoneNumber = i.InvitedPhoneNumber,
+        PositionId = i.PositionId,
         InvitedByUserId = i.InvitingUserId,
         Status = i.Status,
         StatusLabel = i.Status switch

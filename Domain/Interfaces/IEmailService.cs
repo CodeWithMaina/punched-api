@@ -15,5 +15,12 @@ public interface IEmailService
     /// <param name="businessName">The inviting business's name.</param>
     /// <param name="invitationUrl">Full absolute URL to the invitation acceptance page.</param>
     /// <param name="expiresAt">UTC expiry of the invitation.</param>
-    Task<bool> SendStaffInvitationAsync(string email, string businessName, string invitationUrl, DateTime expiresAt);
+    Task<bool> SendStaffInvitationAsync(
+        string email,
+        string businessName,
+        string invitationUrl,
+        DateTime expiresAt,
+        string? invitedName = null,
+        string? positionName = null,
+        IReadOnlyList<string>? categoryNames = null);
 }

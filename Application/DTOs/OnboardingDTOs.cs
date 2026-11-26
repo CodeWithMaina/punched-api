@@ -9,12 +9,31 @@ namespace PunchedApi.Application.DTOs;
 
 /// <summary>
 /// POST /v1/businesses/me/staff/invitations — request body.
-/// The invited email address is the primary onboarding identifier.
+///
+/// <para>The email is the onboarding identifier. The other fields are optional so
+/// clients written before prefilled onboarding keep working; when supplied they are
+/// validated and shown back to the invitee as a prefilled form.</para>
 /// </summary>
 public class CreateStaffInvitationRequest
 {
     [JsonPropertyName("email")]
     public string Email { get; set; } = string.Empty;
+
+    /// <summary>Staff full name the invitee will see prefilled (max 150).</summary>
+    [JsonPropertyName("fullName")]
+    public string? FullName { get; set; }
+
+    /// <summary>Contact phone (digits, spaces, + - and parentheses; 7–20 characters).</summary>
+    [JsonPropertyName("phoneNumber")]
+    public string? PhoneNumber { get; set; }
+
+    /// <summary>Job title to assign on acceptance. Must belong to the inviting business.</summary>
+    [JsonPropertyName("positionId")]
+    public Guid? PositionId { get; set; }
+
+    /// <summary>Service categories to assign on acceptance. Each must belong to this business.</summary>
+    [JsonPropertyName("serviceCategoryIds")]
+    public List<Guid>? ServiceCategoryIds { get; set; }
 }
 
 /// <summary>
@@ -31,6 +50,23 @@ public class StaffInvitationResponse
 
     [JsonPropertyName("email")]
     public string Email { get; set; } = string.Empty;
+
+    /// <summary>Prefilled staff name (null for invitations created before prefill).</summary>
+    [JsonPropertyName("fullName")]
+    public string? FullName { get; set; }
+
+    [JsonPropertyName("phoneNumber")]
+    public string? PhoneNumber { get; set; }
+
+    [JsonPropertyName("positionId")]
+    public Guid? PositionId { get; set; }
+
+    [JsonPropertyName("positionName")]
+    public string? PositionName { get; set; }
+
+    /// <summary>Categories assigned at invitation time, resolved to names for display.</summary>
+    [JsonPropertyName("categories")]
+    public List<ProviderCategoryResponse> Categories { get; set; } = [];
 
     [JsonPropertyName("invitedByUserId")]
     public Guid InvitedByUserId { get; set; }
@@ -84,6 +120,29 @@ public class StaffInvitationValidationResponse
     [JsonPropertyName("email")]
     public string Email { get; set; } = string.Empty;
 
+    /// <summary>Prefilled name, when the owner supplied one.</summary>
+    [JsonPropertyName("fullName")]
+    public string? FullName { get; set; }
+
+    /// <summary>Prefilled phone, when the owner supplied one.</summary>
+    [JsonPropertyName("phoneNumber")]
+    public string? PhoneNumber { get; set; }
+
+    [JsonPropertyName("positionName")]
+    public string? PositionName { get; set; }
+
+    /// <summary>Categories that will be assigned on acceptance (names only).</summary>
+    [JsonPropertyName("categories")]
+    public List<ProviderCategoryResponse> Categories { get; set; } = [];
+
+    /// <summary>
+    /// True when an account already exists for the invited email. The page then offers
+    /// the sign-in path instead of account creation; the token still cannot attach an
+    /// existing identity by itself.
+    /// </summary>
+    [JsonPropertyName("alreadyRegistered")]
+    public bool AlreadyRegistered { get; set; }
+
     [JsonPropertyName("expiresAt")]
     public DateTime ExpiresAt { get; set; }
 
@@ -102,6 +161,13 @@ public class AcceptStaffInvitationRequest
 {
     [JsonPropertyName("fullName")]
     public string FullName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional phone number. When the invitation was prefilled, the owner's value wins;
+    /// otherwise this value (when supplied) is stored on the new account.
+    /// </summary>
+    [JsonPropertyName("phoneNumber")]
+    public string? PhoneNumber { get; set; }
 
     [JsonPropertyName("password")]
     public string Password { get; set; } = string.Empty;

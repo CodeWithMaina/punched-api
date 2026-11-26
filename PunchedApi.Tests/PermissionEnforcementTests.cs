@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using PunchedApi.Application.Authorization;
 using PunchedApi.Application.DTOs;
 using PunchedApi.Application.Services;
+using PunchedApi.Domain.Entities;
 using PunchedApi.Infrastructure.Data;
 
 namespace PunchedApi.Tests;
@@ -49,10 +50,17 @@ public class PermissionEnforcementTests : IDisposable
         Assert.True(permissions.HasPermission("Business", "appointments.manage"));
     }
 
-    // ── AppointmentService: staff create-on-behalf is forbidden ──
+    // ── AppointmentService: staff creation is permission-governed ──
 
+    /// <summary>
+    /// The old contract forbade every Staff persona from creating an appointment.
+    /// Creation is now a business permission (<c>appointments.create</c>), granted by
+    /// the owner to a role — so the request passes the authorization gate and is
+    /// answered by the same validation every other booking path uses. The unknown
+    /// service proves the flow continued past authorization without creating anything.
+    /// </summary>
     [Fact]
-    public async Task Staff_CreatingBusinessAppointment_IsForbidden()
+    public async Task Staff_CreatingBusinessAppointment_IsGovernedByBusinessPermission()
     {
         var context = NewContext();
         var owner = BookingTestBase.CreateOwner();
@@ -69,6 +77,56 @@ public class PermissionEnforcementTests : IDisposable
                 CustomerId = Guid.NewGuid(),
                 ServiceIds = new[] { Guid.NewGuid() },
                 ScheduledAt = DateTime.UtcNow.AddHours(1),
+            });
+
+        Assert.False(result.Success);
+        Assert.Equal("SERVICE_NOT_FOUND", result.Error?.Code);
+    }
+
+    /// <summary>
+    /// A service professional may book themselves in, but filling a colleague's
+    /// diary is a management action: it needs <c>appointments.manage</c>. The guard
+    /// runs before availability, so the refusal is authorization — not a calendar
+    /// clash that happens to prevent it.
+    /// </summary>
+    [Fact]
+    public async Task Staff_CannotBookAnotherStaffMember_WithoutManagePermission()
+    {
+        var context = NewContext();
+        var owner = BookingTestBase.CreateOwner("owner-self@test.com");
+        var business = BookingTestBase.CreateBusiness(owner.Id);
+        var customer = BookingTestBase.CreateCustomer("customer-self@test.com");
+        var caller = BookingTestBase.CreateStaff(business.Id, "caller@test.com");
+        var colleague = BookingTestBase.CreateStaff(business.Id, "colleague@test.com");
+        var service = BookingTestBase.CreateService(business.Id, "Cut", 60, 500m);
+
+        var day = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(3));
+        var enrollment = new CustomerBusinessEnrollment
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            BusinessId = business.Id,
+            Status = CustomerBusinessEnrollmentStatus.Active,
+            Source = "test",
+            EnrolledAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
+
+        await BookingTestBase.SeedAsync(context, owner, business, customer, caller, colleague, service,
+            enrollment,
+            BookingTestBase.CreateAssignment(business.Id, colleague.Id, service.Id),
+            BookingTestBase.CreateShift(business.Id, colleague.Id, day, 9, 18));
+
+        var appointmentService = BookingTestBase.CreateAppointmentService(context);
+        var result = await appointmentService.CreateAppointmentOnBehalfAsync(
+            caller.Id, "Staff",
+            new CreateAppointmentOnBehalfRequest
+            {
+                BusinessId = business.Id,
+                CustomerId = customer.Id,
+                ServiceIds = new[] { service.Id },
+                StaffUserId = colleague.Id,
+                ScheduledAt = day.ToDateTime(new TimeOnly(10, 0), DateTimeKind.Utc)
             });
 
         Assert.False(result.Success);

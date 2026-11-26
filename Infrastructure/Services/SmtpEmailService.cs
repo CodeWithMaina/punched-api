@@ -1,3 +1,4 @@
+using System.Net;
 using MailKit.Net.Smtp;
 using MailKit.Security;
 using Microsoft.EntityFrameworkCore;
@@ -88,20 +89,45 @@ public class SmtpEmailService : IEmailService
             </div>
             """);
 
-    public Task<bool> SendStaffInvitationAsync(string email, string businessName, string invitationUrl, DateTime expiresAt)
+    public Task<bool> SendStaffInvitationAsync(
+        string email,
+        string businessName,
+        string invitationUrl,
+        DateTime expiresAt,
+        string? invitedName = null,
+        string? positionName = null,
+        IReadOnlyList<string>? categoryNames = null)
     {
         var expiresLocal = expiresAt.ToLocalTime().ToString("g");
+        var safeBusiness = WebUtility.HtmlEncode(businessName);
+        var safeName = WebUtility.HtmlEncode(invitedName ?? string.Empty);
+        var greeting = string.IsNullOrWhiteSpace(invitedName) ? "Hello" : $"Hi {safeName},";
+
+        // Role and categories are the owner's invitation intent, shown so the invitee
+        // knows what they are accepting before they open the form. Encoded because they
+        // are tenant-supplied strings.
+        var roleLine = string.IsNullOrWhiteSpace(positionName)
+            ? string.Empty
+            : $"<p style=\"color:#444;font-size:15px\">Role: <strong>{WebUtility.HtmlEncode(positionName)}</strong></p>";
+
+        var categoryLine = categoryNames is { Count: > 0 }
+            ? $"<p style=\"color:#444;font-size:15px\">Service categories: <strong>{WebUtility.HtmlEncode(string.Join(", ", categoryNames))}</strong></p>"
+            : string.Empty;
+
         return SendAsync(email, $"You've been invited to join {businessName} 🎉", "staff_invitation", businessName, $"""
             <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px">
-              <h2 style="color:#1a1a1a">You're invited to join {businessName} on Punched</h2>
-              <p style="color:#444;font-size:15px">{businessName} has added you as a team member on <strong>Punched</strong> — the digital loyalty platform. Once you join you'll be able to issue stamps and help reward your customers.</p>
+              <h2 style="color:#1a1a1a">You're invited to join {safeBusiness} on Punched</h2>
+              <p style="color:#444;font-size:15px">{greeting}</p>
+              <p style="color:#444;font-size:15px">{safeBusiness} has added you as a team member on <strong>Punched</strong>. Your details are already filled in — open the secure link to review them, set a password and join.</p>
+              {roleLine}
+              {categoryLine}
               <div style="padding:20px 0">
-                <a href="{invitationUrl}" style="background:#10b981;color:white;padding:14px 30px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:15px;display:inline-block">Accept Invitation</a>
+                <a href="{invitationUrl}" style="background:#10b981;color:white;padding:14px 30px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:15px;display:inline-block">Review &amp; accept invitation</a>
               </div>
               <p style="color:#666;font-size:13px">This invitation link expires on <strong>{expiresLocal}</strong>. If the link has expired, ask your business owner to resend it.</p>
               <p style="color:#666;font-size:13px">If the button above does not work, copy and paste this address into your browser:</p>
               <p style="color:#444;font-size:12px;word-break:break-all;background:#f4f4f5;padding:12px;border-radius:8px">{invitationUrl}</p>
-              <p style="color:#888;font-size:13px">If you weren't expecting this email, you can safely ignore it.</p>
+              <p style="color:#888;font-size:13px">Punched will never ask you for this link. If you weren't expecting this email, you can safely ignore it.</p>
             </div>
             """);
     }

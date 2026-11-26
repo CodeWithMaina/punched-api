@@ -89,8 +89,7 @@ public class AuthModelInvariantsTests
     private static InvitationService CreateInvitationService(ApplicationDbContext context)
     {
         var emailMock = new Mock<IEmailService>();
-        emailMock.Setup(e => e.SendStaffInvitationAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTime>()))
+        emailMock.Setup(e => e.SendStaffInvitationAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<IReadOnlyList<string>?>()))
             .ReturnsAsync(true);
 
         return new InvitationService(

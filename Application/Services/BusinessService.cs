@@ -1829,10 +1829,11 @@ public partial class BusinessService : IBusinessService
         string? status = null,
         string? activity = null,
         string? goalStatus = null,
-        string sortBy = "name",
-        string sortDirection = "asc",
+        string sortBy = "added",
+        string sortDirection = "desc",
         int page = 1,
-        int pageSize = 20)
+        int pageSize = 20,
+        Guid? serviceCategoryId = null)
     {
         var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
         if (business == null)
@@ -1855,17 +1856,78 @@ public partial class BusinessService : IBusinessService
 
         var staffIdsForList = rosterMemberships.Select(m => m.UserId).ToList();
 
+        // Category filter: only the members assigned to that category. Resolved in one
+        // query so the roster query stays a single statement.
+        if (serviceCategoryId is Guid categoryId)
+        {
+            var categoryStaffIds = await _context.StaffServiceCategories.AsNoTracking()
+                .Where(a => a.BusinessId == business.Id && a.ServiceCategoryId == categoryId)
+                .Select(a => a.StaffUserId)
+                .Distinct()
+                .ToListAsync();
+
+            staffIdsForList = staffIdsForList.Where(categoryStaffIds.Contains).ToList();
+        }
+
+        if (staffIdsForList.Count == 0)
+        {
+            return ApiResponse<StaffListResponse>.Ok(new StaffListResponse
+            {
+                Items = [],
+                Page = Math.Max(1, page),
+                PageSize = Math.Clamp(pageSize, 1, 100),
+                Total = 0,
+                TotalPages = 0
+            });
+        }
+
         var query = _context.Users
             .Where(u => staffIdsForList.Contains(u.Id) && !u.IsDeleted)
             .AsNoTracking();
 
-        // DB-level search across name and email.
+        // DB-level search across name, email, phone and assigned category name.
+        // The category match is resolved to a small id set first, so the row predicate
+        // remains a plain IN and stays index-friendly.
         if (!string.IsNullOrWhiteSpace(search))
         {
-            var pattern = $"%{search.Trim()}%";
+            var term = search.Trim();
+            var pattern = $"%{term}%";
+
+            var categoryMatchIds = await _context.StaffServiceCategories.AsNoTracking()
+                .Where(a => a.BusinessId == business.Id
+                    && _context.ServiceCategories.Any(c =>
+                        c.Id == a.ServiceCategoryId && c.BusinessId == business.Id
+                        && EF.Functions.ILike(c.Name, pattern)))
+                .Select(a => a.StaffUserId)
+                .Distinct()
+                .ToListAsync();
+
             query = query.Where(u =>
                 EF.Functions.ILike(u.FullName, pattern) ||
-                EF.Functions.ILike(u.Email, pattern));
+                EF.Functions.ILike(u.Email, pattern) ||
+                (u.PhoneNumber != null && EF.Functions.ILike(u.PhoneNumber, pattern)) ||
+                categoryMatchIds.Contains(u.Id));
+        }
+
+        // Operational status is the MEMBERSHIP lifecycle, not activity. The predicate is
+        // applied to the membership table itself — the same rows the roster was built
+        // from — so it is a plain indexed EXISTS and cannot drift from the reported state.
+        // "pending" is not a roster state: an invited person who has not joined is not
+        // staff yet, and is reported by the invitations endpoint.
+        var normalizedStatus = status?.Trim().ToLowerInvariant();
+        if (normalizedStatus == "active")
+        {
+            query = query.Where(u => _context.BusinessMemberships.Any(m =>
+                m.UserId == u.Id && m.BusinessId == business.Id
+                && m.Role == BusinessMembershipRole.Staff
+                && m.Status == BusinessMembershipStatus.Active));
+        }
+        else if (normalizedStatus is "inactive" or "suspended")
+        {
+            query = query.Where(u => _context.BusinessMemberships.Any(m =>
+                m.UserId == u.Id && m.BusinessId == business.Id
+                && m.Role == BusinessMembershipRole.Staff
+                && m.Status == BusinessMembershipStatus.Suspended));
         }
 
         // Single projection with correlated aggregates — composed into one SQL
@@ -1896,7 +1958,7 @@ public partial class BusinessService : IBusinessService
                 .Where(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.Date >= weekStart)
                 .Sum(a => (int?)a.Stamps) ?? 0,
             AppointmentsToday = _context.Appointments.Count(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.ScheduledAt >= todayUtc && a.ScheduledAt < tomorrowUtc),
-            AppointmentsLast7d = _context.Appointments.Count(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.ScheduledAt >= weekStartUtc),
+            AppointmentsLast7d = _context.Appointments.Count(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.ScheduledAt >= weekStartUtc && a.ScheduledAt < tomorrowUtc),
             LastActivityAt = _context.Stamps
                 .Where(s => s.AwardedByUserId == u.Id && s.Card.BusinessId == business.Id)
                 .Max(s => (DateTime?)s.StampedAt),
@@ -1943,22 +2005,17 @@ public partial class BusinessService : IBusinessService
                 : "Active",
         });
 
-        return await ProjectStaffListAsync(projected, business.Id, status, activity, goalStatus, sortBy, sortDirection, page, pageSize);
+        return await ProjectStaffListAsync(projected, business.Id, activity, goalStatus, sortBy, sortDirection, page, pageSize);
     }
 
     private async Task<ApiResponse<StaffListResponse>> ProjectStaffListAsync(
         IQueryable<StaffMemberResponse> projected,
         Guid businessId,
-        string? status, string? activity, string? goalStatus,
+        string? activity, string? goalStatus,
         string sortBy, string sortDirection, int page, int pageSize)
     {
-        // Status / activity / goal filters operate on computed values (still DB-side).
-        var normalizedStatus = status?.Trim().ToLowerInvariant();
-        if (normalizedStatus == "active")
-            projected = projected.Where(s => s.StampsLast7d > 0);
-        else if (normalizedStatus == "inactive")
-            projected = projected.Where(s => s.StampsLast7d == 0);
-
+        // Activity and goal filters operate on computed values (still DB-side). The
+        // membership-lifecycle filter was applied to the membership rows above.
         // `activity` is an alias kept for API compatibility: today | week | idle.
         var normalizedActivity = activity?.Trim().ToLowerInvariant();
         if (normalizedActivity == "today")
@@ -1983,22 +2040,27 @@ public partial class BusinessService : IBusinessService
         // a date at all: the order looked plausible and was meaningless. The joined-at time is
         // read per row as a correlated scalar, so the sort stays in SQL.
         //
-        // Every ordering ends with the member's name so it is deterministic: without a
-        // tiebreaker two members added in the same tick could swap places between requests,
-        // and a page boundary would then repeat one and skip the other.
-        var descending = sortDirection?.Trim().ToLowerInvariant() == "desc";
+        // Every ordering ends with the member's name and then their id, so it is
+        // deterministic: without a tiebreaker two members added in the same tick could swap
+        // places between requests, and a page boundary would then repeat one and skip the
+        // other. The default is newest-first, which is what an owner expects after adding
+        // somebody.
+        var descending = sortDirection?.Trim().ToLowerInvariant() != "asc";
         projected = (sortBy?.Trim().ToLowerInvariant(), descending) switch
         {
-            ("name", true) => projected.OrderByDescending(s => s.FullName),
-            ("stamps", true) => projected.OrderByDescending(s => s.StampsIssued).ThenBy(s => s.FullName),
-            ("stamps", false) => projected.OrderBy(s => s.StampsIssued).ThenBy(s => s.FullName),
-            ("recent", false) => projected.OrderBy(s => s.LastActivityAt ?? DateTime.MinValue).ThenBy(s => s.FullName),
-            ("recent", true) => projected.OrderByDescending(s => s.LastActivityAt ?? DateTime.MinValue).ThenBy(s => s.FullName),
-            ("goal", true) => projected.OrderByDescending(s => s.DailyGoal == null ? 0m : Math.Min(1m * s.StampsToday / s.DailyGoal.Value, 2m)).ThenBy(s => s.FullName),
-            ("goal", false) => projected.OrderBy(s => s.DailyGoal == null ? 0m : Math.Min(1m * s.StampsToday / s.DailyGoal.Value, 2m)).ThenBy(s => s.FullName),
-            ("added", true) => projected.OrderByDescending(s => s.JoinedAt).ThenBy(s => s.FullName),
-            ("added", false) => projected.OrderBy(s => s.JoinedAt).ThenBy(s => s.FullName),
-            _ => descending ? projected.OrderByDescending(s => s.FullName) : projected.OrderBy(s => s.FullName),
+            ("name", true) => projected.OrderByDescending(s => s.FullName).ThenBy(s => s.UserId),
+            ("name", false) => projected.OrderBy(s => s.FullName).ThenBy(s => s.UserId),
+            ("stamps", true) => projected.OrderByDescending(s => s.StampsIssued).ThenBy(s => s.FullName).ThenBy(s => s.UserId),
+            ("stamps", false) => projected.OrderBy(s => s.StampsIssued).ThenBy(s => s.FullName).ThenBy(s => s.UserId),
+            ("recent", false) => projected.OrderBy(s => s.LastActivityAt ?? DateTime.MinValue).ThenBy(s => s.FullName).ThenBy(s => s.UserId),
+            ("recent", true) => projected.OrderByDescending(s => s.LastActivityAt ?? DateTime.MinValue).ThenBy(s => s.FullName).ThenBy(s => s.UserId),
+            ("goal", true) => projected.OrderByDescending(s => s.DailyGoal == null ? 0m : Math.Min(1m * s.StampsToday / s.DailyGoal.Value, 2m)).ThenBy(s => s.FullName).ThenBy(s => s.UserId),
+            ("goal", false) => projected.OrderBy(s => s.DailyGoal == null ? 0m : Math.Min(1m * s.StampsToday / s.DailyGoal.Value, 2m)).ThenBy(s => s.FullName).ThenBy(s => s.UserId),
+            ("added", true) => projected.OrderByDescending(s => s.JoinedAt).ThenBy(s => s.FullName).ThenBy(s => s.UserId),
+            ("added", false) => projected.OrderBy(s => s.JoinedAt).ThenBy(s => s.FullName).ThenBy(s => s.UserId),
+            ("appointments", true) => projected.OrderByDescending(s => s.AppointmentsLast7d).ThenBy(s => s.FullName).ThenBy(s => s.UserId),
+            ("appointments", false) => projected.OrderBy(s => s.AppointmentsLast7d).ThenBy(s => s.FullName).ThenBy(s => s.UserId),
+            _ => projected.OrderByDescending(s => s.JoinedAt).ThenBy(s => s.FullName).ThenBy(s => s.UserId),
         };
 
         var total = await projected.CountAsync();
@@ -2065,7 +2127,11 @@ public partial class BusinessService : IBusinessService
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var weekStart = today.AddDays(-6);
+        // UTC bounds for the appointment counters. The upper bound matters as much as the
+        // lower one: without it "today" silently meant "today and every future booking",
+        // so a member with a busy month outranked one who actually worked today.
         var todayUtc = DateTime.UtcNow.Date;
+        var tomorrowUtc = todayUtc.AddDays(1);
         var weekStartUtc = todayUtc.AddDays(-6);
 
         var overviewStaffIds = await GetStaffUserIdsAsync(business.Id);
@@ -2090,8 +2156,8 @@ public partial class BusinessService : IBusinessService
                 StampsLast7d = _context.StaffDailyAnalytics
                     .Where(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.Date >= weekStart)
                     .Sum(a => (int?)a.Stamps) ?? 0,
-                AppointmentsToday = _context.Appointments.Count(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.ScheduledAt >= todayUtc),
-                AppointmentsLast7d = _context.Appointments.Count(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.ScheduledAt >= weekStartUtc),
+                AppointmentsToday = _context.Appointments.Count(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.ScheduledAt >= todayUtc && a.ScheduledAt < tomorrowUtc),
+                AppointmentsLast7d = _context.Appointments.Count(a => a.StaffUserId == u.Id && a.BusinessId == business.Id && a.ScheduledAt >= weekStartUtc && a.ScheduledAt < tomorrowUtc),
                 LastActivityAt = _context.Stamps
                     .Where(s => s.AwardedByUserId == u.Id && s.Card.BusinessId == business.Id)
                     .Max(s => (DateTime?)s.StampedAt),
@@ -2113,6 +2179,15 @@ public partial class BusinessService : IBusinessService
                         .Select(p => (bool?)p.IsActive)
                         .FirstOrDefault())
                     .FirstOrDefault(),
+
+                // Operational status, resolved in the same statement. The overview's
+                // "inactive" is a suspended membership — a person the owner has taken
+                // off new bookings — not a person who simply had a quiet week.
+                MembershipStatus = _context.BusinessMemberships
+                    .Any(m => m.UserId == u.Id && m.BusinessId == business.Id
+                        && m.Status == BusinessMembershipStatus.Suspended)
+                    ? "Suspended"
+                    : "Active",
             })
             .ToListAsync();
 
@@ -2122,8 +2197,9 @@ public partial class BusinessService : IBusinessService
         return ApiResponse<StaffOverviewResponse>.Ok(new StaffOverviewResponse
         {
             TotalStaff = staff.Count,
+            ActiveStaff = staff.Count(s => s.MembershipStatus == "Active"),
             ActiveStaff7d = staff.Count(s => s.StampsLast7d > 0),
-            InactiveStaff = staff.Count(s => s.StampsLast7d == 0),
+            InactiveStaff = staff.Count(s => s.MembershipStatus != "Active"),
             PendingInvitations = pendingInvitations,
             StampsToday = staff.Sum(s => s.StampsToday),
             StampsThisWeek = staff.Sum(s => s.StampsLast7d),
@@ -2247,48 +2323,6 @@ public partial class BusinessService : IBusinessService
             PositionName = staffPosition?.Name,
             PositionIsActive = staffPosition?.IsActive,
         });
-    }
-
-    public async Task<ApiResponse<MessageResponse>> LinkStaffToBusinessAsync(Guid ownerId, Guid staffUserId)
-    {
-        try
-        {
-            var business = await _unitOfWork.Businesses.FirstOrDefaultAsync(b => b.Memberships.Any(m => m.UserId == ownerId && m.Role == BusinessMembershipRole.Owner && m.Status == BusinessMembershipStatus.Active));
-            if (business == null)
-                return ApiResponse<MessageResponse>.Fail("NOT_FOUND", "No business found for this account.");
-
-            var staffUser = await _unitOfWork.Users.GetByIdAsync(staffUserId);
-            if (staffUser == null)
-                return ApiResponse<MessageResponse>.Fail("STAFF_NOT_FOUND", "Staff user not found.");
-
-            if (staffUser.Role == Domain.Entities.UserRole.Admin)
-                return ApiResponse<MessageResponse>.Fail("NOT_STAFF", "Administrator accounts cannot be linked as staff.");
-
-            // Linking is a membership grant (upgrade-only), committed once.
-            await _memberships.EnsureAsync(
-                staffUser.Id, business.Id, BusinessMembershipRole.Staff, ownerId);
-
-            if (staffUser.Role != Domain.Entities.UserRole.Business)
-            {
-                staffUser.Role = Domain.Entities.UserRole.Staff;
-                _unitOfWork.Users.Update(staffUser);
-            }
-
-            await _unitOfWork.SaveChangesAsync();
-            _businessScopeResolver.InvalidateOwner(staffUser.Id);
-
-            _logger.LogInformation("Staff {StaffId} linked to business {BusinessId}", staffUserId, business.Id);
-
-            return ApiResponse<MessageResponse>.Ok(new MessageResponse
-            {
-                Message = $"{staffUser.FullName} has been linked to {business.Name}."
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error linking staff {StaffId} to business for owner {OwnerId}", staffUserId, ownerId);
-            return ApiResponse<MessageResponse>.Fail("LINK_FAILED", "Failed to link staff member.");
-        }
     }
 
     public async Task<ApiResponse<StaffMemberAnalyticsResponse>> GetStaffMemberAnalyticsAsync(

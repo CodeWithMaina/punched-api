@@ -563,4 +563,143 @@ public class PaymentModuleTests
         Assert.Equal("QJK42NUM", stored.ExternalReference);
         Assert.Single(await context.PaymentCallbacks.ToListAsync());
     }
+
+    // ── Staff verification + segregation of duties ────────────
+
+    private static PaymentService CreatePaymentServiceWithBusinessPermissions(
+        ApplicationDbContext context, IBusinessPermissionService permissions)
+    {
+        var env = new Mock<IHostEnvironment>();
+        env.SetupGet(e => e.EnvironmentName).Returns("Development");
+        return new PaymentService(
+            context,
+            new UnitOfWork(context),
+            new IPaymentProvider[] { new CashPaymentProvider(NullLogger<CashPaymentProvider>.Instance) },
+            new PermissionService(permissions),
+            new PaymentCredentialProtector(Options.Create(new PaymentOptions()), env.Object),
+            Options.Create(new PaymentOptions()),
+            BookingTestBase.CreateNotificationService(context),
+            NullLogger<PaymentService>.Instance);
+    }
+
+    /// <summary>
+    /// A staff member holding the platform receptionist role (which carries
+    /// <c>payments.confirm_cash</c> and <c>payments.verify</c>) — the case the
+    /// previous persona-matrix check could never reach.
+    /// </summary>
+    private static async Task<(User Staff, IBusinessPermissionService Permissions, PaymentService Payments)>
+        SeedReceptionistAsync(ApplicationDbContext context, Business business)
+    {
+        var staff = BookingTestBase.CreateStaff(business.Id);
+        await BookingTestBase.SeedAsync(context, staff);
+
+        var permissions = BusinessOperationsTestBase.CreatePermissionService(context);
+        await permissions.EnsureProvisionedAsync(business.Id);
+
+        var receptionist = await context.BusinessRoles
+            .SingleAsync(r => r.BusinessId == business.Id && r.Key == "receptionist");
+        var membership = await context.BusinessMemberships
+            .SingleAsync(m => m.UserId == staff.Id && m.BusinessId == business.Id);
+
+        context.BusinessMembershipRoleAssignments.Add(new BusinessMembershipRoleAssignment
+        {
+            Id = Guid.NewGuid(),
+            BusinessMembershipId = membership.Id,
+            BusinessRoleId = receptionist.Id,
+            CreatedAt = DateTime.UtcNow
+        });
+        await context.SaveChangesAsync();
+        permissions.Invalidate(business.Id);
+
+        return (staff, permissions, CreatePaymentServiceWithBusinessPermissions(context, permissions));
+    }
+
+    private static Payment CashPayment(Business business, Appointment appointment, Guid createdBy) => new()
+    {
+        Id = Guid.NewGuid(),
+        BusinessId = business.Id,
+        CustomerId = appointment.CustomerId,
+        AppointmentId = appointment.Id,
+        Type = PaymentType.FullPayment,
+        Method = PaymentMethod.Cash,
+        Provider = PaymentProviderKind.Cash,
+        Status = PaymentStatus.Created,
+        Amount = 1000m,
+        Currency = "KES",
+        Reference = $"PMT-{Guid.NewGuid():N}"[..20],
+        CreatedByUserId = createdBy,
+        CreatedAt = DateTime.UtcNow
+    };
+
+    [Fact]
+    public async Task Staff_WithConfirmCashPermission_CanConfirmCashTakenByAnotherPerson()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (business, owner, _, appointment) = await SeedAsync(context);
+        var (staff, _, payments) = await SeedReceptionistAsync(context, business);
+
+        var payment = CashPayment(business, appointment, owner.Id);
+        await BookingTestBase.SeedAsync(context, payment);
+
+        var result = await payments.ConfirmCashAsync(payment.Id, "Taken at the desk", staff.Id, "Staff");
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal("success", result.Data!.Status);
+    }
+
+    [Fact]
+    public async Task Staff_CannotConfirmAPaymentTheyRecorded()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (business, _, _, appointment) = await SeedAsync(context);
+        var (staff, _, payments) = await SeedReceptionistAsync(context, business);
+
+        // Same person staged and would confirm the cash: refused even though the
+        // role grants payments.confirm_cash.
+        var payment = CashPayment(business, appointment, staff.Id);
+        await BookingTestBase.SeedAsync(context, payment);
+
+        var result = await payments.ConfirmCashAsync(payment.Id, "My own drawer", staff.Id, "Staff");
+
+        Assert.False(result.Success);
+        Assert.Equal("SELF_VERIFICATION_FORBIDDEN", result.Error?.Code);
+    }
+
+    [Fact]
+    public async Task Staff_CannotVerifyAManualMpesaClaimTheyRecorded()
+    {
+        using var connection = BookingTestBase.CreateConnection();
+        using var context = BookingTestBase.CreateContext(connection);
+        var (business, _, _, appointment) = await SeedAsync(context);
+        var (staff, _, payments) = await SeedReceptionistAsync(context, business);
+
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            BusinessId = business.Id,
+            CustomerId = appointment.CustomerId,
+            AppointmentId = appointment.Id,
+            Type = PaymentType.FullPayment,
+            Method = PaymentMethod.Mpesa,
+            Provider = PaymentProviderKind.ManualMpesa,
+            Status = PaymentStatus.Submitted,
+            Amount = 1000m,
+            Currency = "KES",
+            Reference = $"PMT-{Guid.NewGuid():N}"[..20],
+            ParsedAmount = 1000m,
+            ParsedTransactionCode = "QJK42NUM",
+            SubmittedAt = DateTime.UtcNow,
+            CreatedByUserId = staff.Id,
+            CreatedAt = DateTime.UtcNow
+        };
+        await BookingTestBase.SeedAsync(context, payment);
+
+        var result = await payments.VerifyPaymentAsync(
+            payment.Id, new VerifyPaymentRequest { Note = "Looks right" }, staff.Id, "Staff");
+
+        Assert.False(result.Success);
+        Assert.Equal("SELF_VERIFICATION_FORBIDDEN", result.Error?.Code);
+    }
 }

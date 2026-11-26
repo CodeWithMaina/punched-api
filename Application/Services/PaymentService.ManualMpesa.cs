@@ -639,9 +639,20 @@ public partial class PaymentService
             return (null, ApiResponse<PaymentResponse>.Fail(
                 "FORBIDDEN", "Only the business can decide on a submitted payment."));
 
-        if (role == "Staff" && !_permissions.HasPermission(role, "payments.confirm_cash"))
-            return (null, ApiResponse<PaymentResponse>.Fail(
-                "FORBIDDEN", "You are not allowed to verify payments."));
+        if (role == "Staff")
+        {
+            // Reviewing evidence is its own permission (payments.verify), distinct from
+            // taking cash — a business may trust a member with one and not the other.
+            if (!await _permissions.HasBusinessPermissionAsync(userId, payment.BusinessId, "payments.verify"))
+                return (null, ApiResponse<PaymentResponse>.Fail(
+                    "FORBIDDEN", "You are not allowed to verify payments."));
+
+            // Segregation of duties: whoever recorded the payment cannot approve it.
+            if (payment.CreatedByUserId == userId)
+                return (null, ApiResponse<PaymentResponse>.Fail(
+                    "SELF_VERIFICATION_FORBIDDEN",
+                    "You recorded this payment; another authorised person must verify it."));
+        }
 
         return (payment, null);
     }

@@ -100,7 +100,7 @@ public class InvitationServiceTests
         ApplicationDbContext context, Mock<IEmailService>? emailMock = null, PublicAppSettings? settings = null)
     {
         emailMock ??= new Mock<IEmailService>();
-        emailMock.Setup(e => e.SendStaffInvitationAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTime>()))
+        emailMock.Setup(e => e.SendStaffInvitationAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<IReadOnlyList<string>?>()))
             .ReturnsAsync(true);
         return new InvitationService(
             new UnitOfWork(context),
@@ -127,7 +127,7 @@ public class InvitationServiceTests
         await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
         await context.SaveChangesAsync();
         var emailMock = new Mock<IEmailService>();
-        emailMock.Setup(e => e.SendStaffInvitationAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTime>()))
+        emailMock.Setup(e => e.SendStaffInvitationAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<IReadOnlyList<string>?>()))
             .ReturnsAsync(true);
         var service = CreateService(context, emailMock);
 
@@ -142,11 +142,106 @@ public class InvitationServiceTests
         Assert.Equal("staff@example.com", persisted.InvitedEmail);
         Assert.NotEmpty(persisted.TokenHash);
 
-        emailMock.Verify(r => r.SendStaffInvitationAsync("staff@example.com", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTime>()), Times.Once());
+        emailMock.Verify(r => r.SendStaffInvitationAsync("staff@example.com", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<IReadOnlyList<string>?>()), Times.Once());
         var emailInvocation = emailMock.Invocations.Single(i => i.Method.Name == "SendStaffInvitationAsync");
         var acceptUrl = Assert.IsType<string>(emailInvocation.Arguments[2]);
         Assert.StartsWith("http://localhost:3000/invitations/accept?token=", acceptUrl);
         Assert.Single(context.StaffInvitations);
+    }
+
+    [Fact]
+    public async Task CreateAndAccept_AppliesPrefilledProfile_PositionAndCategories()
+    {
+        using var context = CreateContext("Invite_Prefill_01");
+        var owner = CreateOwner();
+        var business = CreateBusiness(owner.Id);
+
+        var position = new StaffPosition
+        {
+            Id = Guid.NewGuid(),
+            BusinessId = business.Id,
+            Name = "Senior Stylist",
+            IsActive = true,
+            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        var category = new ServiceCategory
+        {
+            Id = Guid.NewGuid(),
+            BusinessId = business.Id,
+            Name = "Hair",
+            IsActive = true,
+            SortOrder = 0,
+            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        await context.Users.AddAsync(owner);
+        await context.Businesses.AddAsync(business);
+        await context.BusinessMemberships.AddAsync(OwnerMembership(owner, business));
+        await context.StaffPositions.AddAsync(position);
+        await context.ServiceCategories.AddAsync(category);
+        await context.SaveChangesAsync();
+
+        var emailMock = new Mock<IEmailService>();
+        emailMock.Setup(e => e.SendStaffInvitationAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTime>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<IReadOnlyList<string>?>()))
+            .ReturnsAsync(true);
+
+        var service = new InvitationService(
+            new UnitOfWork(context),
+            CreateJwtService(),
+            emailMock.Object,
+            Options.Create(CreatePublicAppSettings()),
+            TestHelpers.CreateLogger<InvitationService>(),
+            memberships: null,
+            audit: null,
+            context: context);
+
+        var created = await service.CreateStaffInvitationAsync(owner.Id, new CreateStaffInvitationRequest
+        {
+            Email = "prefilled@example.com",
+            FullName = "Amina Wanjiku",
+            PhoneNumber = "+254 712 345 678",
+            PositionId = position.Id,
+            ServiceCategoryIds = [category.Id]
+        });
+
+        Assert.True(created.Success, created.Error?.Message);
+        Assert.Equal("Amina Wanjiku", created.Data!.FullName);
+        Assert.Equal("+254712345678", created.Data.PhoneNumber);
+
+        var invocation = emailMock.Invocations.Single(i => i.Method.Name == "SendStaffInvitationAsync");
+        Assert.Equal("Amina Wanjiku", invocation.Arguments[4]);
+        Assert.Equal("Senior Stylist", invocation.Arguments[5]);
+        var categoryNames = Assert.IsAssignableFrom<IReadOnlyList<string>>(invocation.Arguments[6]);
+        Assert.Contains("Hair", categoryNames);
+
+        var url = Assert.IsType<string>(invocation.Arguments[2]);
+        var token = url.Split("token=")[1];
+
+        var accepted = await service.AcceptStaffInvitationAsync(token, new AcceptStaffInvitationRequest
+        {
+            FullName = "Some Other Name",
+            Password = "P@ssw0rd!12",
+            EmailConfirmation = "prefilled@example.com"
+        });
+
+        Assert.True(accepted.Success, accepted.Error?.Message);
+
+        var user = await context.Users.SingleAsync(u => u.Email == "prefilled@example.com");
+        // The owner's prefill wins over anything the invitee typed over it.
+        Assert.Equal("Amina Wanjiku", user.FullName);
+        Assert.Equal("+254712345678", user.PhoneNumber);
+
+        var membership = await context.BusinessMemberships
+            .SingleAsync(m => m.UserId == user.Id && m.BusinessId == business.Id);
+        Assert.Equal(position.Id, membership.PositionId);
+
+        Assert.True(await context.StaffServiceCategories.AnyAsync(a =>
+            a.BusinessId == business.Id && a.StaffUserId == user.Id && a.ServiceCategoryId == category.Id));
     }
 
     [Fact]

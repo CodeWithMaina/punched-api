@@ -225,3 +225,132 @@ public class StaffStatusResponse
     [JsonPropertyName("endedAt")] public DateTime? EndedAt { get; set; }
     [JsonPropertyName("message")] public string Message { get; set; } = string.Empty;
 }
+
+/// <summary>One future booking that would be left unstaffed by a deactivation.</summary>
+public class StaffImpactAppointmentResponse
+{
+    [JsonPropertyName("appointmentId")] public Guid AppointmentId { get; set; }
+    [JsonPropertyName("scheduledAt")] public DateTime ScheduledAt { get; set; }
+    [JsonPropertyName("status")] public string Status { get; set; } = string.Empty;
+    [JsonPropertyName("customerName")] public string? CustomerName { get; set; }
+    [JsonPropertyName("currency")] public string Currency { get; set; } = "KES";
+    [JsonPropertyName("serviceValue")] public decimal ServiceValue { get; set; }
+}
+
+/// <summary>
+/// What deactivating one staff member would leave behind, resolved BEFORE the
+/// transition so the owner is never asked to confirm an operation blind.
+///
+/// <para><b>Reading this changes nothing.</b> It answers three questions the
+/// console must ask: whose diary has work in it, whose payment evidence is still
+/// undecided, and can that work be moved to somebody qualified. Counts are
+/// aggregate queries — the appointments are never loaded to count them.</para>
+///
+/// <para>These numbers never block a deactivation; they are a warning plus a
+/// reassignment offer. The single exception is
+/// <see cref="CanDeactivate"/>, which is false for the business owner because
+/// their own membership cannot be suspended from the staff list.</para>
+/// </summary>
+public class StaffDeactivationImpactResponse
+{
+    [JsonPropertyName("staffUserId")] public Guid UserId { get; set; }
+    [JsonPropertyName("fullName")] public string FullName { get; set; } = string.Empty;
+    [JsonPropertyName("isActive")] public bool IsActive { get; set; }
+    [JsonPropertyName("membershipStatus")] public string MembershipStatus { get; set; } = string.Empty;
+
+    /// <summary>False only when this membership cannot be suspended from here (the owner).</summary>
+    [JsonPropertyName("canDeactivate")] public bool CanDeactivate { get; set; } = true;
+
+    /// <summary>Booked / confirmed / pending-payment appointments still ahead of this member.</summary>
+    [JsonPropertyName("futureAppointmentCount")] public int FutureAppointmentCount { get; set; }
+
+    /// <summary>The next few of those, soonest first (at most five).</summary>
+    [JsonPropertyName("nextAppointments")]
+    public List<StaffImpactAppointmentResponse> NextAppointments { get; set; } = [];
+
+    /// <summary>
+    /// Non-terminal appointments whose time has already passed — stale rows that
+    /// need a decision (complete / no-show / cancel) rather than a reassignment.
+    /// </summary>
+    [JsonPropertyName("unresolvedPastAppointmentCount")] public int UnresolvedPastAppointmentCount { get; set; }
+
+    /// <summary>Manual M-PESA claims on this member's appointments awaiting a decision.</summary>
+    [JsonPropertyName("pendingVerificationCount")] public int PendingVerificationCount { get; set; }
+
+    [JsonPropertyName("currency")] public string Currency { get; set; } = "KES";
+
+    /// <summary>Value of those undecided claims — money that is still unconfirmed.</summary>
+    [JsonPropertyName("pendingVerificationAmount")] public decimal PendingVerificationAmount { get; set; }
+
+    /// <summary>Booked value of completed work that has not been collected yet.</summary>
+    [JsonPropertyName("outstandingAmount")] public decimal OutstandingAmount { get; set; }
+
+    /// <summary>True when this member still has an open attendance session.</summary>
+    [JsonPropertyName("isClockedIn")] public bool IsClockedIn { get; set; }
+
+    /// <summary>
+    /// Active, bookable colleagues able to take <b>every</b> future appointment of
+    /// this member. Empty means reassignment is not available and the diary must be
+    /// resolved by hand.
+    /// </summary>
+    [JsonPropertyName("reassignmentCandidates")]
+    public List<StaffReassignmentCandidateResponse> ReassignmentCandidates { get; set; } = [];
+
+    /// <summary>Stable warning codes the client renders as its own copy.</summary>
+    [JsonPropertyName("warnings")] public List<string> Warnings { get; set; } = [];
+}
+
+/// <summary>A colleague a deactivated member's future work could be moved to.</summary>
+public class StaffReassignmentCandidateResponse
+{
+    [JsonPropertyName("staffUserId")] public Guid UserId { get; set; }
+    [JsonPropertyName("fullName")] public string FullName { get; set; } = string.Empty;
+    [JsonPropertyName("positionName")] public string? PositionName { get; set; }
+
+    /// <summary>How many of the member's future appointments this colleague could take.</summary>
+    [JsonPropertyName("eligibleAppointmentCount")] public int EligibleAppointmentCount { get; set; }
+}
+
+/// <summary>
+/// Moves a leaving member's future appointments to a qualified colleague.
+///
+/// <para>The target and each appointment are re-validated server-side: the caller
+/// cannot name an appointment outside their tenant, an ineligible colleague, or a
+/// slot that would double-book somebody. Appointments that cannot be moved are
+/// reported back, never silently dropped.</para>
+/// </summary>
+public class ReassignStaffAppointmentsRequest
+{
+    /// <summary>The colleague receiving the work.</summary>
+    [JsonPropertyName("targetStaffUserId")] public Guid TargetStaffUserId { get; set; }
+
+    /// <summary>
+    /// Optional subset of appointments to move. Omitted or empty means every
+    /// future non-terminal appointment of the member.
+    /// </summary>
+    [JsonPropertyName("appointmentIds")] public List<Guid>? AppointmentIds { get; set; }
+}
+
+/// <summary>One appointment that could not be moved, and why.</summary>
+public class StaffReassignmentSkipResponse
+{
+    [JsonPropertyName("appointmentId")] public Guid AppointmentId { get; set; }
+    [JsonPropertyName("scheduledAt")] public DateTime ScheduledAt { get; set; }
+
+    /// <summary>
+    /// <c>NOT_ELIGIBLE</c> | <c>TARGET_UNAVAILABLE</c> | <c>NOT_FOUND</c> |
+    /// <c>ALREADY_TERMINAL</c>.
+    /// </summary>
+    [JsonPropertyName("reason")] public string Reason { get; set; } = string.Empty;
+}
+
+/// <summary>Outcome of a reassignment.</summary>
+public class StaffReassignmentResponse
+{
+    [JsonPropertyName("fromStaffUserId")] public Guid FromStaffUserId { get; set; }
+    [JsonPropertyName("toStaffUserId")] public Guid ToStaffUserId { get; set; }
+    [JsonPropertyName("movedCount")] public int MovedCount { get; set; }
+    [JsonPropertyName("skippedCount")] public int SkippedCount { get; set; }
+    [JsonPropertyName("skipped")] public List<StaffReassignmentSkipResponse> Skipped { get; set; } = [];
+    [JsonPropertyName("message")] public string Message { get; set; } = string.Empty;
+}

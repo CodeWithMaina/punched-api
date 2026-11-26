@@ -62,23 +62,6 @@ public partial class BusinessController
     }
 
     /// <summary>
-    /// Link a staff user to this business. Staff can then scan QR codes.
-    /// </summary>
-    [RequireModule("staff")]
-    [HttpPost("me/staff/{staffUserId:guid}")]
-    [Authorize(Policy = MembershipPolicies.Owner)]
-    [ProducesResponseType(typeof(ApiResponse<MessageResponse>), StatusCodes.Status200OK)]
-    public async Task<IActionResult> LinkStaff(Guid staffUserId)
-    {
-        var userId = GetUserId();
-        if (userId == null) return Unauthorized();
-
-        var result = await _businessService.LinkStaffToBusinessAsync(userId.Value, staffUserId);
-        if (!result.Success) return BadRequest(result);
-        return Ok(result);
-    }
-
-    /// <summary>
     /// Get a management overview of the business's staff: summary counts,
     /// performance snapshot (top performers / needs attention / recently active).
     /// </summary>
@@ -99,9 +82,14 @@ public partial class BusinessController
     /// <summary>
     /// Get all staff members linked to this business — server-side search,
     /// filtering, sorting and pagination.
-    /// Query: search, status(active|inactive), activity(today|week|idle),
-    /// goalStatus(met|behind|none), sortBy(name|stamps|recent|goal|added),
+    /// Query: search (name, email, phone, assigned service category),
+    /// status(active|inactive — the membership lifecycle), activity(today|week|idle),
+    /// goalStatus(met|behind|none), serviceCategoryId,
+    /// sortBy(name|stamps|recent|goal|added|appointments),
     /// sortDirection(asc|desc), page, pageSize.
+    ///
+    /// <para>The default is <c>added</c> + <c>desc</c>: the newest member is always
+    /// first, and the id tiebreaker keeps paging stable when timestamps match.</para>
     /// </summary>
     [RequireModule("staff")]
     [HttpGet("me/staff")]
@@ -112,19 +100,21 @@ public partial class BusinessController
         [FromQuery] string? status,
         [FromQuery] string? activity,
         [FromQuery] string? goalStatus,
-        [FromQuery] string sortBy = "name",
-        [FromQuery] string sortDirection = "asc",
+        [FromQuery] string sortBy = "added",
+        [FromQuery] string sortDirection = "desc",
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20)
+        [FromQuery] int pageSize = 20,
+        [FromQuery] Guid? serviceCategoryId = null)
     {
         var userId = GetUserId();
         if (userId == null) return Unauthorized();
 
-        var validSorts = new[] { "name", "stamps", "recent", "goal", "added" };
-        if (!validSorts.Contains(sortBy.ToLowerInvariant())) sortBy = "name";
+        var validSorts = new[] { "name", "stamps", "recent", "goal", "added", "appointments" };
+        if (!validSorts.Contains(sortBy.ToLowerInvariant())) sortBy = "added";
 
         var result = await _businessService.GetMyStaffAsync(
-            userId.Value, search, status, activity, goalStatus, sortBy, sortDirection, page, pageSize);
+            userId.Value, search, status, activity, goalStatus, sortBy, sortDirection, page, pageSize,
+            serviceCategoryId);
         if (!result.Success) return NotFound(result);
         return Ok(result);
     }

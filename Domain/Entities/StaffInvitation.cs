@@ -90,6 +90,37 @@ public class StaffInvitation : BaseEntity
     /// </summary>
     public int ResendCount { get; set; }
 
+    /// <summary>
+    /// Prefilled staff name captured at invitation time. Null for invitations created
+    /// before prefilled onboarding existed; acceptance then falls back to the name the
+    /// invitee submits.
+    /// </summary>
+    [MaxLength(150)]
+    public string? InvitedFullName { get; set; }
+
+    /// <summary>
+    /// Prefilled phone number. Applied to the account only when it is new, so an
+    /// existing identity's phone is never overwritten by an invitation.
+    /// </summary>
+    [MaxLength(30)]
+    public string? InvitedPhoneNumber { get; set; }
+
+    /// <summary>
+    /// Optional job title the owner assigned. Validated against this business at
+    /// invitation time AND re-validated on acceptance (a position can be deleted while
+    /// the invitation is pending). Purely descriptive — it grants no permission.
+    /// </summary>
+    public Guid? PositionId { get; set; }
+
+    /// <summary>
+    /// JSON array of service-category ids the owner assigned. Stored as a JSON string
+    /// because these are invitation intent, not live assignments: the real
+    /// <c>staff_service_categories</c> rows are written only when the invitation is
+    /// accepted, and are re-validated against the business at that moment.
+    /// </summary>
+    [MaxLength(2000)]
+    public string? ServiceCategoryIdsJson { get; set; }
+
     // ── Navigation ──────────────────────────────────────────
     /// <summary>
     /// The business this invitation grants access to.

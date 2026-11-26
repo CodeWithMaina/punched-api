@@ -34,6 +34,7 @@ public partial class BusinessRoleService : IBusinessRoleService
     private readonly IBusinessScopeResolver _scopeResolver;
     private readonly IBusinessPermissionService _businessPermissions;
     private readonly ILogger<BusinessRoleService> _logger;
+    private readonly IStaffAuditService? _audit;
 
     /// <summary>Active tenant (null on the platform root / in unit tests) - scoping only, never a grant.</summary>
     private readonly ITenantContext? _tenant;
@@ -43,13 +44,15 @@ public partial class BusinessRoleService : IBusinessRoleService
         IBusinessScopeResolver scopeResolver,
         IBusinessPermissionService businessPermissions,
         ILogger<BusinessRoleService> logger,
-        ITenantContext? tenant = null)
+        ITenantContext? tenant = null,
+        IStaffAuditService? audit = null)
     {
         _context = context;
         _scopeResolver = scopeResolver;
         _businessPermissions = businessPermissions;
         _logger = logger;
         _tenant = tenant;
+        _audit = audit;
     }
 
     private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
@@ -342,6 +345,8 @@ public partial class BusinessRoleService
             return ApiResponse<BusinessRoleResponse>.Fail(
                 "OWNER_ROLE_IMMUTABLE", "The owner role cannot be changed. It always holds every permission.");
 
+        var wasActive = businessRole.IsActive;
+
         if (request.Name != null)
         {
             var name = request.Name.Trim();
@@ -377,6 +382,22 @@ public partial class BusinessRoleService
         if (request.SortOrder.HasValue) businessRole.SortOrder = request.SortOrder.Value;
 
         businessRole.UpdatedAt = DateTime.UtcNow;
+
+        if (wasActive != businessRole.IsActive)
+        {
+            _audit?.Record(
+                businessId.Value,
+                staffUserId: null,
+                actorUserId: callerUserId,
+                StaffAuditEventTypes.StaffPermissionsChanged,
+                $"Role '{businessRole.Name}' {(businessRole.IsActive ? "activated" : "deactivated")}.",
+                new
+                {
+                    change = businessRole.IsActive ? "role_activated" : "role_deactivated",
+                    roleId = businessRole.Id,
+                    roleKey = businessRole.Key
+                });
+        }
 
         try
         {
@@ -456,6 +477,15 @@ public partial class BusinessRoleService
                 CreatedAt = DateTime.UtcNow
             });
             businessRole.UpdatedAt = DateTime.UtcNow;
+
+            _audit?.Record(
+                businessId.Value,
+                staffUserId: null,
+                actorUserId: callerUserId,
+                StaffAuditEventTypes.StaffPermissionsChanged,
+                $"Permission '{code}' granted to role '{businessRole.Name}'.",
+                new { change = "role_permission_granted", roleId = businessRole.Id, roleKey = businessRole.Key, permissionCode = code });
+
             await _context.SaveChangesAsync();
             _businessPermissions.Invalidate(businessId.Value);
 
@@ -494,6 +524,15 @@ public partial class BusinessRoleService
         {
             _context.BusinessRolePermissions.Remove(grant);
             businessRole.UpdatedAt = DateTime.UtcNow;
+
+            _audit?.Record(
+                businessId.Value,
+                staffUserId: null,
+                actorUserId: callerUserId,
+                StaffAuditEventTypes.StaffPermissionsChanged,
+                $"Permission '{permissionCode}' revoked from role '{businessRole.Name}'.",
+                new { change = "role_permission_revoked", roleId = businessRole.Id, roleKey = businessRole.Key, permissionCode });
+
             await _context.SaveChangesAsync();
             _businessPermissions.Invalidate(businessId.Value);
 
@@ -568,6 +607,22 @@ public partial class BusinessRoleService
         if (toAdd.Count > 0 || toRemove.Count > 0)
         {
             businessRole.UpdatedAt = now;
+
+            _audit?.Record(
+                businessId.Value,
+                staffUserId: null,
+                actorUserId: callerUserId,
+                StaffAuditEventTypes.StaffPermissionsChanged,
+                $"Permissions updated for role '{businessRole.Name}' (+{toAdd.Count}/-{toRemove.Count}).",
+                new
+                {
+                    change = "role_permissions_replaced",
+                    roleId = businessRole.Id,
+                    roleKey = businessRole.Key,
+                    added = toAdd,
+                    removed = toRemove.Select(grant => grant.PermissionCode).ToList()
+                });
+
             await _context.SaveChangesAsync();
             _businessPermissions.Invalidate(businessId.Value);
 
@@ -703,7 +758,15 @@ public partial class BusinessRoleService
                 AssignedByUserId = callerUserId,
                 CreatedAt = DateTime.UtcNow
             });
-            await _context.SaveChangesAsync();
+            
+            _audit?.Record(
+                businessId.Value,
+                staffUserId,
+                callerUserId,
+                StaffAuditEventTypes.StaffPermissionsChanged,
+                $"Role '{businessRole.Name}' granted.",
+                new { change = "granted", roleId = businessRole.Id, roleKey = businessRole.Key });
+await _context.SaveChangesAsync();
             _businessPermissions.Invalidate(businessId.Value);
 
             _logger.LogInformation(
@@ -747,7 +810,15 @@ public partial class BusinessRoleService
         if (assignment != null)
         {
             _context.BusinessMembershipRoleAssignments.Remove(assignment);
-            await _context.SaveChangesAsync();
+            
+            _audit?.Record(
+                businessId.Value,
+                staffUserId,
+                callerUserId,
+                StaffAuditEventTypes.StaffPermissionsChanged,
+                $"Role '{businessRole.Name}' removed.",
+                new { change = "removed", roleId = businessRole.Id, roleKey = businessRole.Key });
+await _context.SaveChangesAsync();
             _businessPermissions.Invalidate(businessId.Value);
 
             _logger.LogInformation(

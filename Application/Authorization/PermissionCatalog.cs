@@ -162,11 +162,14 @@ public static class PermissionCatalog
                 "appointments.view", "appointments.update", "appointments.confirm",
                 "appointments.cancel", "appointments.complete", "appointments.no_show",
                 "appointments.reschedule", "appointments.approve_reschedule",
+                // The front desk may book customers in and may review submitted
+                // M-PESA evidence, but it never administers roles or pricing.
+                "appointments.create",
                 "customers.view", "customers.manage",
                 "staff.view",
                 "serviceCatalog.view", "serviceCategories.view",
                 "attendance.view", "attendance.clock",
-                "payments.view", "payments.create", "payments.confirm_cash",
+                "payments.view", "payments.create", "payments.confirm_cash", "payments.verify",
                 // The front desk may record money that came in and log what it spends from
                 // the drawer, but only an owner verifies, refunds or reconciles.
                 "finances.view", "finances.record_income", "finances.manage_expenses",
@@ -182,6 +185,9 @@ public static class PermissionCatalog
                 "appointments.view", "appointments.update", "appointments.confirm",
                 "appointments.cancel", "appointments.complete", "appointments.no_show",
                 "appointments.reschedule",
+                // A service professional may book walk-ins — pinned to themselves by
+                // the booking guard, never into a colleague's diary.
+                "appointments.create",
                 "customers.view",
                 "staff.view",
                 "serviceCatalog.view", "serviceCategories.view",

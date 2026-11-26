@@ -40,22 +40,44 @@ public partial class StaffManagementService : IStaffManagementService
     private readonly IBusinessScopeResolver _scopeResolver;
     private readonly IPermissionService _permissions;
     private readonly ILogger<StaffManagementService> _logger;
+    private readonly IStaffAuditService? _audit;
+
+    /// <summary>
+    /// Business-scoped permission cache. A suspension/activation changes what the
+    /// member may do, so the cached permission set for the business must be dropped
+    /// immediately rather than waiting for its TTL.
+    /// </summary>
+    private readonly IBusinessPermissionService? _businessPermissions;
 
     /// <summary>Active tenant (null on the platform root / in unit tests) — scoping only, never a grant.</summary>
     private readonly ITenantContext? _tenant;
+
+    /// <summary>
+    /// The single provider-eligibility authority, used when offering and validating
+    /// reassignment targets. Optional so existing construction sites (and tests) keep
+    /// working; when absent the service resolves eligibility with the same
+    /// implementation the booking engine uses — never with a second copy of the rules.
+    /// </summary>
+    private readonly IProviderEligibilityService? _eligibility;
 
     public StaffManagementService(
         ApplicationDbContext context,
         IBusinessScopeResolver scopeResolver,
         IPermissionService permissions,
         ILogger<StaffManagementService> logger,
-        ITenantContext? tenant = null)
+        ITenantContext? tenant = null,
+        IStaffAuditService? audit = null,
+        IBusinessPermissionService? businessPermissions = null,
+        IProviderEligibilityService? eligibility = null)
     {
         _context = context;
         _scopeResolver = scopeResolver;
         _permissions = permissions;
         _logger = logger;
         _tenant = tenant;
+        _audit = audit;
+        _businessPermissions = businessPermissions;
+        _eligibility = eligibility;
     }
 
     private Guid? TenantBusinessId => _tenant?.IsActive == true ? _tenant.BusinessId : null;
@@ -337,6 +359,35 @@ public partial class StaffManagementService
         }
 
         membership.UpdatedAt = DateTime.UtcNow;
+
+        var changedFields = new List<string>();
+        if (request.FullName != null) changedFields.Add("fullName");
+        if (request.PhoneNumber != null) changedFields.Add("phoneNumber");
+        if (request.Bio != null) changedFields.Add("bio");
+        if (request.Specialities != null) changedFields.Add("specialities");
+        if (request.ClearYearsOfExperience || request.YearsOfExperience.HasValue) changedFields.Add("yearsOfExperience");
+        if (request.IsPublic.HasValue) changedFields.Add("isPublic");
+        if (request.IsBookable.HasValue) changedFields.Add("isBookable");
+        if (request.ClearPosition || request.PositionId.HasValue) changedFields.Add("positionId");
+        if (request.ClearDailyGoalOverride || request.DailyGoalOverride.HasValue) changedFields.Add("dailyGoalOverride");
+        if (request.ClearAppointmentDailyGoalOverride || request.AppointmentDailyGoalOverride.HasValue)
+            changedFields.Add("appointmentDailyGoalOverride");
+        if (request.AvatarMediaId.HasValue) changedFields.Add("avatarMediaId");
+
+        _audit?.Record(
+            businessId,
+            staffUserId,
+            callerUserId,
+            StaffAuditEventTypes.StaffProfileUpdated,
+            $"Profile updated for {user.FullName} ({string.Join(", ", changedFields)}).",
+            new
+            {
+                changedFields,
+                positionId = membership.PositionId,
+                isPublic = membership.IsPublic,
+                isBookable = membership.IsBookable
+            });
+
         await _context.SaveChangesAsync();
 
         _logger.LogInformation(
@@ -418,12 +469,31 @@ public partial class StaffManagementService
 
         membership.UpdatedAt = DateTime.UtcNow;
 
+        _audit?.Record(
+            businessId,
+            staffUserId,
+            callerUserId,
+            active ? StaffAuditEventTypes.StaffActivated : StaffAuditEventTypes.StaffDeactivated,
+            active
+                ? $"{user.FullName} was activated."
+                : $"{user.FullName} was deactivated.",
+            new
+            {
+                previousStatus = active ? "Suspended" : "Active",
+                status = membership.Status.ToString(),
+                isBookable = membership.IsBookable
+            });
+
         // Attendance sessions and events are deliberately untouched: they are the
         // attendance module's ledger, and rewriting a session without its CLOCK_OUT
         // event would leave that module's history internally inconsistent. The
         // console instead warns when a member is still clocked in and offers the
         // attendance module's own clock-out, which keeps the ledger honest.
         await _context.SaveChangesAsync();
+
+        // Immediate effect: the member's authority (and the business's cached
+        // permission set) must reflect the new lifecycle state on the next request.
+        _businessPermissions?.Invalidate(businessId);
 
         _logger.LogInformation(
             "Staff {Action}: business {BusinessId} staff {StaffUserId} by {ActorUserId}",
@@ -518,6 +588,19 @@ public partial class StaffManagementService
             await using var transaction = await _context.Database.BeginTransactionAsync();
             if (toRemove.Count > 0) _context.StaffServiceAssignments.RemoveRange(toRemove);
             if (toAdd.Count > 0) await _context.StaffServiceAssignments.AddRangeAsync(toAdd);
+
+            _audit?.Record(
+                businessId,
+                staffUserId,
+                callerUserId,
+                StaffAuditEventTypes.ServiceAssignmentsChanged,
+                $"Service assignments changed: {toAdd.Count} added, {toRemove.Count} removed.",
+                new
+                {
+                    addedServiceIds = toAdd.Select(a => a.ServiceCatalogItemId).ToList(),
+                    removedServiceIds = toRemove.Select(a => a.ServiceCatalogItemId).ToList()
+                });
+
             await _context.SaveChangesAsync();
             await transaction.CommitAsync();
 

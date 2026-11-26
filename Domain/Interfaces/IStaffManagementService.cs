@@ -28,6 +28,23 @@ public interface IStaffManagementService
     Task<ApiResponse<StaffStatusResponse>> SetStaffActiveAsync(
         Guid callerUserId, string role, Guid staffUserId, bool active);
 
+    /// <summary>
+    /// What deactivating this member would leave behind: future bookings, undecided
+    /// payment claims, outstanding balances, an open attendance session, and the
+    /// colleagues who could take the work. Read-only.
+    /// </summary>
+    Task<ApiResponse<StaffDeactivationImpactResponse>> GetDeactivationImpactAsync(
+        Guid callerUserId, string role, Guid staffUserId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Moves the member's future, non-terminal appointments to an active, eligible,
+    /// available colleague in the same business. Completed history is never moved;
+    /// appointments that cannot be handed over are reported, not dropped.
+    /// </summary>
+    Task<ApiResponse<StaffReassignmentResponse>> ReassignAppointmentsAsync(
+        Guid callerUserId, string role, Guid staffUserId,
+        ReassignStaffAppointmentsRequest request, CancellationToken cancellationToken = default);
+
     /// <summary>The services a staff member is assigned to deliver.</summary>
     Task<ApiResponse<List<StaffServiceLinkResponse>>> GetStaffServicesAsync(
         Guid callerUserId, string role, Guid staffUserId);
